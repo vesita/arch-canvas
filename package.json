@@ -1,0 +1,51 @@
+{
+  "name": "arch-canvas",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DSH 插件：人与 AI 共用同一张 Mermaid 架构图 —— 用户拖图形，AI 读文本，两侧同一份真相",
+  "main": "lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/**/*.js",
+    "assets/mermaid.min.js",
+    "skills",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": []
+    }
+  },
+  "scripts": {
+    "build": "node tools/build.mjs",
+    "test": "node tools/build.mjs && node test/mermaid.test.cjs && node test/host.e2e.mjs && node test/host-loader.e2e.mjs && node test/plugin-mount.e2e.mjs && node test/ui.render.mjs",
+    "test:schema": "node tools/build.mjs && node test/tools.schema.mjs",
+    "check": "npm run typecheck && npm run test && npm run test:schema",
+    "typecheck": "tsc -p tsconfig.host.json --noEmit && tsc -p tsconfig.client.json --noEmit",
+    "prepack": "npm run build",
+    "pack": "npm pack --pack-destination /home/vesita/coding/my/dist"
+  },
+  "devDependencies": {
+    "jsdom": "^30.0.1",
+    "mermaid": "^11.16.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "typescript": "^7.0.2"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

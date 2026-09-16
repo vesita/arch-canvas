@@ -1,0 +1,64 @@
+%% arch-canvas —— 由「架构画布」面板与 AI 共同维护
+%% @pos <节点id> <x> <y> 是画布坐标注释，对 Mermaid 渲染无任何影响，可忽略或手改
+%% @pos human 65 -147
+%% @pos bootC 62 -327
+%% @pos bootH 1107 -493
+%% @pos canvas 463 -447
+%% @pos picker 650 -536
+%% @pos exp 454 -290
+%% @pos rpc 1026 -172
+%% @pos doc 1044 -67
+%% @pos parser 737 -35
+%% @pos lib 892 170
+%% @pos file 752 76
+%% @pos prompt 1378 227
+%% @pos alog 1330 60
+%% @pos tools 1174 335
+%% @pos i1 422 10
+%% @pos i2 420 -118
+%% @pos i3 431 155
+flowchart TD
+  subgraph cl["Client 侧 · 人的那一半"]
+    canvas["自绘 SVG 画布<br/>拖拽 · 连线 · 高亮 · 撤销重做"]
+    picker["图库选择器<br/>列图 · 切图 · 改名 · 删除 · 恢复"]
+    exp["导出 SVG / PNG / 源码"]
+  end
+  subgraph hs["Host 侧 · 唯一真相源"]
+    rpc["私有 RPC ×12"]
+    doc["文档状态<br/>图模型 · revision · lastChange"]
+    parser["parser / serializer<br/>Mermaid ⇄ 图模型"]
+    lib[("图库<br/>项目目录/.arch-canvas/")]
+    file[("每张图一个 .mmd<br/>@pos 坐标 · @link 下钻")]
+    alog[["文件日志<br/>按天 · 留 3 天"]]
+  end
+  subgraph ai["AI 侧"]
+    prompt["每步注入 systemPrompt.context"]
+    tools["arch_read · arch_edit<br/>arch_write · arch_switch"]
+  end
+  subgraph inv["不变式 · 讨论时先看这里"]
+    i1["文本是唯一真相源<br/>图形只是它的一种视图"]
+    i2["图不保证与代码一致<br/>它是讨论的画布"]
+    i3["AI 改图走增量<br/>用户摆的布局不会被冲掉"]
+  end
+  human(["用户"])
+  bootC[["Package · client 引导层 61 行"]]
+  bootH[["Package · host 引导层 50 行"]]
+  human -->|"侧栏入口"| bootC
+  bootC -->|"script 加载 dist/ui.js"| canvas
+  bootH -->|"eval 加载 dist/host.js"| rpc
+  canvas -->|"doc:set 整份模型"| rpc
+  rpc -->|"doc:rev 轻量轮询"| canvas
+  picker -->|"doc:list / open / rename / delete / restore"| rpc
+  exp -->|"读当前画布"| canvas
+  rpc --> doc
+  doc --> parser
+  parser -->|"坐标存成注释"| file
+  file --> lib
+  lib -.->|"周期扫描：走目录 + 比指纹"| doc
+  rpc -.->|"RPC 抛错"| alog
+  doc -.->|"落盘失败"| alog
+  doc -->|"每步注入"| prompt
+  tools -->|"增量 op，不碰用户布局"| doc
+  i1 -.-> parser
+  i2 -.-> doc
+  i3 -.-> tools

@@ -1,0 +1,359 @@
+// Mermaid flowchart ⇄ 图模型 的双向转换（纯函数，不碰服务、不碰状态）。
+// 关键约定：坐标以 `%% @pos <id> <x> <y>` 注释行保存 —— 对 Mermaid 渲染零影响，
+// 所以这份文本既是给 AI 看的图，也是能直接贴进任何 Markdown 的合法 Mermaid。
+// Mermaid flowchart <-> 图模型 双向转换（host 侧使用；此处独立测试）
+var ARROWS = ['<==>', '<-->', '==>', '-.->', '-->', '---', '~~~', '==='];
+var SHAPE_OPENERS = [
+  ['((', '))', 'circle'],
+  ['{{', '}}', 'hex'],
+  ['[[', ']]', 'sub'],
+  ['[(', ')]', 'cyl'],
+  ['([', '])', 'stadium'],
+  ['[', ']', 'rect'],
+  ['(', ')', 'round'],
+  ['{', '}', 'diamond'],
+  ['>', ']', 'asym'],
+];
+var SHAPE_WRAP = {
+  rect: ['[', ']'],
+  round: ['(', ')'],
+  stadium: ['([', '])'],
+  circle: ['((', '))'],
+  diamond: ['{', '}'],
+  hex: ['{{', '}}'],
+  cyl: ['[(', ')]'],
+  sub: ['[[', ']]'],
+  asym: ['>', ']'],
+};
+var ID_RE = /[A-Za-z0-9_\u00C0-\uFFFF]/;
+// 节点 id 到处都是当对象键用的（byId / posMap / grouped / seen），
+// 而 `byId['__proto__']` 拿到的是 Object.prototype 而不是 undefined ——
+// 那会让图里的 `__proto__` 节点被当成「已存在」并往原型上写字。出现就加前缀绕开。
+var RESERVED_ID = /^(__proto__|constructor|prototype|toString|valueOf|hasOwnProperty)$/;
+
+function cleanId(raw) {
+  var s = String(raw == null ? '' : raw).trim();
+  s = s.replace(/[^A-Za-z0-9_\u00C0-\uFFFF]/g, '_');
+  if (s === '') s = 'n';
+  if (/^[0-9]/.test(s)) s = 'n' + s;
+  if (RESERVED_ID.test(s)) s = 'n' + s;
+  return s;
+}
+
+// 标签转义是对称的：q() 写出去，unquote() 必须原样读回来。
+// 顺序要紧 —— q() 先转义 & / # / <，最后才把换行写成 <br/>；
+// unquote() 反过来先认 <br/>，再解实体，最后解 &amp;（否则 `&amp;quot;` 会被二次解码成 `"`）。
+var ENTITIES = [
+  ['&', '&amp;'],
+  ['#', '#35;'],
+  ['<', '#60;'],
+  ['"', '#quot;'],
+];
+
+function unquote(text) {
+  var s = String(text == null ? '' : text).trim();
+  if (s.length >= 2 && s.charAt(0) === '"' && s.charAt(s.length - 1) === '"') s = s.slice(1, -1);
+  s = s.replace(/<br\s*\/?>/gi, '\n');
+  s = s.replace(/#quot;/g, '"').replace(/&quot;/g, '"');
+  s = s.replace(/#35;/g, '#').replace(/#60;/g, '<');
+  s = s.replace(/&amp;/g, '&');
+  return s.trim();
+}
+
+function q(label) {
+  var s = String(label == null ? '' : label);
+  for (var i = 0; i < ENTITIES.length; i++) s = s.split(ENTITIES[i][0]).join(ENTITIES[i][1]);
+  s = s.replace(/\r?\n/g, '<br/>');
+  return '"' + s + '"';
+}
+
+/**
+ * 在双引号之外找 needle。
+ * 标签里可以出现 `]` `)` `|` 这些定界符（序列化时一律加引号），
+ * 直接 indexOf 会截在标签中间：节点或连线整行掉进 extras，而且是静默的。
+ */
+function indexOutsideQuotes(line, needle, from) {
+  var inQuote = false;
+  var last = line.length - needle.length;
+  for (var i = from; i <= last; i++) {
+    var ch = line.charAt(i);
+    if (ch === '"') { inQuote = !inQuote; continue }
+    if (!inQuote && line.slice(i, i + needle.length) === needle) return i;
+  }
+  return -1;
+}
+
+function scanNodeRef(line, start) {
+  var n = line.length;
+  var j = start;
+  while (j < n && ID_RE.test(line.charAt(j))) j++;
+  if (j === start) return null;
+  var id = line.slice(start, j);
+  var k = j;
+  while (k < n && /\s/.test(line.charAt(k))) k++;
+  for (var s = 0; s < SHAPE_OPENERS.length; s++) {
+    var open = SHAPE_OPENERS[s][0];
+    var close = SHAPE_OPENERS[s][1];
+    var shape = SHAPE_OPENERS[s][2];
+    if (line.slice(k, k + open.length) === open) {
+      var cl = indexOutsideQuotes(line, close, k + open.length);
+      if (cl !== -1) {
+        return { id: cleanId(id), label: unquote(line.slice(k + open.length, cl)), shape: shape, end: cl + close.length };
+      }
+    }
+  }
+  return { id: cleanId(id), label: null, shape: null, end: j };
+}
+
+function ensureNode(doc, byId, id, label, shape, group) {
+  var node = byId[id];
+  if (!node) {
+    node = { id: id, label: id, shape: 'rect', group: null, x: null, y: null, link: null };
+    byId[id] = node;
+    doc.nodes.push(node);
+  }
+  if (label !== null && label !== undefined && label !== '') node.label = label;
+  if (shape) node.shape = shape;
+  if (group && !node.group) node.group = group;
+  return node;
+}
+
+function addEdge(doc, from, to, arrow, label) {
+  var text = label || '';
+  var kind = arrow || '-->';
+  for (var i = 0; i < doc.edges.length; i++) {
+    var e = doc.edges[i];
+    if (e.from === from && e.to === to && e.label === text && e.arrow === kind) return e;
+  }
+  var edge = { id: 'e' + (doc.edges.length + 1), from: from, to: to, label: text, arrow: kind };
+  doc.edges.push(edge);
+  return edge;
+}
+
+function scanStatements(line, doc, byId, group, warn) {
+  // 这一行中途解析失败时，已经塞进 doc 的节点/边要回滚 ——
+  // 否则「原样保留到 extras」的那份文本会和半截模型同时存在，序列化出去就是重复内容。
+  var nodesBefore = doc.nodes.length;
+  var edgesBefore = doc.edges.length;
+
+  function fail() {
+    for (var k = doc.nodes.length - 1; k >= nodesBefore; k--) delete byId[doc.nodes[k].id];
+    doc.nodes.length = nodesBefore;
+    doc.edges.length = edgesBefore;
+    return false;
+  }
+
+  var i = 0;
+  var n = line.length;
+  var groupIds = [];   // 当前这一串并列节点（`A & B -->`），它们是一段连线的源
+  var pending = null;  // { froms, arrow, label }：箭头右边正在接的那一串
+  var joined = false;  // 刚见过 `&`：下一个节点属于同一串
+  while (i < n) {
+    while (i < n && /\s/.test(line.charAt(i))) i++;
+    if (i >= n) break;
+
+    // `;` 语句分隔符（在扫描器内处理，这样标签里的 `#quot;` 之类实体不会被误切）
+    if (line.charAt(i) === ';') { i++; groupIds = []; pending = null; joined = false; continue; }
+
+    // `-- 文本 -->` 形式
+    if (line.slice(i, i + 2) === '--' && line.slice(i, i + 3) !== '-->') {
+      var stop = indexOutsideQuotes(line, '-->', i + 2);
+      if (stop !== -1) {
+        if (groupIds.length === 0) return fail();
+        pending = { froms: groupIds.slice(), arrow: '-->', label: unquote(line.slice(i + 2, stop)) };
+        groupIds = [];
+        joined = false;
+        i = stop + 3;
+        continue;
+      }
+    }
+
+    // 连接符
+    var arrow = null;
+    for (var a = 0; a < ARROWS.length; a++) {
+      if (line.slice(i, i + ARROWS[a].length) === ARROWS[a]) { arrow = ARROWS[a]; break; }
+    }
+    if (arrow !== null) {
+      if (groupIds.length === 0) return fail();
+      i += arrow.length;
+      var label = '';
+      while (i < n && /\s/.test(line.charAt(i))) i++;
+      if (line.charAt(i) === '|') {
+        var bar = indexOutsideQuotes(line, '|', i + 1);
+        if (bar === -1) return fail();
+        label = unquote(line.slice(i + 1, bar));
+        i = bar + 1;
+      }
+      pending = { froms: groupIds.slice(), arrow: arrow, label: label };
+      groupIds = [];
+      joined = false;
+      continue;
+    }
+
+    // `&` 并列：左边（`A & B --> C`）和右边（`A --> B & C`）都靠它
+    if (line.charAt(i) === '&') { i++; joined = true; continue; }
+
+    var ref = scanNodeRef(line, i);
+    if (ref === null) return fail();
+    i = ref.end;
+    var node = ensureNode(doc, byId, ref.id, ref.label, ref.shape, group);
+    if (pending) {
+      if (groupIds.length > 0 && !joined) {
+        // `A --> B C` 这种写法 Mermaid 自己也不认：不凭空造一条 A --> C，
+        // 把 C 当成新一段的开头（节点照收），并记一笔让人能发现。
+        warn('这行里的 ' + node.id + ' 没有用 `&` 与前一个节点并列，已按新的一段处理：' + line);
+        pending = null;
+        groupIds = [node.id];
+        continue;
+      }
+      for (var f = 0; f < pending.froms.length; f++) {
+        addEdge(doc, pending.froms[f], node.id, pending.arrow, pending.label);
+      }
+      if (joined) groupIds.push(node.id); else groupIds = [node.id];
+      joined = false;
+      continue;  // pending 留着：`A --> B & C` 的 C 还要从同一批源连过来
+    }
+    if (joined) groupIds.push(node.id); else groupIds = [node.id];
+    joined = false;
+  }
+  return true;
+}
+
+function parseMermaid(text) {
+  var doc = { nodes: [], edges: [], groups: [], extras: [], direction: 'TD', warnings: [] };
+  var byId = {};
+  var stack = [];
+  // 坐标与下钻先存着，等图体读完再挂到真有的节点上。
+  // 读到注释就 ensureNode 的后果是：节点删了、注释忘了删，节点会凭注释复活写回图里。
+  var posMap = {};
+  var linkMap = {};
+  function warn(message) {
+    if (doc.warnings.length < 50) doc.warnings.push(message);
+  }
+  var raw = String(text == null ? '' : text).split(/\r?\n/);
+  for (var li = 0; li < raw.length; li++) {
+    var line = raw[li].trim();
+    if (line === '') continue;
+    if (line.slice(0, 3) === '%%{') continue;
+    if (line.slice(0, 2) === '%%') {
+      var pm = /^%%\s*@pos\s+(\S+)\s+(-?[0-9.]+)\s+(-?[0-9.]+)/.exec(line);
+      if (pm) {
+        posMap[cleanId(pm[1])] = { x: parseFloat(pm[2]), y: parseFloat(pm[3]) };
+        continue;
+      }
+      // %% @link <节点id> <另一张图的名字>：把这个节点下钻到那张图
+      var lm = /^%%\s*@link\s+(\S+)\s+(.+)$/.exec(line);
+      if (lm) {
+        linkMap[cleanId(lm[1])] = unquote(lm[2]);
+      }
+      continue;
+    }
+    if (/^(flowchart|graph)\b/.test(line)) {
+      var dm = /^(?:flowchart|graph)\s+(TB|TD|BT|RL|LR)\b/.exec(line);
+      if (dm) doc.direction = dm[1] === 'TB' ? 'TD' : dm[1];
+      continue;
+    }
+    if (/^subgraph\b/.test(line)) {
+      var rest = line.slice(8).trim();
+      var gref = scanNodeRef(rest, 0);
+      var gid;
+      var glabel;
+      if (gref && gref.label !== null) { gid = gref.id; glabel = gref.label; }
+      else if (gref) { gid = gref.id; glabel = rest; }
+      else { gid = 'g' + (doc.groups.length + 1); glabel = rest; }
+      doc.groups.push({ id: gid, label: glabel || gid });
+      stack.push(gid);
+      continue;
+    }
+    if (line === 'end') { stack.pop(); continue; }
+    if (/^(classDef|class|style|linkStyle|click|link)\b/.test(line)) { doc.extras.push(line); continue; }
+    if (/^direction\b/.test(line)) continue;
+    var group = stack.length > 0 ? stack[stack.length - 1] : null;
+    if (!scanStatements(line, doc, byId, group, warn)) {
+      doc.extras.push(line);
+      warn('这行没能解析成节点或连线，已按原文原样保留：' + line);
+    }
+  }
+  // 注释里的坐标/下钻只挂在图里真有的节点上；图里没有的注释（多半是删节点时忘了删）就此丢弃，
+  // 序列化时自然不再写出去 —— 这就是「幽灵节点」的出口。
+  for (var pi = 0; pi < doc.nodes.length; pi++) {
+    var pn = doc.nodes[pi];
+    if (posMap[pn.id]) { pn.x = posMap[pn.id].x; pn.y = posMap[pn.id].y }
+    if (linkMap[pn.id]) pn.link = linkMap[pn.id];
+  }
+  for (var pid in posMap) if (!byId[pid]) warn('坐标注释 @pos ' + pid + ' 指向图里不存在的节点，已丢弃');
+  for (var lid in linkMap) if (!byId[lid]) warn('下钻注释 @link ' + lid + ' 指向图里不存在的节点，已丢弃');
+  var cleanNodes = [];
+  for (var i = 0; i < doc.nodes.length; i++) {
+    var nd = doc.nodes[i];
+    cleanNodes.push({ id: nd.id, label: nd.label, shape: nd.shape, group: nd.group, x: nd.x, y: nd.y, link: nd.link || null });
+  }
+  doc.nodes = cleanNodes;
+  return doc;
+}
+
+function nodeText(node) {
+  var wrap = SHAPE_WRAP[node.shape] || SHAPE_WRAP.rect;
+  return node.id + wrap[0] + q(node.label) + wrap[1];
+}
+
+function serializeDoc(doc) {
+  var nodes = doc.nodes || [];
+  var groups = doc.groups || [];
+  var edges = doc.edges || [];
+
+  // 节点输出顺序：分组块优先、组内保持原序，剩下的按原序。
+  // @pos / @link 注释与图体共用这个顺序 —— 两处不一致的话，同一份文件每往返一次就重排一次。
+  var blocks = [];
+  var grouped = {};
+  for (var g = 0; g < groups.length; g++) {
+    var grp = groups[g];
+    var members = [];
+    for (var m = 0; m < nodes.length; m++) {
+      if (nodes[m].group === grp.id) { members.push(nodes[m]); grouped[nodes[m].id] = true; }
+    }
+    if (members.length > 0) blocks.push({ group: grp, members: members });
+  }
+  var loose = [];
+  for (var k = 0; k < nodes.length; k++) {
+    if (!grouped[nodes[k].id]) loose.push(nodes[k]);
+  }
+  var seq = [];
+  for (var b = 0; b < blocks.length; b++) {
+    for (var bi = 0; bi < blocks[b].members.length; bi++) seq.push(blocks[b].members[bi]);
+  }
+  for (var l = 0; l < loose.length; l++) seq.push(loose[l]);
+
+  var out = [];
+  out.push('%% arch-canvas —— 由「架构画布」面板与 AI 共同维护');
+  out.push('%% @pos <节点id> <x> <y> 是画布坐标注释，@link <节点id> <图名> 是下钻到另一张图；');
+  out.push('%% 两者对 Mermaid 渲染都无任何影响，可忽略或手改');
+  for (var i = 0; i < seq.length; i++) {
+    var n = seq[i];
+    if (typeof n.x === 'number' && typeof n.y === 'number' && isFinite(n.x) && isFinite(n.y)) {
+      out.push('%% @pos ' + n.id + ' ' + Math.round(n.x) + ' ' + Math.round(n.y));
+    }
+  }
+  // 下钻链接也走注释 —— 对 Mermaid 渲染同样零影响，文件仍是合法 Mermaid
+  for (var lk = 0; lk < seq.length; lk++) {
+    if (seq[lk].link) out.push('%% @link ' + seq[lk].id + ' ' + q(seq[lk].link));
+  }
+  out.push('flowchart ' + (doc.direction || 'TD'));
+  for (var bb = 0; bb < blocks.length; bb++) {
+    out.push('  subgraph ' + blocks[bb].group.id + '[' + q(blocks[bb].group.label) + ']');
+    for (var bm = 0; bm < blocks[bb].members.length; bm++) {
+      out.push('    ' + nodeText(blocks[bb].members[bm]));
+    }
+    out.push('  end');
+  }
+  for (var lo = 0; lo < loose.length; lo++) out.push('  ' + nodeText(loose[lo]));
+  for (var e = 0; e < edges.length; e++) {
+    var edge = edges[e];
+    var arrow = edge.arrow || '-->';
+    var tail = edge.label ? arrow + '|' + q(edge.label) + '|' : arrow;
+    out.push('  ' + edge.from + ' ' + tail + ' ' + edge.to);
+  }
+  var extras = doc.extras || [];
+  for (var x = 0; x < extras.length; x++) out.push('  ' + extras[x]);
+  return out.join('\n') + '\n';
+}
