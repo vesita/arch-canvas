@@ -49,18 +49,23 @@ function promptText() {
       : '- 图库跟着项目走：每个项目目录下有一个 .arch-canvas/，里面每张图一个 .mmd 文件。同一个图库可以有多张图。',
     '- 图引用一律用「相对项目根的 key」：`架构` 指根图库里的图，`支付/对账` 指子项目「支付」的图库里的图。`arch_switch` / `arch_read` / `set_link` 都用这个写法。',
     '- 用户的手动改动会立即反映到下一步的你。回答图相关内容时以下面这份为准，不要凭记忆。',
-    '- 改图优先用 `arch_edit` 做增量修改（add_node / add_edge / set_label / set_link / move_node / remove_node / add_group ...），这样用户已摆好的布局不会被清掉；只有整体重画时才用 `arch_write`。',
-    aiWriteEnabled
-      ? '- AI 改图开关：**已打开**（用户在画布面板顶栏打开的）—— `arch_write` / `arch_edit` 可用。'
-      : '- AI 改图开关：**关闭**（默认值）—— `arch_write` / `arch_edit` 会被硬拒绝。本次不要尝试改图：用 `arch_read` 读，把想改的内容写进回复请用户确认；用户想让你动手时，点面板顶栏的「AI 只读」开关（打开后显示「AI 可改图」）。',
-    '- `%%` 开头的行是元数据：`@pos` 是画布坐标，`@link` 是「这个节点下钻到另一张图」。请原样保留，也不要把它们当成图的内容来讨论。',
+    // 没有写图闸门了：安全性由**检查点**兜底，而不是靠拦人（见 history.ts）。
+    // 所以这里要写清「放手改」的边界 —— 改的是用户眼前的画布，别未经要求大改。
+    '这是一张**共享画布**：你改完用户立刻看见。放手用 `arch_edit` 做增量修改（add_node / add_edge / set_label / set_link / move_node / remove_node / add_group / set_files / set_summary ...），这样用户已摆好的布局不会被清掉；只有整体重画时才用 `arch_write`。',
+    '- 每次落盘都会留一份**检查点**（标明是 AI 改的还是用户改的），用户能在面板里一键退回 —— 不必因为「怕改坏」而不敢动手；但也别拿它当借口一次大改：改动越小，用户越容易看懂你做了什么。',
+    '- `%%` 开头的行是元数据：`@pos` 是画布坐标、`@link` 是下钻到另一张图、`@summary` 是这张图的一句话总结，原样保留、不要当成图的内容来讨论；`@note` / `@done` / `@file` 不一样 —— 那是**用户写在元素上的东西**（注释与代码锚点），见下面的清单。`%%!` 开头的只是给人看的格式说明（已从下面这份里滤掉，文件里还在）。',
     '- 你改动过的节点会在用户画布上短暂高亮 —— 用户能直接看到你动了哪里，所以说明里点名节点 id 会很有用。',
   ]
+  // 一句话总结（`%% @summary`）：这是「读这张图之前先知道它讲的是什么」的那一行，
+  // 作用与 skill 的描述行一样 —— 所以放在最上面，而且不截断（它本身有 500 字上限）。
+  if (doc.summary) head.push('**这张图讲的是**（文件里的 `%% @summary`）：' + doc.summary)
   var others = []
   for (var i = 0; i < libraryCache.length; i++) {
     var it = libraryCache[i]
     if (it.deleted || it.key === curKey) continue
-    others.push('「' + it.key + '」(' + it.nodes + ' 节点' + (it.links ? '、' + it.links + ' 处下钻' : '') + ')')
+    var itSum = typeof it.summary === 'string' && it.summary ? it.summary : ''
+    if (itSum.length > 60) itSum = itSum.slice(0, 60) + '…'
+    others.push('「' + it.key + '」' + (itSum ? '：' + itSum : '') + '(' + it.nodes + ' 节点' + (it.links ? '、' + it.links + ' 处下钻' : '') + ')')
   }
   if (others.length > 0) {
     head.push('- 同一图库里还有：' + others.join('、') + '。要一起看另一张就用 `arch_switch`（用户画布会跟着切），只读不改则用 `arch_read` 带 `diagram`。')
@@ -68,13 +73,66 @@ function promptText() {
     head.push('- 这个图库里目前只有这一张图。想另起一张（换个视角/换个层次）可以用 `arch_switch` 带 `create` 新建。')
   }
   head.push('- 只读当前图时用 `arch_read`。')
+  // 用户注释：只有**未解决**的那些进上下文。已解决的留在文件里可追溯，但不注入 ——
+  // 注释会单调累积，全都灌进来的话，AI 会开始重新讨论早就定下来的事（那是负的表达力）。
+  var openNotes = []
+  for (var ni = 0; ni < doc.nodes.length; ni++) {
+    var nn = doc.nodes[ni]
+    if (nn.note && !nn.noteDone) openNotes.push(nn)
+  }
+  var nc = noteCounts()
+  if (openNotes.length > 0) {
+    head.push('', '**用户在这些元素上留了注释**（文件里写作 `%% @note`）—— 它们是待处理的疑问或要求，' +
+      '逐条回应，点名节点 id；处理完提醒用户可以在检查器里标成「已解决」（标记后就不再出现在你的上下文里，但会留在文件里）。')
+    for (var on = 0; on < openNotes.length && on < 20; on++) {
+      var ot = String(openNotes[on].note)
+      if (ot.length > 400) ot = ot.slice(0, 400) + '…（已截断，完整内容见文件）'
+      head.push('- `' + openNotes[on].id + '`（' + String(openNotes[on].label || '') + '）：' + ot.replace(/\r?\n/g, ' / '))
+    }
+    if (openNotes.length > 20) head.push('- …还有 ' + (openNotes.length - 20) + ' 条未解决的注释，完整内容见文件。')
+  }
+  if (nc.done > 0) {
+    head.push('- 另有 ' + nc.done + ' 条注释已被标记为已解决（文件里写作 `%% @done`）：**没有列出来，也不要据此行动**；需要看全部用 `arch_read`。')
+  }
+  // 代码锚点：用户给节点标的源码文件。价值在于「中文标签 ↔ 英文路径」这个映射 grep 不出来，
+  // 所以能省掉一次定位；但它会腐烂 —— 失效的必须显式标出来，并且明说别照着用。
+  // 状态取 doc.fileStatus 这份缓存（加载/切库、doc:get、doc:set 之后会重算）。
+  var refLines = []
+  for (var ri = 0; ri < doc.nodes.length; ri++) {
+    var rn = doc.nodes[ri]
+    var rfs = rn.files || []
+    if (!rfs.length) continue
+    var rst = (doc.fileStatus && doc.fileStatus[rn.id]) || {}
+    var good = []
+    var bad = []
+    for (var rj = 0; rj < rfs.length; rj++) {
+      var rsc = rst[rfs[rj]]
+      if (rsc === 'ok') good.push('`' + rfs[rj] + '`')
+      else bad.push('`' + rfs[rj] + '`（' + (rsc === 'missing' ? '文件不在' : rsc === 'symbol-missing' ? '符号不在' : '未能校验') + '）')
+    }
+    refLines.push('- `' + rn.id + '`（' + String(rn.label || '') + '）：' + (good.length ? good.join('、') : '') +
+      (bad.length ? (good.length ? '；' : '') + '⚠ ' + bad.join('、') : ''))
+  }
+  if (refLines.length > 0) {
+    head.push('', '**图元素上标的代码锚点**（文件里写作 `%% @file`）：用户给的「这个节点对应哪些源码文件」，' +
+      '可以先按它去读，省掉一次 grep 定位。动手前先确认文件在；标了 ⚠ 的**已经失效，不要照着用** —— ' +
+      '重新定位后告诉用户锚点该改成什么。')
+    for (var rk2 = 0; rk2 < refLines.length && rk2 < 20; rk2++) head.push(refLines[rk2])
+    if (refLines.length > 20) head.push('- …还有 ' + (refLines.length - 20) + ' 个节点带锚点，完整内容见文件。')
+    head.push('- 锚点是**部分**节点的指路牌，不代表图与代码一致 —— 别据此认为图漏了或多了什么。')
+  }
   if (doc.nodes.length === 0) {
-    head.push('', aiWriteEnabled
-      ? '画布目前是空的。可以用 `arch_write` 画一版初稿，或用 `arch_edit` 逐块搭建。'
-      : '画布目前是空的。AI 改图开关关着，所以**不要**直接写：把建议的框架用文字（或一小段 mermaid）写在回复里，等用户打开开关或明确要你画。')
+    head.push('', '画布目前是空的。可以用 `arch_write` 画一版初稿，或用 `arch_edit` 逐块搭建。')
     return head.join('\n')
   }
   var src = serializeDoc(doc).replace(/\n+$/, '')
+  // 两处「注入用的视图」与文件不再逐字相同，都是为了别把噪音灌给 AI：
+  // 1. 已解决的注释（`%% @done`）—— 留在文件里可追溯，但全灌进去 AI 会重新讨论早就定下来的事；
+  // 2. 头部 `%%!` 格式说明 —— 每张图逐字相同，格式上面已经讲清了，而且里面有 `<节点id>` 这类模板。
+  // 所以上面明说了「另有 N 条已解决」「%%! 已滤掉」，要看原文用 arch_read。
+  src = src.split('\n').filter(function (l) {
+    return l.indexOf('%% @done ') !== 0 && l.slice(0, 3) !== '%%!'
+  }).join('\n')
   return head.concat(['', '```mermaid', src, '```']).join('\n')
 }
 
@@ -162,9 +220,18 @@ function summaryOf(): Record<string, any> {
     nodeCount: doc.nodes.length,
     edgeCount: doc.edges.length,
     groupCount: doc.groups.length,
+    // 整张图的一句话总结：界面拿它作图库清单的副标题，提示词拿它当「这张图讲的是什么」那一行。
+    summary: doc.summary,
     libraryRev: libraryRev,
     warnings: doc.warnings.slice(),
     notes: doc.notes.slice(),
+    noteCount: noteCounts().open,
+    resolvedNoteCount: noteCounts().done,
+    // 代码锚点的校验结果（派生数据，不落盘）：放在 summaryOf 里，所有 RPC 一起带上 ——
+    // 界面靠它标失效的引用，只有 fullOf 有的话 doc:get/doc:set 这两条主路径就收不到。
+    fileStatus: doc.fileStatus || {},
+    // 检查点条数：面板顶栏那个「历史 N」显示它（清单本身走 doc:history）
+    historyCount: historyOf(doc.file).length,
     lastChange: lastChange,
   }
 }
@@ -183,6 +250,7 @@ async function afterSwitch() {
   bump('switch')
   lastChange = { by: 'switch', rev: doc.revision, nodes: [] }
   await refreshLibrary()
+  await verifyFileRefs()
   logEvent('info', 'doc.switch', {
     diagram: doc.name, key: keyOf(doc.name), dir: lib.dir, scope: lib.scope,
     nodes: doc.nodes.length, edges: doc.edges.length,
@@ -192,7 +260,8 @@ async function afterSwitch() {
 
 ctx.effect(function () {
   return onRpc('doc:get', async function (args) {
-    await ensureLoaded(args && args.where)
+    await ensureLoaded(args && args.where, args && args.session)
+    await verifyFileRefs()
     var out = summaryOf()
     out.model = modelOf()
     out.mermaid = serializeDoc(doc)
@@ -202,9 +271,10 @@ ctx.effect(function () {
 })
 
 ctx.effect(function () {
-  return onRpc('doc:rev', async function () {
+  return onRpc('doc:rev', async function (args) {
     // 顺手按 TTL 重扫一次图库（只走目录 + 比指纹，很便宜）：别人新加的图要能自己冒出来。
     // 界面轮询这个 RPC，所以「自动扫描」在面板开着时就有人驱动；面板关着时由定时器兜住。
+    await ensureLoaded(args && args.where, args && args.session)
     await refreshLibrary()
     return {
       revision: doc.revision, updatedBy: doc.updatedBy, diagram: doc.name, dir: lib.dir,
@@ -215,7 +285,7 @@ ctx.effect(function () {
 
 ctx.effect(function () {
   return onRpc('doc:set', async function (args) {
-    await ensureLoaded(args && args.where)
+    await ensureLoaded(args && args.where, args && args.session)
     var model = args && args.model
     if (!model || typeof model !== 'object') return { ok: false, error: '需要 model' }
     var saved = snapshotModel()
@@ -223,7 +293,9 @@ ctx.effect(function () {
     if (args && typeof args.note === 'string' && args.note) doc.notes = [args.note]
     bump('user')
     noteUserChange()
-    var saveError = await persistOrRollback(saved, 'doc:set')
+    var policy = policyOfSessionId(args && args.session)
+    var saveError = await persistOrRollback(saved, 'doc:set', policy)
+    await verifyFileRefs()
     var out = summaryOf()
     out.mermaid = serializeDoc(doc)
     out.model = modelOf()
@@ -234,7 +306,7 @@ ctx.effect(function () {
 
 ctx.effect(function () {
   return onRpc('doc:applyText', async function (args) {
-    await ensureLoaded(args && args.where)
+    await ensureLoaded(args && args.where, args && args.session)
     var text = args && typeof args.text === 'string' ? args.text : ''
     var parsed = inheritPositions(parseMermaid(text))
     if (parsed.nodes.length === 0 && text.trim() !== '') {
@@ -245,7 +317,9 @@ ctx.effect(function () {
     adoptModel(modelOf())
     bump('user')
     noteUserChange()
-    var saveError = await persistOrRollback(saved, 'doc:applyText')
+    var policy = policyOfSessionId(args && args.session)
+    var saveError = await persistOrRollback(saved, 'doc:applyText', policy)
+    await verifyFileRefs()
     var out = summaryOf()
     out.mermaid = serializeDoc(doc)
     out.model = modelOf()
@@ -268,9 +342,9 @@ ctx.effect(function () {
 
 ctx.effect(function () {
   return onRpc('doc:file', async function (args) {
-    await ensureLoaded(args && args.where)
+    await ensureLoaded(args && args.where, args && args.session)
     if (args && args.save) {
-      var err = await persist()
+      var err = await persist(policyOfSessionId(args && args.session))
       var out = summaryOf()
       out.saved = !err
       if (err) out.error = err
@@ -283,7 +357,7 @@ ctx.effect(function () {
 // ---- 图库管理：清单 / 打开 / 新建 / 改名 / 软删除 / 恢复 / 按路径打开外部文件 ----
 ctx.effect(function () {
   return onRpc('doc:list', async function (args) {
-    await ensureLoaded(args && args.where)
+    await ensureLoaded(args && args.where, args && args.session)
     // rescan 为真时忽略 TTL 立刻重扫（选择器上的「重新扫描」按钮走这条路）
     var items = await refreshLibrary(!!(args && args.rescan))
     return {
@@ -299,16 +373,16 @@ ctx.effect(function () {
 
 ctx.effect(function () {
   return onRpc('doc:openPath', async function (args) {
-    await ensureLoaded(args && args.where)
+    await ensureLoaded(args && args.where, args && args.session)
     var path = resolveDiagramPath(args && args.path)
     if (!path) return { ok: false, error: '需要一个文件路径：绝对路径，或相对项目根的路径' }
-    return openExternal(path, !!(args && args.create))
+    return openExternal(path, !!(args && args.create), policyOfSessionId(args && args.session))
   })
 })
 
 ctx.effect(function () {
   return onRpc('doc:open', async function (args) {
-    await ensureLoaded(args && args.where)
+    await ensureLoaded(args && args.where, args && args.session)
     var raw = args && typeof args.key === 'string' ? args.key
       : (args && typeof args.name === 'string' ? args.name : '')
     if (!raw.trim()) return { ok: false, error: '需要 key（图名，或 `子项目/图名`）' }
@@ -319,7 +393,7 @@ ctx.effect(function () {
       lib = { dir: k.dir, scope: k.scope, workspace: k.workspace }
       loadedFor = null
     }
-    var r = await loadDiagramAt(k, k.name, !!(args && args.create))
+    var r = await loadDiagramAt(k, k.name, !!(args && args.create), policyOfSessionId(args && args.session))
     if (!r.ok) {
       await refreshLibrary()
       return { ok: false, error: r.error, items: libraryCache, dir: lib.dir }
@@ -330,7 +404,7 @@ ctx.effect(function () {
 
 ctx.effect(function () {
   return onRpc('doc:rename', async function (args) {
-    await ensureLoaded(args && args.where)
+    await ensureLoaded(args && args.where, args && args.session)
     if (!fs) return { ok: false, error: 'fs 服务不可用' }
     var a = resolveKey(args && args.from)
     var b = resolveKey(args && args.to)
@@ -351,9 +425,10 @@ ctx.effect(function () {
       return { ok: false, error: '读不到「' + args.from + '」：' + msgOf(e) }
     }
     try {
-      await fs.writeText(await fs.resolve(fileAt(b.dir, b.name)), text)
+      var renamePolicy = policyOfSessionId(args && args.session)
+      await fs.writeText(await fs.resolve(fileAt(b.dir, b.name)), text, undefined, undefined, renamePolicy)
       // 旧文件只能软删（fs 没有 unlink），于是「改名」= 新建 + 把旧的标成已删除
-      await fs.writeText(await fs.resolve(fileAt(a.dir, a.name)), TOMBSTONE + '\n' + text)
+      await fs.writeText(await fs.resolve(fileAt(a.dir, a.name)), TOMBSTONE + '\n' + text, undefined, undefined, renamePolicy)
     } catch (e) {
       return { ok: false, error: '改名失败：' + msgOf(e) }
     }
@@ -369,7 +444,7 @@ ctx.effect(function () {
 
 ctx.effect(function () {
   return onRpc('doc:delete', async function (args) {
-    await ensureLoaded(args && args.where)
+    await ensureLoaded(args && args.where, args && args.session)
     if (!fs) return { ok: false, error: 'fs 服务不可用' }
     var dk = resolveKey(args && (args.key || args.name))
     if (!dk) return { ok: false, error: '需要 key（图名，或 `子项目/图名`）' }
@@ -382,7 +457,7 @@ ctx.effect(function () {
     }
     if (!hasTombstone(text)) {
       try {
-        await fs.writeText(await fs.resolve(fileAt(dk.dir, dk.name)), TOMBSTONE + '\n' + text)
+        await fs.writeText(await fs.resolve(fileAt(dk.dir, dk.name)), TOMBSTONE + '\n' + text, undefined, undefined, policyOfSessionId(args && args.session))
       } catch (e) {
         return { ok: false, error: '删除失败：' + msgOf(e) }
       }
@@ -391,7 +466,7 @@ ctx.effect(function () {
     if (doc.name === name && lib.dir === dk.dir) {
       doc.name = DEFAULT_DIAGRAM
       loadedFor = null
-      await ensureLoaded()
+      await ensureLoaded(undefined, args && args.session)
       return fullOf()
     }
     await refreshLibrary()
@@ -401,7 +476,7 @@ ctx.effect(function () {
 
 ctx.effect(function () {
   return onRpc('doc:restore', async function (args) {
-    await ensureLoaded(args && args.where)
+    await ensureLoaded(args && args.where, args && args.session)
     if (!fs) return { ok: false, error: 'fs 服务不可用' }
     var rk = resolveKey(args && (args.key || args.name))
     if (!rk) return { ok: false, error: '需要 key（图名，或 `子项目/图名`）' }
@@ -413,7 +488,7 @@ ctx.effect(function () {
     }
     if (hasTombstone(text)) {
       try {
-        await fs.writeText(await fs.resolve(fileAt(rk.dir, rk.name)), text.replace(/^\s*%%\s*@deleted[^\n]*\n?/, ''))
+        await fs.writeText(await fs.resolve(fileAt(rk.dir, rk.name)), text.replace(/^\s*%%\s*@deleted[^\n]*\n?/, ''), undefined, undefined, policyOfSessionId(args && args.session))
       } catch (e) {
         return { ok: false, error: '恢复失败：' + msgOf(e) }
       }
@@ -423,24 +498,33 @@ ctx.effect(function () {
   })
 })
 
+// ==================== 检查点（快照）的 RPC ====================
+// 这是取代「AI 写图开关」的那条安全路径：不拦 AI，但每一步都能退回去。
+// 历史**只在内存里**，键是当前文件的路径 —— 所以这两条都先 ensureLoaded，拿到的是「用户正看着的这张」。
+ctx.effect(function () {
+  return onRpc('doc:history', async function (args) {
+    await ensureLoaded(args && args.where, args && args.session)
+    return { ok: true, file: doc.file, diagram: doc.name, limit: HISTORY_LIMIT, entries: historyList() }
+  })
+})
+
+ctx.effect(function () {
+  return onRpc('doc:rollback', async function (args) {
+    await ensureLoaded(args && args.where, args && args.session)
+    var seq = Number(args && args.seq)
+    if (!isFinite(seq) || seq <= 0) return { ok: false, error: '需要 seq（检查点编号，见 doc:history）' }
+    var r = await applyRollback(seq, policyOfSessionId(args && args.session))
+    if (!r.ok) return r
+    await verifyFileRefs()
+    await refreshLibrary()
+    var out = fullOf()
+    out.rolledBackTo = seq
+    return out
+  })
+})
+
 // ==================== 给 AI 的动态工具 ====================
 var OUT_SCHEMA = { type: 'object', additionalProperties: true }
-
-// ==================== AI 写图开关的 RPC ====================
-// 面板顶栏那个开关经这两条读写它。**没有 RPC 就没有开关**：客户端不 inject 设置服务
-// （真插件形态的客户端只 inject slots / sidebarRightTabs / layout），所以状态由宿主这边管。
-onRpc('setting:get', async function () {
-  // **每次现读磁盘**，不吃 ensureAiWriteLoaded 的缓存：这条 RPC 是给界面/排障用的，
-  // 用户手改过 settings.json、或文件被写坏，都要在这里如实反映（写坏 ⇒ 退回"关"）。
-  await readAiWriteSetting().catch(function () { aiWriteEnabled = false })
-  return { ok: true, aiWrite: aiWriteEnabled, file: aiWriteSettingPath() }
-})
-
-onRpc('setting:set', async function (args) {
-  var on = !!(args && args.aiWrite === true)
-  await setAiWriteEnabled(on)
-  return { ok: true, aiWrite: aiWriteEnabled }
-})
 
 var readTool = harness.defineTool({
   name: 'arch_read',
@@ -464,7 +548,7 @@ var readTool = harness.defineTool({
     },
   },
   execute: async function (args, exec) {
-    await ensureLoaded(whereOfExec(exec))
+    await ensureLoaded(whereOfExec(exec), sessionIdOfExec(exec))
     var want = args && typeof args.diagram === 'string' ? args.diagram.trim() : ''
     var wantParts = want ? splitKey(want) : null
     var wantKey = wantParts ? keyOf(wantParts.name, wantParts.project) : ''
@@ -486,6 +570,7 @@ var readTool = harness.defineTool({
         mermaid: serializeDoc(parsed),
       }
     }
+    await verifyFileRefs()
     var out = summaryOf()
     out.mermaid = serializeDoc(doc)
     return out
@@ -517,7 +602,7 @@ var switchTool = harness.defineTool({
     },
   },
   execute: async function (args, exec) {
-    await ensureLoaded(whereOfExec(exec))
+    await ensureLoaded(whereOfExec(exec), sessionIdOfExec(exec))
     var raw = args && typeof args.key === 'string' ? args.key
       : (args && typeof args.name === 'string' ? args.name : '')
     if (!raw.trim()) return { ok: false, error: '需要 key' }
@@ -527,7 +612,7 @@ var switchTool = harness.defineTool({
       lib = { dir: k.dir, scope: k.scope, workspace: k.workspace }
       loadedFor = null
     }
-    var r = await loadDiagramAt(k, k.name, !!(args && args.create))
+    var r = await loadDiagramAt(k, k.name, !!(args && args.create), policyOfAgent(exec && exec.agent))
     if (!r.ok) {
       var items = await refreshLibrary()
       var names = items.filter(function (x) { return !x.deleted }).map(function (x) { return x.key })
@@ -547,7 +632,7 @@ var writeTool = harness.defineTool({
   parameters: {
     type: 'object',
     properties: {
-      mermaid: { type: 'string', description: '完整的 Mermaid flowchart 源码。用 flowchart TD 或 flowchart LR 开头，例如：flowchart TD\\n  a["入口"] --> b["核心"]' },
+      mermaid: { type: 'string', description: '完整的 Mermaid flowchart 源码。用 flowchart TD 或 flowchart LR 开头，例如：flowchart TD\\n  a["入口"] --> b["核心"]。可以在头部写一行 `%% @summary <一句话>` 说明这张图讲的是什么；不写就沿用原来那句。' },
       note: { type: 'string', description: '给用户看的一句话说明，会显示在画布状态栏' },
     },
     required: ['mermaid'],
@@ -558,7 +643,8 @@ var writeTool = harness.defineTool({
       try {
         var v = value || {}
         if (!v.ok) return [{ type: 'text', text: 'arch_write 未生效: ' + String(v.error || v.problems || '') }]
-        return [{ type: 'text', text: '已更新「' + String(v.diagram || '') + '」（修订 ' + v.revision + '）：' + v.nodeCount + ' 个节点、' + v.edgeCount + ' 条连线。用户现在看到的图形已同步。' }]
+        var kept = v.keptNotes ? '（保留了用户在该图元素上的 ' + v.keptNotes + ' 条注释）' : ''
+        return [{ type: 'text', text: '已更新「' + String(v.diagram || '') + '」（修订 ' + v.revision + '）：' + v.nodeCount + ' 个节点、' + v.edgeCount + ' 条连线。用户现在看到的图形已同步。' + kept }]
       } catch (e) {
         return [{ type: 'text', text: 'arch_write 已完成' }]
       }
@@ -566,16 +652,17 @@ var writeTool = harness.defineTool({
   },
   execute: async function (args, exec) {
     var t0 = Date.now()
-    await ensureLoaded(whereOfExec(exec))
-    // AI 写图闸门：默认关（见 settings.ts）。放在解析之后、动手之前 —— 拒绝时一个字节都不改。
-    await ensureAiWriteLoaded()
-    if (!aiWriteEnabled) {
-      logEvent('warn', 'aiwrite.blocked', { tool: 'arch_write' })
-      return { ok: false, error: aiWriteOffMessage('arch_write') }
+    await ensureLoaded(whereOfExec(exec), sessionIdOfExec(exec))
+    if (doc.absent && !doc.external) {
+      logEvent('warn', 'doc.absent', { tool: 'arch_write', dir: lib.dir })
+      return { ok: false, error: '这个项目还没有图库（' + lib.dir + ' 还不存在）。图库不会自动创建——要建先征得用户同意，再用 arch_switch { create: true } 建一张。' }
     }
     var text = args && typeof args.mermaid === 'string' ? args.mermaid : ''
     if (!text.trim()) return toolReject('arch_write', 'mermaid 不能为空', t0)
     var parsed = inheritPositions(parseMermaid(text))
+    // 用户留的东西（注释 + 代码锚点）是**用户**的：AI 整体重画时继承下来，别让它悄悄抹掉。
+    // doc:applyText（用户自己改源码）刻意不走这条 —— 那边删掉一行就是真的要删（见 inheritUserMarks）。
+    var keptNotes = inheritUserMarks(parsed)
     if (parsed.nodes.length === 0) {
       return toolReject('arch_write', '解析不出任何节点（首行应是 flowchart TD 或 graph LR）', t0)
     }
@@ -586,12 +673,19 @@ var writeTool = harness.defineTool({
     bump('ai')
     noteAiChange(before)
     if (args && typeof args.note === 'string' && args.note) doc.notes = [args.note]
-    var saveError = await persistOrRollback(saved, 'arch_write')
+    var policy = policyOfAgent(exec && exec.agent)
+    var saveError = await persistOrRollback(saved, 'arch_write', policy)
     var out = summaryOf()
     out.mermaid = serializeDoc(doc)
+    out.keptNotes = keptNotes
+    // 写盘失败时内存已经回滚了 —— 那就**不能说「已更新」**：回执必须让 AI 知道自己白改了。
+    // （历史里也不会多一份检查点：那一版从来没落到盘上，见 history.ts。）
+    out.saved = !saveError
+    if (saveError) { out.ok = false; out.error = '保存失败，本次改动已回滚：' + saveError }
     logEvent(saveError ? 'error' : 'info', 'tool.arch_write', {
       diagram: doc.name, key: keyOf(doc.name), file: doc.file,
       nodes: doc.nodes.length, edges: doc.edges.length, revision: doc.revision,
+      keptNotes: keptNotes,
       saved: !saveError, rollback: !!saveError, warnings: (parsed.warnings || []).slice(0, 5), ms: Date.now() - t0,
     })
     return out
@@ -614,11 +708,11 @@ var editTool = harness.defineTool({
           properties: {
             op: {
               type: 'string',
-              enum: ['add_node', 'set_label', 'set_shape', 'set_link', 'move_node', 'remove_node', 'add_edge', 'remove_edge', 'set_edge_label', 'add_group', 'set_group', 'remove_group', 'set_direction'],
+              enum: ['add_node', 'set_label', 'set_shape', 'set_link', 'move_node', 'remove_node', 'add_edge', 'remove_edge', 'set_edge_label', 'add_group', 'set_group', 'remove_group', 'set_direction', 'set_files', 'set_summary'],
               description: '操作类型',
             },
             id: { type: 'string', description: '节点 id（add_node/set_label/set_shape/set_link/move_node/remove_node/set_group 用）' },
-            label: { type: 'string', description: '节点或连线的显示文本；add_group 时作为分组标题' },
+            label: { type: 'string', description: '节点或连线的显示文本；add_group 时作为分组标题；set_summary 时是这张图的一句话总结（传空串清掉）' },
             shape: { type: 'string', description: '节点形状：rect 矩形 / round 圆角 / stadium 胶囊 / circle 圆 / diamond 判定 / cyl 数据库 / hex 六边形 / sub 子流程 / asym 旗形' },
             link: { type: 'string', description: 'set_link / add_node 用：把这个节点下钻到另一张图（图名，不含 .mmd）；传空串取消' },
             from: { type: 'string', description: '连线的起点节点 id' },
@@ -628,6 +722,11 @@ var editTool = harness.defineTool({
             x: { type: 'number', description: '画布横坐标（move_node / add_node 用）' },
             y: { type: 'number', description: '画布纵坐标（move_node / add_node 用）' },
             value: { type: 'string', description: 'set_direction 时用：TD / BT / LR / RL' },
+            files: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'set_files 用：这个节点对应的源码文件（项目相对路径，可带 `#符号` 指到具体函数/类）。整组替换；传空数组表示清掉',
+            },
           },
           required: ['op'],
         },
@@ -653,12 +752,10 @@ var editTool = harness.defineTool({
   },
   execute: async function (args, exec) {
     var t0 = Date.now()
-    await ensureLoaded(whereOfExec(exec))
-    // AI 写图闸门：默认关（见 settings.ts）—— 关着时一个 op 都不应用。
-    await ensureAiWriteLoaded()
-    if (!aiWriteEnabled) {
-      logEvent('warn', 'aiwrite.blocked', { tool: 'arch_edit', ops: (args && Array.isArray(args.ops) ? args.ops.length : 0) })
-      return { ok: false, error: aiWriteOffMessage('arch_edit') }
+    await ensureLoaded(whereOfExec(exec), sessionIdOfExec(exec))
+    if (doc.absent && !doc.external) {
+      logEvent('warn', 'doc.absent', { tool: 'arch_edit', dir: lib.dir })
+      return { ok: false, error: '这个项目还没有图库（' + lib.dir + ' 还不存在）。图库不会自动创建——要建先征得用户同意，再用 arch_switch { create: true } 建一张。' }
     }
     var ops = args && Array.isArray(args.ops) ? args.ops : []
     if (ops.length === 0) return toolReject('arch_edit', 'ops 不能为空', t0)
@@ -668,12 +765,20 @@ var editTool = harness.defineTool({
     if (args && typeof args.note === 'string' && args.note) doc.notes = [args.note]
     bump('ai')
     noteAiChange(before)
-    var saveError = await persistOrRollback(saved, 'arch_edit')
+    var policy = policyOfAgent(exec && exec.agent)
+    var saveError = await persistOrRollback(saved, 'arch_edit', policy)
     var out = summaryOf()
     out.mermaid = serializeDoc(doc)
     out.appliedCount = result.done.length
     out.done = result.done
     out.problems = result.problems
+    // 同上：落盘失败 ⇒ ok:false，并把原因塞进 problems（AI 先看 problems 再汇报）。
+    out.saved = !saveError
+    if (saveError) {
+      out.ok = false
+      out.error = '保存失败，本次改动已回滚：' + saveError
+      out.problems = result.problems.concat(['保存失败，本次改动已回滚：' + saveError])
+    }
     // AI 每次改图留一行：改的是哪张图、几个 op 没生效、有没有回滚 —— 图不对时先看这里。
     logEvent(saveError || result.problems.length ? 'warn' : 'info', 'tool.arch_edit', {
       diagram: doc.name, key: keyOf(doc.name), file: doc.file,
@@ -720,10 +825,6 @@ if (!mountMark || mountMark.shape !== mountShape) {
 } else {
   mountMark.n = (mountMark.n || 1) + 1
 }
-
-// 开关状态尽早读一次：promptText 与两个写工具的闸门都读它，别等第一次工具调用才发现文件在哪。
-// 读不到就是「关」（fail-closed，见 settings.ts）。
-ensureAiWriteLoaded().catch(function () {})
 
 // ==================== 自动扫描：周期重扫图库 ====================
 // 面板开着时是 doc:rev 的轮询在驱动重扫；面板关掉后没人驱动了，所以再挂一个慢速定时器 ——

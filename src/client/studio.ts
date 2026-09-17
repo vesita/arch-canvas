@@ -10,6 +10,10 @@ function ArchStudio(props) {
   var cwdRef = React.useRef(cwd)
   cwdRef.current = cwd
 
+  var sessionId = props && props.sessionId
+  var sidRef = React.useRef(sessionId)
+  sidRef.current = sessionId
+
   var modelState = React.useState(null)
   var model = modelState[0]
   var setModel = modelState[1]
@@ -83,12 +87,16 @@ function ArchStudio(props) {
   var svg = svgState[0]
   var setSvg = svgState[1]
 
-  // AI 写图开关（宿主侧的状态，见 src/host/settings.ts）：**默认关**。
-  // 界面只镜像它：真正的闸门在工具执行处，所以这里显示错了也不会让 AI 偷偷改图 ——
-  // 但反过来，用户点了开关必须看到真实结果，因此 set 之后用返回值回写，不看本地猜测。
-  var aiWriteState = React.useState(false)
-  var aiWrite = aiWriteState[0]
-  var setAiWrite = aiWriteState[1]
+  // 检查点面板（宿主侧的历史在内存里，见 src/host/history.ts）。
+  // 这里只放「打开没打开 / 清单 / 正在退回哪一条」——清单每次打开都重新拉，不吃缓存：
+  // AI 可能刚好在你打开面板的这一刻改了一次图。
+  var histState = React.useState({ open: false, entries: [], busy: false, confirmSeq: 0 })
+  var hist = histState[0]
+  var setHist = histState[1]
+  function patchHist(p) { setHist(function (h) { return Object.assign({}, h, p) }) }
+  var historyCountState = React.useState(0)
+  var historyCount = historyCountState[0]
+  var setHistoryCount = historyCountState[1]
 
   var errState = React.useState('')
   var renderError = errState[0]
@@ -105,6 +113,27 @@ function ArchStudio(props) {
   var elabState = React.useState('')
   var edgeDraft = elabState[0]
   var setEdgeDraft = elabState[1]
+
+  // 元素注释：草稿与「已解决」标记分开存。注释不走拖拽路径，不需要 committedRef 那一套。
+  var noteState = React.useState('')
+  var noteDraft = noteState[0]
+  var setNoteDraft = noteState[1]
+  var noteDoneState = React.useState(false)
+  var noteDoneDraft = noteDoneState[0]
+  var setNoteDoneDraft = noteDoneState[1]
+  var notesOpenState = React.useState(false)
+  var notesOpen = notesOpenState[0]
+  var setNotesOpen = notesOpenState[1]
+
+  // 代码锚点草稿（textarea 绑定的文本，每行一个文件引用）
+  var filesState = React.useState('')
+  var filesDraft = filesState[0]
+  var setFilesDraft = filesState[1]
+
+  // 服务端返回的代码锚点校验状态映射：{ [nodeId]: { [ref]: 'ok' | 'missing' | 'symbol-missing' | 'unknown' } }
+  var fileStatusRef = React.useRef({})
+  var fileStatusTickState = React.useState(0)
+  var setFileStatusTick = fileStatusTickState[1]
 
   var linkPtState = React.useState(null)
   var linkPt = linkPtState[0]
@@ -192,13 +221,17 @@ function ArchStudio(props) {
   function sendModel(next, note) {
     setLocal(next)
     committedRef.current = cloneModel(next)
-    rpc('doc:set', { model: next, note: note || '', where: cwdRef.current }).then(function (r) {
+    rpc('doc:set', { model: next, note: note || '', where: cwdRef.current, session: sidRef.current }).then(function (r) {
       if (r && r.ok) {
         revRef.current = r.revision
         setRevision(r.revision)
         setUpdatedBy('user')
         setMermaidText(r.mermaid)
         setDraft(r.mermaid)
+        if (r.fileStatus) {
+          fileStatusRef.current = r.fileStatus || {}
+          setFileStatusTick(function (n) { return n + 1 })
+        }
         setStatus(r.saved === false ? '已改图，但写盘失败' : '已同步给 AI')
       } else {
         setStatus('同步被拒绝：' + String(r && r.error))
@@ -280,6 +313,10 @@ function ArchStudio(props) {
     setLibKey(r.key || r.diagram || '')
     setLibDir(r.dir || '')
     setExternal(r.external || null)
+    fileStatusRef.current = r.fileStatus || {}
+    setFileStatusTick(function (n) { return n + 1 })
+    // 检查点条数：顶栏「历史 N」显示它。清单本身打开面板时才拉（可能刚好有新的一次 AI 改动）。
+    if (typeof r.historyCount === 'number') setHistoryCount(r.historyCount)
     if (typeof r.libraryRev === 'number') libRevRef.current = r.libraryRev
     setMermaidText(r.mermaid)
     setDraft(r.mermaid)
@@ -300,25 +337,27 @@ function ArchStudio(props) {
     }
   }, [])
 
-  // AI 写图开关：进面板时读一次宿主的真实状态（默认关），点一下写回宿主。
-  React.useEffect(function () {
-    var alive = true
-    rpc('setting:get', {}).then(function (r) {
-      if (alive && r && r.ok) setAiWrite(!!r.aiWrite)
-    }).catch(function () { /* 读不到就是"关"：界面上显示只读，与宿主闸门一致 */ })
-    return function () { alive = false }
-  }, [])
+  /** 拉检查点清单。cwd 是必须的：历史按文件存，宿主得先落到同一个图库上。 */
+  function loadHistory() {
+    patchHist({ busy: true })
+    rpc('doc:history', { where: cwd, session: sessionId }).then(function (r) {
+      if (r && r.ok) patchHist({ busy: false, entries: r.entries || [], confirmSeq: 0 })
+      else patchHist({ busy: false, entries: [] })
+    }).catch(function () { patchHist({ busy: false, entries: [] }) })
+  }
 
   /**
-   * 切换 AI 写图开关。**以宿主的返回值为准回写界面**（本地不抢先宣布成功）：
-   * 写盘失败时宿主抛错，这里要把它如实显示出来 —— 否则界面显示"已打开"、闸门其实还关着。
+   * 退回某个检查点。**以宿主的返回值为准**：成功后整份文档都以回执为准重画
+   * （与 doc:get 走同一条 applyServer），失败就原样显示错误 —— 不本地假装成功。
    */
-  function toggleAiWrite(next) {
-    setAiWrite(!!next)
-    rpc('setting:set', { aiWrite: !!next }).then(function (r) {
-      if (r && r.ok) setAiWrite(!!r.aiWrite)
-      else { setAiWrite(!next); setStatus('切换 AI 改图开关失败：' + String((r && r.error) || '未知原因')) }
-    }).catch(function (e) { setAiWrite(!next); setStatus('切换 AI 改图开关失败：' + msgOf(e)) })
+  function rollbackTo(seq) {
+    setStatus('正在退回检查点…')
+    rpc('doc:rollback', { seq: seq, where: cwd, session: sessionId }).then(function (r) {
+      if (!r || r.ok === false) { setStatus('退回失败：' + String((r && r.error) || '未知原因')); loadHistory(); return }
+      applyServer(r, 'rollback')
+      setStatus('已退回到检查点 #' + seq + '（这一步本身也记了一次检查点，可以再往前走）')
+      loadHistory()
+    }).catch(function (e) { setStatus('退回失败：' + msgOf(e)); loadHistory() })
   }
 
   // 拉取与切换图：cwd 变化（从不就绪变就绪、或切会话）时重新拉取并重置视图
@@ -326,7 +365,7 @@ function ArchStudio(props) {
     var alive = true
     setStatus('正在加载…')
     fittedRef.current = false
-    rpc('doc:get', { where: cwd }).then(function (r) {
+    rpc('doc:get', { where: cwd, session: sessionId }).then(function (r) {
       if (!alive || !r || !r.ok) { if (alive) setStatus('加载失败'); return }
       applyServer(r, 'init')
       setStatus(needsLayout(r.model) ? '已按依赖关系自动布局' : '已就绪')
@@ -334,7 +373,7 @@ function ArchStudio(props) {
       if (alive) refreshLibraryItems(false, true)
     }).catch(function (e) { if (alive) setStatus('加载失败：' + msgOf(e)) })
     return function () { alive = false }
-  }, [cwd, applyServer])
+  }, [cwd, sessionId, applyServer])
 
   // AI 改了图就拉回来（只在修订号变化时才真正取数据）；
   // 顺带盯图库清单修订号 —— 宿主在自动扫描里发现新图/新文件时，选择器开着就自己刷新。
@@ -342,7 +381,7 @@ function ArchStudio(props) {
     var alive = true
     var stopInterval = ctxInterval(function () {
       if (!alive) return
-      rpc('doc:rev', { where: cwdRef.current }).then(function (r) {
+      rpc('doc:rev', { where: cwdRef.current, session: sidRef.current }).then(function (r) {
         if (!alive || !r) return null
         if (typeof r.libraryRev === 'number' && r.libraryRev !== libRevRef.current) {
           libRevRef.current = r.libraryRev
@@ -351,7 +390,7 @@ function ArchStudio(props) {
           else refreshLibraryItems(false, true)
         }
         if (r.revision === revRef.current) return null
-        return rpc('doc:get', { where: cwdRef.current }).then(function (full) {
+        return rpc('doc:get', { where: cwdRef.current, session: sidRef.current }).then(function (full) {
           if (!alive || !full || !full.ok) return
           applyServer(full, full.updatedBy === 'ai' ? 'ai' : 'sync')
           setStatus(full.updatedBy === 'ai' ? 'AI 刚更新了这张图' : '已从画布同步')
@@ -489,6 +528,9 @@ function ArchStudio(props) {
     setSel({ kind: 'node', id: node.id })
     setLabelDraft(node.label == null ? '' : node.label)
     setGroupDraft(node.group || '')
+    setNoteDraft(node.note || '')
+    setNoteDoneDraft(node.noteDone === true)
+    setFilesDraft((node.files || []).join('\n'))
     capture(e)
     var pt = toModelPt(e)
     var g = geomRef.current[node.id]
@@ -637,6 +679,9 @@ function ArchStudio(props) {
     setSel({ kind: 'node', id: id })
     setLabelDraft('新节点')
     setGroupDraft('')
+    setNoteDraft('')
+    setNoteDoneDraft(false)
+    setFilesDraft('')
     setStatus('已新增节点，可在下方改名字')
   }
 
@@ -686,6 +731,103 @@ function ArchStudio(props) {
     }
     push(next, '用户改了分组')
     setStatus('已更新分组')
+  }
+
+  /**
+   * 提交元素注释。空文本 = 删除注释（文件里那一行也不再写出）。
+   * 注释只存在节点上、经 `doc:set` 整份回传落盘，所以不需要新的 RPC。
+   */
+  function commitNote() {
+    var s = selRef.current
+    var cur = modelRef.current
+    if (!s || s.kind !== 'node' || !cur) return
+    var text = String(noteDraft == null ? '' : noteDraft).trim()
+    var next = cloneModel(cur)
+    var node = null
+    for (var i = 0; i < next.nodes.length; i++) if (next.nodes[i].id === s.id) node = next.nodes[i]
+    if (!node) return
+    // 没有正文时「已解决」不成立（宿主侧也这么归一），别把半截状态写进文件
+    var done = text !== '' && noteDoneDraft === true
+    if ((node.note || '') === text && (node.noteDone === true) === done) return
+    node.note = text
+    node.noteDone = done
+    if (text === '') setNoteDoneDraft(false)
+    push(next, text === '' ? '用户清除了元素注释' : '用户写了元素注释')
+    setStatus(text === '' ? '已清除注释' : (done ? '注释已保存（已解决，不再注入给 AI）' : '注释已保存，会随每一步进入 AI 的上下文'))
+  }
+
+  /**
+   * 提交代码锚点引用。按行切分、trim、丢掉空行；与旧值相同时直接 return。
+   * 空数组 = 清掉该节点的所有引用（宿主序列化时就不写出 %% @file 行）。
+   */
+  function commitFiles() {
+    var s = selRef.current
+    var cur = modelRef.current
+    if (!s || s.kind !== 'node' || !cur) return
+    var raw = String(filesDraft == null ? '' : filesDraft)
+    var lines = raw.split('\n')
+    var list = []
+    for (var i = 0; i < lines.length; i++) {
+      var item = lines[i].trim()
+      if (item) list.push(item)
+    }
+    var next = cloneModel(cur)
+    var node = null
+    for (var j = 0; j < next.nodes.length; j++) if (next.nodes[j].id === s.id) node = next.nodes[j]
+    if (!node) return
+    var oldList = node.files || []
+    if (oldList.length === list.length) {
+      var same = true
+      for (var k = 0; k < list.length; k++) {
+        if (oldList[k] !== list[k]) { same = false; break }
+      }
+      if (same) return
+    }
+    node.files = list
+    push(next, '用户改了代码锚点')
+    setStatus(list.length === 0 ? '已清除代码锚点' : '已保存代码锚点 (' + list.length + ' 个引用)')
+  }
+
+  /** 标记已解决 / 重新打开。`id` 省略时作用于当前选中的节点（注释清单里按 id 调用）。 */
+  function markNote(done, id?) {
+    var cur = modelRef.current
+    if (!cur) return
+    var target = id || (selRef.current && selRef.current.kind === 'node' ? selRef.current.id : '')
+    if (!target) return
+    var next = cloneModel(cur)
+    var found = null
+    for (var i = 0; i < next.nodes.length; i++) if (next.nodes[i].id === target) found = next.nodes[i]
+    if (!found || !found.note) return
+    found.noteDone = done === true
+    if (!id) setNoteDoneDraft(done === true)
+    push(next, done ? '用户标记注释已解决' : '用户重新打开了注释')
+    setStatus(done ? '已标记为已解决（留在文件里，但不再注入给 AI）' : '注释已重新打开')
+  }
+
+  /** 从注释清单跳到某个节点：选中它（检查器随之出现），并把它挪到视口中央。 */
+  function focusNode(id) {
+    var cur = modelRef.current
+    if (!cur) return
+    var node = null
+    for (var i = 0; i < cur.nodes.length; i++) if (cur.nodes[i].id === id) node = cur.nodes[i]
+    if (!node) return
+    setSel({ kind: 'node', id: id })
+    setLabelDraft(node.label == null ? '' : node.label)
+    setGroupDraft(node.group || '')
+    setNoteDraft(node.note || '')
+    setNoteDoneDraft(node.noteDone === true)
+    setFilesDraft((node.files || []).join('\n'))
+    setNotesOpen(false)
+    var g = geomRef.current[id]
+    var svg = svgRef.current
+    if (g && svg && typeof svg.getBoundingClientRect === 'function') {
+      var box = svg.getBoundingClientRect()
+      var v = viewRef.current
+      var nv = { k: v.k, x: box.width / 2 - g.x * v.k, y: box.height / 2 - g.y * v.k }
+      viewRef.current = nv
+      setView(nv)
+    }
+    setStatus('已定位到节点 ' + id)
   }
 
   function setShape(shape) {
@@ -820,7 +962,7 @@ function ArchStudio(props) {
    * quiet 用于自动触发的场景：读不到就别去污染状态栏。
    */
   function refreshLibraryItems(rescan?: boolean, quiet?: boolean) {
-    return rpc('doc:list', { where: cwdRef.current, rescan: !!rescan }).then(function (r) {
+    return rpc('doc:list', { where: cwdRef.current, session: sidRef.current, rescan: !!rescan }).then(function (r) {
       if (!r || !r.ok) {
         if (!quiet) setStatus('读图库失败：' + String(r && r.error))
         patchPicker({ busy: false })
@@ -853,7 +995,7 @@ function ArchStudio(props) {
   function openPath(path, create) {
     var want = String(path == null ? '' : path).trim()
     if (!want) { setStatus('请填一个文件路径（绝对路径，或相对项目根）'); return }
-    rpc('doc:openPath', { path: want, create: !!create, where: cwdRef.current }).then(function (r) {
+    rpc('doc:openPath', { path: want, create: !!create, where: cwdRef.current, session: sidRef.current }).then(function (r) {
       if (!r || !r.ok) { setStatus('打开失败：' + String(r && r.error)); return }
       closeLibrary()
       applyServer(r, 'sync')
@@ -865,7 +1007,7 @@ function ArchStudio(props) {
   function openDiagram(key, create) {
     var want = String(key == null ? '' : key).trim()
     if (!want) { setStatus('先给新图起个名字'); return }
-    rpc('doc:open', { key: want, create: !!create, where: cwdRef.current }).then(function (r) {
+    rpc('doc:open', { key: want, create: !!create, where: cwdRef.current, session: sidRef.current }).then(function (r) {
       if (!r || !r.ok) { setStatus('切图失败：' + String(r && r.error)); return }
       closeLibrary()
       applyServer(r, 'sync')  // 换的是文档，不是编辑：历史由 applyServer 按切图清掉
@@ -877,7 +1019,7 @@ function ArchStudio(props) {
   function renameDiagram(key) {
     var to = String(picker.renameDraft == null ? '' : picker.renameDraft).trim()
     if (!to) { setStatus('新名字不能为空'); return }
-    rpc('doc:rename', { from: key, to: to, where: cwdRef.current }).then(function (r) {
+    rpc('doc:rename', { from: key, to: to, where: cwdRef.current, session: sidRef.current }).then(function (r) {
       if (!r || !r.ok) { setStatus('改名失败：' + String(r && r.error)); return }
       patchPicker({ renameKey: '', renameDraft: '' })
       if (r.model) applyServer(r, 'sync')
@@ -887,7 +1029,7 @@ function ArchStudio(props) {
   }
 
   function deleteDiagram(key) {
-    rpc('doc:delete', { key: key, where: cwdRef.current }).then(function (r) {
+    rpc('doc:delete', { key: key, where: cwdRef.current, session: sidRef.current }).then(function (r) {
       if (!r || !r.ok) { setStatus('删除失败：' + String(r && r.error)); return }
       patchPicker({ confirmKey: '' })
       // 删的正好是当前这张时宿主已经换回默认图，回执里带着新文档
@@ -898,7 +1040,7 @@ function ArchStudio(props) {
   }
 
   function restoreDiagram(key) {
-    rpc('doc:restore', { key: key, where: cwdRef.current }).then(function (r) {
+    rpc('doc:restore', { key: key, where: cwdRef.current, session: sidRef.current }).then(function (r) {
       if (!r || !r.ok) { setStatus('恢复失败：' + String(r && r.error)); return }
       loadLibrary()
       setStatus('已恢复「' + key + '」')
@@ -914,7 +1056,7 @@ function ArchStudio(props) {
   }
 
   function applyDraft() {
-    rpc('doc:applyText', { text: draft, where: cwdRef.current }).then(function (r) {
+    rpc('doc:applyText', { text: draft, where: cwdRef.current, session: sidRef.current }).then(function (r) {
       if (!r || !r.ok) { setRenderError(String(r && r.error)); setStatus('源码未能解析: ' + String(r && r.error)); return }
       setRenderError('')
       applyServer(r, 'local')
@@ -928,7 +1070,7 @@ function ArchStudio(props) {
   }
 
   function saveToFile() {
-    rpc('doc:file', { path: filePath, save: true, where: cwdRef.current }).then(function (r) {
+    rpc('doc:file', { path: filePath, save: true, where: cwdRef.current, session: sidRef.current }).then(function (r) {
       if (r && r.saved) setStatus('已写入 ' + filePath)
       else setStatus('写盘失败：' + String(r && r.error))
     }).catch(function (e) { setStatus('写盘失败：' + msgOf(e)) })
@@ -1057,6 +1199,33 @@ function ArchStudio(props) {
           React.createElement('circle', { r: 8.5 }),
           React.createElement('text', { y: 3.6 }, '↗'),
         ) : null,
+        // 注释角标：没注释的节点什么都不画。未解决=琥珀色笔，已解决=灰底勾（和清单里的两区一致）。
+        node.note ? React.createElement('g', {
+          key: 'note',
+          className: 'ac-note-badge' + (node.noteDone ? ' done' : ''),
+          transform: 'translate(' + (x0 + 9) + ',' + (y0 + 9) + ')',
+        },
+          React.createElement('circle', { r: 8.5 }),
+          React.createElement('text', { y: 3.6 }, node.noteDone ? '✓' : '✎'),
+        ) : null,
+        // 代码锚点角标：右下角，仅当 node.files && node.files.length > 0 时渲染
+        node.files && node.files.length > 0 ? (function () {
+          var nStatus = (fileStatusRef.current && fileStatusRef.current[node.id]) || {}
+          var isBroken = false
+          for (var fi2 = 0; fi2 < node.files.length; fi2++) {
+            var fRef = node.files[fi2]
+            var fSt = nStatus[fRef] || 'unknown'
+            if (fSt !== 'ok') { isBroken = true; break }
+          }
+          return React.createElement('g', {
+            key: 'file-badge',
+            className: 'ac-file-badge' + (isBroken ? ' broken' : ''),
+            transform: 'translate(' + (gm.x + gm.w / 2 - 9) + ',' + (y0 + gm.h - 9) + ')',
+          },
+            React.createElement('circle', { r: 8.5 }),
+            React.createElement('text', { y: 3.6 }, '▤'),
+          )
+        })() : null,
         isSel ? React.createElement('circle', {
           className: 'ac-handle', cx: gm.x + gm.w / 2 + 10, cy: gm.y, r: 6,
           onPointerDown: (function (nd) { return function (ev) { onHandleDown(ev, nd) } })(node),
@@ -1102,6 +1271,7 @@ function ArchStudio(props) {
                   return React.createElement('div', { key: 's' + it.key, className: 'ac-start-row' },
                     React.createElement('span', { className: 'ac-start-key', title: it.dir }, it.key),
                     React.createElement('span', { className: 'ac-start-meta' }, it.nodes + ' 节点 / ' + it.edges + ' 连线'),
+                    it.summary ? React.createElement('span', { className: 'ac-start-sum', title: it.summary }, it.summary) : null,
                     React.createElement('button', { className: 'ac-btn', onClick: function () { openDiagram(it.key, false) } }, '打开'),
                   )
                 }),
@@ -1137,6 +1307,97 @@ function ArchStudio(props) {
     React.createElement('div', { className: 'ac-preview', dangerouslySetInnerHTML: { __html: svg || '<div style="color:#666;font-family:system-ui">正在加载 Mermaid 渲染器…</div>' } }),
   )
 
+  // ---------- 元素注释清单（未解决在前，已解决在后） ----------
+  // 派生值必须在这里算完：下面的 return 是一个整体表达式，声明晚一步就是 undefined
+  // （面板渲染崩溃的老坑，见 AGENTS.md「stage 这类 JSX 在 return 之前就构造好了」）。
+  var noteListOpen = []
+  var noteListDone = []
+  if (model && model.nodes) {
+    for (var nq = 0; nq < model.nodes.length; nq++) {
+      var nnode = model.nodes[nq]
+      if (!nnode.note) continue
+      if (nnode.noteDone) noteListDone.push(nnode); else noteListOpen.push(nnode)
+    }
+  }
+  function noteRow(nd, isDone) {
+    return React.createElement('div', { key: (isDone ? 'd' : 'o') + nd.id, className: 'ac-lib-row' },
+      React.createElement('button', {
+        className: 'ac-lib-item' + (isDone ? ' done' : ''),
+        title: '定位到这个节点',
+        onClick: function () { focusNode(nd.id) },
+      }, (isDone ? '✓ ' : '✎ ') + nd.id + '　' + String(nd.label || '').replace(/\n/g, ' ')
+        + '　·　' + String(nd.note).replace(/\n/g, ' ')),
+      React.createElement('button', {
+        className: 'ac-btn',
+        onClick: function () { markNote(!isDone, nd.id) },
+      }, isDone ? '重开' : '已解决'),
+    )
+  }
+  var notePanel = notesOpen ? React.createElement('div', { className: 'ac-lib ac-notes' },
+    React.createElement('div', { className: 'ac-lib-head' },
+      React.createElement('span', { className: 'grow' },
+        '元素注释：' + noteListOpen.length + ' 条未解决'
+        + (noteListDone.length ? '，' + noteListDone.length + ' 条已解决' : '')
+        + '　·　未解决的每一步都会进入 AI 的上下文，已解决的不会'),
+      React.createElement('button', { className: 'ac-btn', onClick: function () { setNotesOpen(false) } }, '收起'),
+    ),
+    noteListOpen.length === 0
+      ? React.createElement('div', { className: 'ac-hint' }, '没有未解决的注释。点一个节点，在下方检查器里就能写。')
+      : null,
+    noteListOpen.map(function (nd) { return noteRow(nd, false) }),
+    noteListDone.length > 0
+      ? React.createElement('div', { className: 'ac-hint' }, '已解决（仍留在文件里，只是不再注入给 AI）：')
+      : null,
+    noteListDone.map(function (nd) { return noteRow(nd, true) }),
+  ) : null
+
+  // ---------- 检查点清单（每次落盘一份，点一下退回） ----------
+  // 与注释清单同一套 .ac-lib 外壳；区别是这里的数据来自 doc:history（宿主内存里的快照），
+  // 不是从模型派生的 —— 所以有 busy / 拉取失败这两个状态要如实显示。
+  var histByLabel = { ai: 'AI', user: '用户', open: '打开', switch: '切换', init: '初始' }
+  function histTime(at) {
+    try {
+      var d = new Date(at)
+      var p = function (n) { return (n < 10 ? '0' : '') + n }
+      return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds())
+    } catch (e) { return '' }
+  }
+  var histPanel = hist.open ? React.createElement('div', { className: 'ac-lib ac-hist' },
+    React.createElement('div', { className: 'ac-lib-head' },
+      React.createElement('span', { className: 'grow' },
+        '检查点：' + hist.entries.length + ' 份'
+        + '　·　每次落盘留一份（标明谁改的），点「退回」把图恢复成那一刻。只在内存里，重启 dsh 会清空'),
+      React.createElement('button', { className: 'ac-btn', onClick: function () { loadHistory() } }, '刷新'),
+      React.createElement('button', { className: 'ac-btn', onClick: function () { patchHist({ open: false }) } }, '收起'),
+    ),
+    hist.busy ? React.createElement('div', { className: 'ac-hint' }, '正在读检查点…') : null,
+    !hist.busy && hist.entries.length === 0
+      ? React.createElement('div', { className: 'ac-hint' }, '还没有检查点。你和 AI 每改一次图都会留下一个。')
+      : null,
+    hist.entries.map(function (e) {
+      var who = histByLabel[e.by] || e.by
+      var meta = '修订 ' + e.rev + '　' + e.nodeCount + ' 节点 / ' + e.edgeCount + ' 连线　' + histTime(e.at)
+      return React.createElement('div', { key: 'h' + e.seq, className: 'ac-lib-row' },
+        React.createElement('span', {
+          className: 'ac-hist-item' + (e.current ? ' on' : '') + (e.by === 'ai' ? ' ai' : ''),
+          title: (e.site ? e.site + '　' : '') + (e.changed && e.changed.length ? '涉及：' + e.changed.join('、') : ''),
+        }, (e.current ? '● ' : '') + who + '　' + meta
+          + (e.changed && e.changed.length ? '　·　' + e.changed.slice(0, 4).join('、') + (e.changed.length > 4 ? ' 等' : '') : '')),
+        e.current
+          ? React.createElement('span', { className: 'ac-hist-cur' }, '当前')
+          : (hist.confirmSeq === e.seq
+            ? [
+                React.createElement('button', { key: 'yes', className: 'ac-btn primary', onClick: function () { rollbackTo(e.seq) } }, '确认退回'),
+                React.createElement('button', { key: 'no', className: 'ac-btn', onClick: function () { patchHist({ confirmSeq: 0 }) } }, '取消'),
+              ]
+            : React.createElement('button', {
+                className: 'ac-btn',
+                onClick: function () { patchHist({ confirmSeq: e.seq }) },
+              }, '退回')),
+      )
+    }),
+  ) : null
+
   // ---------- 底部检查器（只在选中时出现，窄栏也不挤） ----------
   var dock = null
   if (nodeSel) {
@@ -1164,6 +1425,58 @@ function ArchStudio(props) {
         React.createElement('div', { className: 'ac-field' },
           React.createElement('label', null, '分组（留空=不分组）'),
           React.createElement('input', { className: 'ac-input', value: groupDraft, onChange: function (e) { setGroupDraft(e.target.value) }, onBlur: commitGroup, onKeyDown: function (e) { if (e.key === 'Enter') commitGroup() } }),
+        ),
+        React.createElement('div', { className: 'ac-field full' },
+          React.createElement('label', null, noteDraft
+            ? (noteDoneDraft ? '注释（已解决 —— 留在文件里，但不再注入给 AI）' : '注释（会随每一步进入 AI 的上下文）')
+            : '注释（写给 AI：这里的疑问 / 要求 / 背景）'),
+          React.createElement('textarea', {
+            className: 'ac-input', style: { height: 54, resize: 'vertical', fontFamily: 'inherit' },
+            placeholder: '例如：这里为什么不用队列？　/　这条链路还没定，先别改',
+            value: noteDraft,
+            onChange: function (e) { setNoteDraft(e.target.value) },
+            onBlur: commitNote,
+            onKeyDown: function (e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); commitNote() } },
+          }),
+          noteDraft
+            ? React.createElement('div', { className: 'ac-note-actions' },
+                React.createElement('button', {
+                  className: 'ac-btn' + (noteDoneDraft ? '' : ' primary'),
+                  title: noteDoneDraft ? '重新打开：又会被注入给 AI' : '标记已解决：不再注入给 AI，但留在文件里可追溯',
+                  onClick: function () { markNote(!noteDoneDraft) },
+                }, noteDoneDraft ? '重新打开' : '标记已解决'),
+              )
+            : null,
+        ),
+        React.createElement('div', { className: 'ac-field full' },
+          React.createElement('label', null, '代码锚点（每行一个：路径 或 路径#符号）'),
+          React.createElement('textarea', {
+            className: 'ac-input', style: { height: 54, resize: 'vertical', fontFamily: 'inherit' },
+            placeholder: '例如：src/host/mermaid.ts　/　src/client/runtime.ts#cloneModel',
+            value: filesDraft,
+            onChange: function (e) { setFilesDraft(e.target.value) },
+            onBlur: commitFiles,
+            onKeyDown: function (e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); commitFiles() } },
+          }),
+          filesDraft
+            ? (function () {
+                var rawLines = filesDraft.split('\n')
+                var rows = []
+                var nodeStatus = (fileStatusRef.current && fileStatusRef.current[nodeSel.id]) || {}
+                for (var fi = 0; fi < rawLines.length; fi++) {
+                  var ref = rawLines[fi].trim()
+                  if (!ref) continue
+                  var st = nodeStatus[ref] || 'unknown'
+                  var isOk = st === 'ok'
+                  var reason = isOk ? '' : (st === 'missing' ? '文件不在' : (st === 'symbol-missing' ? '符号不在' : '无法判定'))
+                  rows.push(React.createElement('div', {
+                    key: 'ref-' + fi + '-' + ref,
+                    className: isOk ? undefined : 'ac-ref-bad',
+                  }, (isOk ? '✓ ' : '⚠ ') + ref + (reason ? ' (' + reason + ')' : '')))
+                }
+                return rows.length > 0 ? React.createElement('div', { className: 'ac-ref-status' }, rows) : null
+              })()
+            : null,
         ),
         React.createElement('div', { className: 'ac-field full' },
           React.createElement('button', { className: 'ac-btn danger', onClick: deleteSel }, '删除这个节点'),
@@ -1219,15 +1532,17 @@ function ArchStudio(props) {
         className: 'ac-tab', title: '重做 (Ctrl/Cmd+Shift+Z)', onClick: redo,
         disabled: histRef.current.future.length === 0,
       }, '↷'),
-      // AI 写图开关：**默认只读**，用户点一下才允许 AI 改图（真正的闸门在宿主侧，
-      // 见 src/host/settings.ts；这里只是它的可见控件）。
+      // 检查点：**不再有「AI 只读」开关**。安全靠「随时退回去」而不是拦人 ——
+      // 每次落盘（AI 改的 / 用户改的）都留一份快照，点这里就能退回任意一份（见 src/host/history.ts）。
       React.createElement('button', {
-        className: 'ac-tab ac-aiwrite' + (aiWrite ? ' on' : ''),
-        title: aiWrite
-          ? 'AI 改图：已允许。点一下改为只读 —— 关闭时 AI 的 arch_write / arch_edit 会被拒绝。'
-          : 'AI 改图：只读（默认）。点一下允许 AI 用 arch_write / arch_edit 改这张图。',
-        onClick: function () { toggleAiWrite(!aiWrite) },
-      }, aiWrite ? 'AI 可改图' : 'AI 只读'),
+        className: 'ac-tab ac-histbtn' + (hist.open ? ' on' : ''),
+        title: '检查点：每次改动都留了一份快照（标明是 AI 改的还是用户改的），可以退回任意一份。历史只在内存里，重启 dsh 会清空。',
+        onClick: function () {
+          if (hist.open) { patchHist({ open: false }); return }
+          patchHist({ open: true })
+          loadHistory()
+        },
+      }, '历史' + (historyCount > 0 ? ' ' + historyCount : '')),
     ),
     React.createElement('div', { className: 'ac-tools' },
       tab === 'canvas' ? React.createElement('button', { className: 'ac-btn', onClick: addNode }, '＋ 节点') : null,
@@ -1246,6 +1561,11 @@ function ArchStudio(props) {
         title: external ? '当前打开的是项目里的文件：' + external : '列图 / 切图 / 新建 / 按路径打开 —— 图库跟着项目走',
         onClick: function () { if (picker.open) closeLibrary(); else loadLibrary(false) },
       }, external ? '文件 ' + externalName : '图库 ' + (libKey || '')) : null,
+      tab === 'canvas' ? React.createElement('button', {
+        className: 'ac-btn' + (noteListOpen.length ? ' primary' : ''),
+        title: '元素注释清单：未解决的会随每一步进入 AI 的上下文，已解决的不进',
+        onClick: function () { setNotesOpen(!notesOpen) },
+      }, noteListOpen.length ? '注释 ' + noteListOpen.length : '注释') : null,
       tab === 'text' ? React.createElement('button', { className: 'ac-btn primary', onClick: applyDraft }, '应用回画布') : null,
       tab === 'text' ? React.createElement('button', { className: 'ac-btn', onClick: function () { setDraft(mermaidText) } }, '还原') : null,
     ),
@@ -1277,9 +1597,10 @@ function ArchStudio(props) {
         }
         return React.createElement('div', { key: it.key, className: 'ac-lib-row' },
           React.createElement('button', {
-            className: 'ac-lib-item' + (on ? ' on' : ''), title: it.dir,
+            className: 'ac-lib-item' + (on ? ' on' : ''), title: it.summary ? (it.summary + '\n' + it.dir) : it.dir,
             onClick: function () { if (!on) openDiagram(it.key, false) },
-          }, (on ? '● ' : '') + it.key + '　' + it.nodes + ' 节点 / ' + it.edges + ' 连线'),
+          }, (on ? '● ' : '') + it.key + '　' + it.nodes + ' 节点 / ' + it.edges + ' 连线'
+            + (it.summary ? '　·　' + it.summary : '')),
           picker.confirmKey === it.key
             ? [
                 React.createElement('button', { key: 'yes', className: 'ac-btn danger', onClick: function () { deleteDiagram(it.key) } }, '确认删除'),
@@ -1344,6 +1665,8 @@ function ArchStudio(props) {
         }, '打开'),
       ),
     ) : null,
+    notePanel,
+    histPanel,
     React.createElement('div', { className: 'ac-body' },
       tab === 'canvas' ? stage : tab === 'text' ? textPane : previewPane,
     ),

@@ -90,15 +90,7 @@ ok('doc:get 返回 ok', g && g.ok === true, g && g.error)
 eq('种子节点数', g.nodeCount, 5)
 ok('带 lastChange 字段', 'lastChange' in g)
 
-// AI 写图默认关（硬闸门）：先确认被拒，再由用户侧打开开关，让后面那条"真的能改"有意义。
-const gate0 = await handlers.get('setting:get')({})
-ok('AI 写图默认关', gate0 && gate0.aiWrite === false, gate0)
-const denied = await tools.find((t) => t.name === 'arch_edit').execute({
-  ops: [{ op: 'add_node', id: 'denied', label: '不该出现' }],
-}, {})
-ok('开关关着时 arch_edit 被拒（引导层这条路也吃闸门）', denied && denied.ok === false, denied)
-await handlers.get('setting:set')({ aiWrite: true })
-
+// 没有写图闸门：arch_edit 直接生效（安全性改由检查点兜底，见 src/host/history.ts）
 const e = await tools.find((t) => t.name === 'arch_edit').execute({
   ops: [{ op: 'add_node', id: 'probe', label: '引导层探针' }],
 }, {})

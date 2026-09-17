@@ -1,6 +1,6 @@
 {
   "name": "arch-canvas",
-  "version": "0.2.0",
+  "version": "0.6.0",
   "private": true,
   "description": "DSH 插件：人与 AI 共用同一张 Mermaid 架构图 —— 用户拖图形，AI 读文本，两侧同一份真相",
   "main": "lib/index.js",

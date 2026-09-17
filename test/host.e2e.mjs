@@ -25,6 +25,24 @@ files.set(
 )
 
 const failWritePaths = new Set()
+let lastWriteArgs = null
+// 每一次写入都记下来：只记「最后一次」会漏掉「某个写盘点没带策略」这种静默失败
+const allWriteArgs = []
+let sandboxResolveCalls = []
+const sandboxPolicySvc = {
+  resolve: (req) => {
+    sandboxResolveCalls.push(req)
+    return {
+      mode: 'workspace-write',
+      workspaceRoot: req && req.session && req.session.cwd,
+      sessionId: req && req.session && req.session.id,
+    }
+  },
+}
+let agentMap = new Map()
+const agentsSvc = {
+  get: (id) => agentMap.get(id),
+}
 const fsSvc = {
   resolve: async (p) => ({ targetKey: p, displayPath: p }),
   stat: async (t) => {
@@ -61,7 +79,9 @@ const fsSvc = {
     out.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
     return out
   },
-  writeText: async (t, content) => {
+  writeText: async (t, content, expected, signal, sandboxPolicy) => {
+    lastWriteArgs = { target: t, content, expected, signal, sandboxPolicy }
+    allWriteArgs.push({ targetKey: t.targetKey, policy: sandboxPolicy })
     if (failWritePaths.has(t.targetKey)) {
       throw new Error('EIO simulated write failure on ' + t.targetKey)
     }
@@ -94,7 +114,7 @@ const intervals = []
 const ctx = {
   get: (k) => {
     askedServices.push(k)
-    return ({ fs: fsSvc, webServer: webSvc, systemPrompt: sysSvc })[k]
+    return ({ fs: fsSvc, webServer: webSvc, systemPrompt: sysSvc, sandboxPolicy: sandboxPolicySvc, agents: agentsSvc })[k]
   },
   effect: (fn) => { const d = fn(); if (typeof d === 'function') disposers.push(d); return d },
   on: () => () => {},
@@ -161,8 +181,10 @@ console.log('【插件对象】')
 ok('返回了 { apply } 形状的插件', plugin && typeof plugin.apply === 'function', plugin === null ? 'null' : typeof plugin)
 plugin.apply(ctx)
 ok('注册了 15 个 RPC 处理器', handlers.size === 15, [...handlers.keys()])
-ok('注册了 AI 写图开关的两条 RPC',
-  handlers.has('setting:get') && handlers.has('setting:set'), [...handlers.keys()])
+ok('注册了检查点的两条 RPC（取代了早先的 AI 写图开关）',
+  handlers.has('doc:history') && handlers.has('doc:rollback'), [...handlers.keys()])
+ok('不再有 setting:get / setting:set（那条闸门已移除）',
+  !handlers.has('setting:get') && !handlers.has('setting:set'), [...handlers.keys()])
 ok('注册了 4 个工具', tools.length === 4, tools.map((t) => t.name))
 ok('工具名单里有 arch_switch', tools.some((t) => t.name === 'arch_switch'))
 ok('注册了 1 条提示词上下文', prompts.length === 1, prompts.map((p) => p.name))
@@ -234,50 +256,6 @@ ok('doc:set 后 mermaid 含新坐标', s1.mermaid.indexOf('%% @pos n2 777 888') 
 ok('doc:set 落盘', files.get(DOC).indexOf('%% @pos n2 777 888') >= 0)
 ok('用户改动标成 user（界面据此不高亮）', s1.lastChange && s1.lastChange.by === 'user', s1.lastChange)
 ok('用户改动不点名任何节点', s1.lastChange.nodes.length === 0)
-
-// ---------- AI 写图开关（默认关）----------
-// 闸门在工具执行处，不是界面上的一句提示：关着时 arch_write / arch_edit 一个字节都不许改。
-console.log('【AI 写图开关：默认关（硬闸门）】')
-const SETTINGS = '/home/vesita/.dsh/arch-canvas/settings.json'
-{
-  const get0 = await call('setting:get', {})
-  ok('默认是关的（文件不存在 ⇒ 关）', get0 && get0.aiWrite === false, get0)
-
-  const before = await call('doc:get')
-  const blockedEdit = await tool('arch_edit').execute({
-    ops: [{ op: 'add_node', id: 'secret', label: '不该出现' }],
-  }, {})
-  ok('开关关着：arch_edit 被拒', blockedEdit && blockedEdit.ok === false, blockedEdit)
-  ok('拒绝理由说清是「关闭」并要求用户打开开关',
-    String(blockedEdit && blockedEdit.error).indexOf('关闭') >= 0 && String(blockedEdit.error).indexOf('AI 只读') >= 0,
-    blockedEdit && blockedEdit.error)
-  const blockedWrite = await tool('arch_write').execute({ mermaid: 'flowchart TD\n  x["不该出现"]' }, {})
-  ok('开关关着：arch_write 同样被拒', blockedWrite && blockedWrite.ok === false, blockedWrite)
-
-  const after = await call('doc:get')
-  eq('被拒的两次都没改图（节点数不变）', after.nodeCount, before.nodeCount)
-  eq('被拒的两次都没改图（修订号不变）', after.revision, before.revision)
-  ok('被拒的两次都没落盘', files.get(DOC).indexOf('不该出现') < 0)
-  await new Promise((r) => setTimeout(r, 30)) // 日志是异步队列，等它落盘再断言
-  ok('拒绝留下了现场（aiwrite.blocked）',
-    [...logStorage.values()].join('\n').indexOf('"ev":"aiwrite.blocked"') >= 0)
-
-  // 用户在面板顶栏点开关 ⇒ 界面的那条 RPC。
-  const on = await call('setting:set', { aiWrite: true })
-  ok('打开开关：RPC 返回 ok 且状态是开', on && on.ok === true && on.aiWrite === true, on)
-  ok('开关落盘到 settings.json', files.has(SETTINGS), [...files.keys()].filter((k) => k.indexOf('settings') >= 0))
-  ok('落盘内容只认显式 true', JSON.parse(files.get(SETTINGS)).aiWrite === true, files.get(SETTINGS))
-  const get1 = await call('setting:get', {})
-  ok('再读是开着的', get1 && get1.aiWrite === true, get1)
-
-  // 负向对照：文件被写坏 ⇒ 回到"关"（fail-closed，绝不放宽）。
-  files.set(SETTINGS, '{ 这不是 JSON')
-  const getBad = await call('setting:get', {})
-  ok('settings.json 损坏 ⇒ 退回关（fail-closed）', getBad && getBad.aiWrite === false, getBad)
-  const blockedAgain = await tool('arch_edit').execute({ ops: [{ op: 'add_node', id: 'nope2' }] }, {})
-  ok('损坏后写入再次被拒', blockedAgain && blockedAgain.ok === false, blockedAgain)
-  await call('setting:set', { aiWrite: true })
-}
 
 console.log('【AI 增量改图：arch_edit】')
 const e1 = await tool('arch_edit').execute({
@@ -375,13 +353,13 @@ const P = await call('doc:get', { where: '/proj-a' })
 eq('带 where 时切到项目图库', P.dir, '/proj-a/.arch-canvas')
 eq('标记为项目图库', P.scope, 'project')
 eq('文件落在 <项目>/.arch-canvas/', P.file, '/proj-a/.arch-canvas/architecture.mmd')
-eq('项目图库继承了全局那张图（换库不丢图）', P.nodeCount, 2, P.nodeCount)
-ok('并留下了说明', P.notes.some((n) => n.indexOf('全局图库') >= 0), P.notes)
+eq('未建库时读到的是空文档', P.nodeCount, 0, P.nodeCount)
+ok('未建库时不生成说明', P.notes.length === 0, P.notes)
 ok('切库标记为 switch（界面据此重新适应视图）', P.lastChange && P.lastChange.by === 'switch', P.lastChange)
 ok('换文档时修订号单调递增（不复位，防止界面漏掉变化）', P.revision > g1.revision, { before: g1.revision, after: P.revision })
 
 const L1 = await call('doc:list', { where: '/proj-a' })
-eq('清单里有 1 张', L1.items.length, 1)
+eq('清单里有 0 张活图', L1.items.length, 0)
 eq('清单标出当前图', L1.current, 'architecture')
 
 const N = await call('doc:open', { where: '/proj-a', name: '支付流程', create: true })
@@ -396,7 +374,7 @@ const L3 = await call('doc:list', { where: '/proj-a' })
 ok('改名 = 新建 + 旧名软删（fs 没有 unlink）', L3.items.some((x) => x.name === '支付流程' && x.deleted === true), L3.items)
 ok('新名是活的', L3.items.some((x) => x.name === '支付主流程' && !x.deleted))
 ok('改名不会覆盖同名图',
-  (await call('doc:rename', { where: '/proj-a', from: '支付主流程', to: 'architecture' })).ok === false)
+  (await call('doc:rename', { where: '/proj-a', from: '支付主流程', to: '支付主流程' })).ok === false)
 
 await call('doc:delete', { where: '/proj-a', name: '支付主流程' })
 const L4 = await call('doc:list', { where: '/proj-a' })
@@ -411,19 +389,15 @@ const bk = await call('doc:open', { where: '/proj-a', name: '支付主流程' })
 ok('切回那张图并带回内容', bk.diagram === '支付主流程' && bk.nodeCount === 2, { diagram: bk.diagram, nodeCount: bk.nodeCount })
 ok('切回来的是那张图自己的内容（不是默认图）', bk.model.nodes.some((n) => n.id === 'a'), bk.model.nodes.map((n) => n.id))
 
-console.log('【首次进项目图库：建目录 + 一次性继承】')
-ok('继承时直接写出了文件，目录因此存在',
+console.log('【首次进项目图库：写盘时建目录 + 一次性继承】')
+ok('写盘后文件写出，目录因此存在',
   [...files.keys()].some((k) => k.indexOf('/proj-a/.arch-canvas/') === 0), [...files.keys()].filter((k) => k.indexOf('/proj-a/') === 0))
-ok('有东西可继承时不写占位文件（写它只是为了建目录）', !files.has('/proj-a/.arch-canvas/.gitkeep'))
-ok('全局图库的图被继承了过来（否则用户会以为图丢了）',
+ok('全局图库的图在首次写盘时被继承了过来',
   files.has('/proj-a/.arch-canvas/architecture.mmd'), [...files.keys()].filter((k) => k.indexOf('/proj-a/') === 0))
 ok('继承有标记文件，只做一次', files.has('/home/vesita/.dsh/arch-canvas/.inherited'))
 const P2 = await call('doc:get', { where: '/proj-b' })
-ok('空图库靠写占位文件把目录建出来（fs 没有 mkdir）', files.has('/proj-b/.arch-canvas/.gitkeep'))
-ok('第二个项目不再重复继承（拿到的是空白默认图，不是复制来的内容）',
-  files.get('/proj-b/.arch-canvas/architecture.mmd').indexOf('新入口') < 0,
-  files.get('/proj-b/.arch-canvas/architecture.mmd'))
-eq('第二个项目从干净图库开始', P2.nodeCount, 0)
+ok('读路径未建占位文件', !files.has('/proj-b/.arch-canvas/.gitkeep'))
+eq('第二个项目读路径也是干净空图', P2.nodeCount, 0)
 // 注意：探 /proj-b 会把图库切走，而「换库回到默认图」是设计行为 ——
 // 所以后面要继续测支付图，必须显式切回来。这一步也顺便验证了那条设计。
 const backA = await call('doc:open', { where: '/proj-a', name: '支付主流程' })
@@ -802,6 +776,537 @@ const getOther = await call('doc:get', { where: dirOther })
 eq('换项目根后 external 被清空', getOther.external, null)
 eq('换项目根后切到默认图 architecture', getOther.diagram, 'architecture')
 ok('内容是该项目的默认图', getOther.mermaid.includes('其他项目主图'), getOther.mermaid)
+
+console.log('【元素注释 %% @note / @done】')
+const dirNote = '/tmp/proj-note'
+files.set(dirNote + '/.arch-canvas/architecture.mmd', 'flowchart TD\n  n1["入口"] --> n2["核心"]\n')
+const docN0 = await call('doc:get', { where: dirNote })
+ok('进入测试图库成功', docN0 && docN0.ok === true)
+eq('初始 noteCount = 0', docN0.noteCount, 0)
+eq('初始 resolvedNoteCount = 0', docN0.resolvedNoteCount, 0)
+
+// 1. 写一条注释
+const mNote1 = JSON.parse(JSON.stringify(docN0.model))
+const node1_1 = mNote1.nodes.find((n) => n.id === 'n1')
+node1_1.note = '请确认重试逻辑 "retry" & 校验'
+node1_1.noteDone = false
+const setNote1 = await call('doc:set', { model: mNote1, where: dirNote })
+ok('写注释后 doc:set 成功', setNote1 && setNote1.ok !== false)
+const fileContent1 = files.get(dirNote + '/.arch-canvas/architecture.mmd')
+ok('落盘文件里出现 %% @note n1', fileContent1.indexOf('%% @note n1') >= 0, fileContent1)
+ok('落盘文件里转义正确', fileContent1.indexOf('#quot;retry#quot;') >= 0 && fileContent1.indexOf('&amp;') >= 0, fileContent1)
+
+const getNote1 = await call('doc:get', { where: dirNote })
+eq('写注释后 noteCount = 1', getNote1.noteCount, 1)
+eq('写注释后 resolvedNoteCount = 0', getNote1.resolvedNoteCount, 0)
+const gn1_1 = getNote1.model.nodes.find((n) => n.id === 'n1')
+eq('model 里 note 正确且反转义还原', gn1_1 && gn1_1.note, '请确认重试逻辑 "retry" & 校验')
+eq('model 里 noteDone 为 false', gn1_1 && gn1_1.noteDone, false)
+
+// 2. 标记已解决（改成 noteDone:true 再 doc:set）
+const mNote2 = JSON.parse(JSON.stringify(getNote1.model))
+mNote2.nodes.find((n) => n.id === 'n1').noteDone = true
+const setNote2 = await call('doc:set', { model: mNote2, where: dirNote })
+ok('标记已解决后 doc:set 成功', setNote2 && setNote2.ok !== false)
+const fileContent2 = files.get(dirNote + '/.arch-canvas/architecture.mmd')
+ok('落盘文件里变成 %% @done n1', fileContent2.indexOf('%% @done n1') >= 0, fileContent2)
+ok('落盘文件里不再有 %% @note n1', fileContent2.indexOf('%% @note n1') < 0, fileContent2)
+
+const getNote2 = await call('doc:get', { where: dirNote })
+eq('标记已解决后 noteCount 变 0', getNote2.noteCount, 0)
+eq('标记已解决后 resolvedNoteCount 变 1', getNote2.resolvedNoteCount, 1)
+const gn1_2 = getNote2.model.nodes.find((n) => n.id === 'n1')
+eq('model 里 noteDone 为 true', gn1_2 && gn1_2.noteDone, true)
+
+// 3. 清空 note（''）
+const mNote3 = JSON.parse(JSON.stringify(getNote2.model))
+const node1_3 = mNote3.nodes.find((n) => n.id === 'n1')
+node1_3.note = ''
+node1_3.noteDone = false
+const setNote3 = await call('doc:set', { model: mNote3, where: dirNote })
+ok('清空注释后 doc:set 成功', setNote3 && setNote3.ok !== false)
+const fileContent3 = files.get(dirNote + '/.arch-canvas/architecture.mmd')
+ok('落盘文件里无 @note n1', fileContent3.indexOf('@note n1') < 0, fileContent3)
+ok('落盘文件里无 @done n1', fileContent3.indexOf('@done n1') < 0, fileContent3)
+
+const getNote3 = await call('doc:get', { where: dirNote })
+eq('清空后 noteCount 为 0', getNote3.noteCount, 0)
+eq('清空后 resolvedNoteCount 为 0', getNote3.resolvedNoteCount, 0)
+const gn1_3 = getNote3.model.nodes.find((n) => n.id === 'n1')
+eq('model 里 note 为空串', gn1_3 && gn1_3.note, '')
+eq('model 里 noteDone 为 false', gn1_3 && gn1_3.noteDone, false)
+
+// 4. 提示词注入
+const mPrompt = JSON.parse(JSON.stringify(getNote3.model))
+const pn1 = mPrompt.nodes.find((n) => n.id === 'n1')
+pn1.note = '未解决：检查鉴权'
+pn1.noteDone = false
+const pn2 = mPrompt.nodes.find((n) => n.id === 'n2')
+pn2.note = '已解决：已经测试通过'
+pn2.noteDone = true
+await call('doc:set', { model: mPrompt, where: dirNote })
+
+const promptFn = prompts[0] && prompts[0].text
+ok('测试桩捕获到了 systemPrompt.context 注册的 text 函数', typeof promptFn === 'function')
+if (typeof promptFn === 'function') {
+  const pText = promptFn()
+  ok('未解决的出现在 text 列表里', pText.indexOf('- `n1`（' + (pn1.label || '') + '）：未解决：检查鉴权') >= 0, pText)
+  ok('提示词含「另有 1 条注释已被标记为已解决」', pText.indexOf('另有 1 条注释已被标记为已解决') >= 0, pText)
+  ok('内联 mermaid 代码块里 %% @done 那一行不在 text 里', pText.indexOf('%% @done n2') < 0, pText)
+  ok('内联 mermaid 代码块里保留 %% @note 行', pText.indexOf('%% @note n1') >= 0, pText)
+}
+
+// 5. arch_write 继承 vs doc:applyText 不继承
+const writeRes = await tool('arch_write').execute({
+  mermaid: 'flowchart TD\n  n1["入口重画"] --> n3["新下游"]\n',
+}, {})
+ok('arch_write 成功', writeRes && writeRes.ok !== false)
+ok('arch_write 返回 keptNotes >= 1', writeRes && writeRes.keptNotes >= 1, writeRes && writeRes.keptNotes)
+
+const getAfterWrite = await call('doc:get', { where: dirNote })
+const n1AfterWrite = getAfterWrite.model.nodes.find((n) => n.id === 'n1')
+eq('arch_write 后同 id 节点 n1 继承了注释文本', n1AfterWrite && n1AfterWrite.note, '未解决：检查鉴权')
+eq('arch_write 后 n1 继承了 noteDone 状态', n1AfterWrite && n1AfterWrite.noteDone, false)
+const fileAfterWrite = files.get(dirNote + '/.arch-canvas/architecture.mmd')
+ok('落盘文件里 n1 的 %% @note 注释还在', fileAfterWrite.indexOf('%% @note n1') >= 0, fileAfterWrite)
+
+const applyRes = await call('doc:applyText', {
+  text: 'flowchart TD\n  n1["入口手改"] --> n3["新下游"]\n',
+  where: dirNote,
+})
+ok('doc:applyText 成功', applyRes && applyRes.ok !== false)
+
+const getAfterApply = await call('doc:get', { where: dirNote })
+const n1AfterApply = getAfterApply.model.nodes.find((n) => n.id === 'n1')
+eq('doc:applyText 不继承注释，note 变为空串', n1AfterApply && n1AfterApply.note, '')
+eq('doc:applyText 不继承注释，noteDone 为 false', n1AfterApply && n1AfterApply.noteDone, false)
+const fileAfterApply = files.get(dirNote + '/.arch-canvas/architecture.mmd')
+ok('落盘文件里注释已消失（无 @note n1）', fileAfterApply.indexOf('@note n1') < 0, fileAfterApply)
+ok('落盘文件里注释已消失（无 @done n1）', fileAfterApply.indexOf('@done n1') < 0, fileAfterApply)
+eq('doc:applyText 后 noteCount 为 0', getAfterApply.noteCount, 0)
+eq('doc:applyText 后 resolvedNoteCount 为 0', getAfterApply.resolvedNoteCount, 0)
+
+// 6. 删节点：remove_node 掉带注释的节点
+const mDel = JSON.parse(JSON.stringify(getAfterApply.model))
+const n3Node = mDel.nodes.find((n) => n.id === 'n3')
+n3Node.note = 'n3 待处理'
+n3Node.noteDone = false
+await call('doc:set', { model: mDel, where: dirNote })
+const fileBeforeDel = files.get(dirNote + '/.arch-canvas/architecture.mmd')
+ok('删节点前文件里存在 %% @note n3', fileBeforeDel.indexOf('%% @note n3') >= 0, fileBeforeDel)
+
+const delRes = await tool('arch_edit').execute({
+  ops: [
+    { op: 'remove_node', id: 'n3' },
+  ],
+}, {})
+ok('remove_node 成功执行', delRes && delRes.appliedCount === 1)
+eq('remove_node 无 problems', delRes && delRes.problems.length, 0)
+
+const fileAfterDel = files.get(dirNote + '/.arch-canvas/architecture.mmd')
+ok('删节点后文件里不再有 %% @note n3', fileAfterDel.indexOf('@note n3') < 0, fileAfterDel)
+ok('删节点后文件里不再有 %% @done n3', fileAfterDel.indexOf('@done n3') < 0, fileAfterDel)
+
+const getAfterDel = await call('doc:get', { where: dirNote })
+ok('模型中已无节点 n3', !getAfterDel.model.nodes.some((n) => n.id === 'n3'))
+eq('删节点后 noteCount 为 0', getAfterDel.noteCount, 0)
+eq('删节点后 resolvedNoteCount 为 0', getAfterDel.resolvedNoteCount, 0)
+eq('删节点后 warnings 为空（不报错）', getAfterDel.warnings.length, 0)
+
+// ---------- [16] 代码锚点 %% @file ----------
+console.log('【代码锚点 %% @file】')
+const dirRef = '/tmp/proj-ref'
+const refFile = dirRef + '/.arch-canvas/architecture.mmd'
+files.set(refFile, 'flowchart TD\n  r1["解析器 / 序列化"] --> r2["面板"]\n')
+// 锚点校验要真去 stat / read：桩 fs 里放一个真文件 + 一个真符号
+files.set(dirRef + '/src/host/mermaid.ts', 'function parseMermaid(text) { return text }\n')
+const docR0 = await call('doc:get', { where: dirRef })
+ok('进入锚点测试图库成功', docR0 && docR0.ok === true)
+eq('没有锚点时 fileStatus 是空对象', Object.keys(docR0.fileStatus || {}).length, 0, docR0.fileStatus)
+
+// 1. 写三条锚点：一条好、一条符号不在、一条文件不在
+const refsWant = ['src/host/mermaid.ts#parseMermaid', 'src/host/mermaid.ts#这个符号不存在', 'src/host/不存在.ts']
+const mRef = JSON.parse(JSON.stringify(docR0.model))
+mRef.nodes.find((n) => n.id === 'r1').files = refsWant.slice()
+const setRef = await call('doc:set', { model: mRef, where: dirRef })
+ok('写锚点后 doc:set 成功', setRef && setRef.ok !== false)
+const refContent = files.get(refFile)
+ok('落盘文件里出现三条 %% @file r1',
+  refContent.split('\n').filter((l) => l.indexOf('%% @file r1 ') === 0).length === 3, refContent)
+// `#`/`"` 走与注释同一套实体转义，所以文件里看到的是 #35; —— 读回来由 unquote 还原
+ok('锚点带引号写出（路径里有 # 也不怕）',
+  refContent.indexOf('%% @file r1 "src/host/mermaid.ts#35;parseMermaid"') >= 0, refContent)
+
+const getRef = await call('doc:get', { where: dirRef })
+const refStatus = getRef.fileStatus.r1 || {}
+eq('符号在文件里 → ok', refStatus['src/host/mermaid.ts#parseMermaid'], 'ok')
+eq('符号不在 → symbol-missing', refStatus['src/host/mermaid.ts#这个符号不存在'], 'symbol-missing')
+eq('文件不在 → missing', refStatus['src/host/不存在.ts'], 'missing')
+ok('fileStatus 在 doc:get 这条主路径上就有（不是只在 arch_read 里）',
+  Object.keys(getRef.fileStatus || {}).length === 1, getRef.fileStatus)
+eq('model 里的锚点原样回来（含 #符号）',
+  JSON.stringify(getRef.model.nodes.find((n) => n.id === 'r1').files), JSON.stringify(refsWant))
+
+// 2. 锚点进提示词：好的可用、坏的带 ⚠ 且明说别照着用
+const pRef = promptFn()
+ok('提示词里有代码锚点清单', pRef.indexOf('图元素上标的代码锚点') >= 0)
+ok('提示词点名节点与路径', pRef.indexOf('`r1`') >= 0 && pRef.indexOf('`src/host/mermaid.ts#parseMermaid`') >= 0)
+ok('失效锚点带 ⚠ 与原因', pRef.indexOf('⚠') >= 0 && pRef.indexOf('文件不在') >= 0 && pRef.indexOf('符号不在') >= 0)
+ok('明说了失效的不要照着用', pRef.indexOf('不要照着用') >= 0)
+
+// 3. set_files：整组替换 / 空数组清掉
+const sfRes = await tool('arch_edit').execute({
+  ops: [{ op: 'set_files', id: 'r1', files: ['src/host/mermaid.ts'] }],
+}, {})
+eq('set_files 应用成功', sfRes && sfRes.appliedCount, 1)
+const getSf = await call('doc:get', { where: dirRef })
+eq('set_files 是整组替换（剩一条）', getSf.model.nodes.find((n) => n.id === 'r1').files.length, 1)
+eq('替换后那条校验为 ok', (getSf.fileStatus.r1 || {})['src/host/mermaid.ts'], 'ok')
+const clrRes = await tool('arch_edit').execute({ ops: [{ op: 'set_files', id: 'r1', files: [] }] }, {})
+eq('空数组清锚点不留 problem', clrRes && clrRes.problems.length, 0)
+const getClr = await call('doc:get', { where: dirRef })
+eq('清掉后 model 里是空数组', getClr.model.nodes.find((n) => n.id === 'r1').files.length, 0)
+ok('清掉后文件里没有 %% @file 行', files.get(refFile).indexOf('%% @file ') < 0, files.get(refFile).split('\n').slice(0, 10))
+
+// 4. AI 重画继承锚点；用户手改源码不继承（与元素注释同一条边界）
+const mRef2 = JSON.parse(JSON.stringify(getClr.model))
+mRef2.nodes.find((n) => n.id === 'r1').files = ['src/host/mermaid.ts#parseMermaid']
+await call('doc:set', { model: mRef2, where: dirRef })
+const wRef = await tool('arch_write').execute({
+  mermaid: 'flowchart TD\n  r1["解析器重画"] --> r3["新下游"]\n',
+}, {})
+ok('arch_write 成功', wRef && wRef.ok !== false)
+const getWRef = await call('doc:get', { where: dirRef })
+eq('arch_write 后同 id 节点继承了锚点',
+  JSON.stringify(getWRef.model.nodes.find((n) => n.id === 'r1').files), JSON.stringify(['src/host/mermaid.ts#parseMermaid']))
+ok('继承的锚点也写回了文件', files.get(refFile).indexOf('%% @file r1 "src/host/mermaid.ts#35;parseMermaid"') >= 0)
+
+const aRef = await call('doc:applyText', { text: 'flowchart TD\n  r1["手改"] --> r3["新下游"]\n', where: dirRef })
+ok('doc:applyText 成功', aRef && aRef.ok !== false)
+eq('doc:applyText 不继承锚点（删了那行就是真的删）',
+  (await call('doc:get', { where: dirRef })).model.nodes.find((n) => n.id === 'r1').files.length, 0)
+ok('文件里也没有锚点了', files.get(refFile).indexOf('%% @file ') < 0)
+
+// 5. 幽灵锚点：节点不在了就丢弃 + 记 warning + 绝不凭注释复活节点
+const ghostRef = await call('doc:applyText', {
+  text: 'flowchart TD\n  r1["只剩它"]\n%% @file ghostNode "src/x.ts"\n',
+  where: dirRef,
+})
+ok('幽灵锚点不会复活节点', (ghostRef.mermaid || '').indexOf('ghostNode') < 0, ghostRef.mermaid)
+ok('幽灵锚点记了一条 warning',
+  (ghostRef.warnings || []).some((w) => w.indexOf('代码锚点 @file') >= 0 && w.indexOf('已丢弃') >= 0), ghostRef.warnings)
+
+// 6. 判不了根时不许假装没问题：全局图库没有项目根 → unknown
+await call('doc:get', { where: '' })
+const gEdit = await tool('arch_edit').execute({
+  ops: [
+    { op: 'add_node', id: 'gAnchor', label: '全局图里的节点' },
+    { op: 'set_files', id: 'gAnchor', files: ['src/x.ts'] },
+  ],
+}, {})
+ok('全局图库里也能标锚点', gEdit && gEdit.ok !== false, gEdit && gEdit.error)
+const gGet = await call('doc:get', { where: '' })
+eq('没有项目根可参照时状态是 unknown（不假装 ok）', (gGet.fileStatus.gAnchor || {})['src/x.ts'], 'unknown')
+
+// ---------- [17] 整张图的一句话总结 %% @summary ----------
+console.log('【一句话总结 %% @summary】')
+const dirSum = '/tmp/proj-sum'
+const sumFile = dirSum + '/.arch-canvas/architecture.mmd'
+files.set(sumFile, 'flowchart TD\n  s1["入口"] --> s2["核心"]\n')
+const docS0 = await call('doc:get', { where: dirSum })
+eq('初始 summary 是空串（不是 undefined）', docS0.summary, '')
+eq('model 里也有 summary 字段', docS0.model.summary, '')
+
+// 1. 经 doc:set 写一句 → 落成头部一行
+const sumWant = '支付对账的讨论稿 "v2" & 还没定'
+const mSum = JSON.parse(JSON.stringify(docS0.model))
+mSum.summary = sumWant
+const setSum = await call('doc:set', { model: mSum, where: dirSum })
+ok('写 summary 后 doc:set 成功', setSum && setSum.ok !== false)
+const sumContent = files.get(sumFile)
+ok('落盘文件里出现 %% @summary 一行', sumContent.indexOf('%% @summary "支付对账的讨论稿 #quot;v2#quot; &amp; 还没定"') >= 0,
+  sumContent.split('\n').slice(0, 8))
+ok('summary 行在 @pos 之前（头部就是它的位置）',
+  sumContent.indexOf('%% @summary ') < sumContent.indexOf('%% @pos ') || sumContent.indexOf('%% @pos ') < 0, sumContent)
+const getSum = await call('doc:get', { where: dirSum })
+eq('summary 往返（含转义还原）', getSum.summary, sumWant)
+eq('doc:get 的 model.summary 同步', getSum.model.summary, sumWant)
+
+// 2. 旧界面（模型里根本没有 summary 字段）不该把它抹掉
+const staleModel = JSON.parse(JSON.stringify(getSum.model))
+delete staleModel.summary
+const staleSet = await call('doc:set', { model: staleModel, where: dirSum })
+ok('旧界面的 doc:set 成功', staleSet && staleSet.ok !== false)
+eq('字段整个缺席时保留现状（不当作要清空）', (await call('doc:get', { where: dirSum })).summary, sumWant)
+// 显式空串才是清空
+const mClearSum = JSON.parse(JSON.stringify(getSum.model))
+mClearSum.summary = ''
+await call('doc:set', { model: mClearSum, where: dirSum })
+eq('显式空串 = 清空', (await call('doc:get', { where: dirSum })).summary, '')
+await call('doc:set', { model: JSON.parse(JSON.stringify(getSum.model)), where: dirSum })
+
+// 3. 进提示词：图级那一行 + 别的图的总结（图库清单里）
+files.set(dirSum + '/.arch-canvas/other.mmd', '%% @summary 另一张图：对账时序\nflowchart TD\n  o1["对账"]\n')
+const listS = await call('doc:list', { where: dirSum })
+const itemArch = (listS.items || []).find((it) => it.name === 'architecture')
+const itemOther = (listS.items || []).find((it) => it.name === 'other')
+eq('doc:list 把每张图的 summary 一起回给界面（选择器要显示它）', itemOther && itemOther.summary, '另一张图：对账时序')
+eq('当前这张图的 summary 也在清单里', itemArch && itemArch.summary, sumWant)
+
+const pSum = promptFn()
+ok('提示词里有「这张图讲的是」那一行', pSum.indexOf('**这张图讲的是**') >= 0)
+ok('提示词里带上了那句话', pSum.indexOf(sumWant) >= 0)
+ok('提示词里交代了 @summary 是元数据', pSum.indexOf('`@summary` 是这张图的一句话总结') >= 0)
+ok('同一图库里别的图的总结也顺带告知', pSum.indexOf('「other」：另一张图：对账时序') >= 0,
+  pSum.split('\n').filter((l) => l.indexOf('同一图库里还有') >= 0))
+ok('注入的源码里保留 %% @summary 行', pSum.indexOf('%% @summary ') >= 0)
+ok('注入的源码里滤掉了 %%! 格式说明行', pSum.indexOf('\n%%!') < 0,
+  pSum.split('\n').filter((l) => l.slice(0, 3) === '%%!'))
+
+// 4. set_summary 走 arch_edit（label 传文本）
+const ssRes = await tool('arch_edit').execute({ ops: [{ op: 'set_summary', label: '用 op 写的一句话' }] }, {})
+eq('set_summary 应用成功', ssRes && ssRes.appliedCount, 1)
+eq('set_summary 生效', (await call('doc:get', { where: dirSum })).summary, '用 op 写的一句话')
+ok('set_summary 落盘', files.get(sumFile).indexOf('%% @summary "用 op 写的一句话"') >= 0)
+const ssClear = await tool('arch_edit').execute({ ops: [{ op: 'set_summary', label: '' }] }, {})
+eq('set_summary 传空串 = 清掉且不留 problem', ssClear && ssClear.problems.length, 0)
+eq('清掉后 summary 为空串', (await call('doc:get', { where: dirSum })).summary, '')
+
+// 5. arch_write：新文本自带就用新的，没带就继承；doc:applyText 一律以新文本为准
+await call('doc:set', { model: JSON.parse(JSON.stringify(getSum.model)), where: dirSum })
+const wNoSum = await tool('arch_write').execute({
+  mermaid: 'flowchart TD\n  s1["入口重画"] --> s3["新下游"]\n',
+}, {})
+ok('arch_write 成功', wNoSum && wNoSum.ok !== false)
+eq('新文本没写 @summary ⇒ 继承旧的那句', wNoSum && wNoSum.summary, sumWant)
+ok('继承的那句仍写在文件里', files.get(sumFile).indexOf('%% @summary ') >= 0)
+
+const wWithSum = await tool('arch_write').execute({
+  mermaid: '%% @summary 重画之后的一句话\nflowchart TD\n  s1["入口重画"] --> s3["新下游"]\n',
+}, {})
+eq('新文本自带 @summary ⇒ 以它为准', wWithSum && wWithSum.summary, '重画之后的一句话')
+ok('新的那句落了盘', files.get(sumFile).indexOf('%% @summary "重画之后的一句话"') >= 0)
+
+const aSum = await call('doc:applyText', {
+  text: 'flowchart TD\n  s1["手改"] --> s3["新下游"]\n%% @pos s1 10 20\n',
+  where: dirSum,
+})
+ok('doc:applyText 成功', aSum && aSum.ok !== false)
+eq('用户手改源码时不继承：删掉那行就是真的删掉', aSum && aSum.summary, '')
+ok('文件里也没有 @summary 了', files.get(sumFile).indexOf('%% @summary ') < 0)
+
+// 6. 落盘失败要回滚（总结不能「只活在内存里」）
+await call('doc:set', { model: (() => { const m = JSON.parse(JSON.stringify(getSum.model)); m.summary = '回滚前的旧句子'; return m })(), where: dirSum })
+eq('回滚前 summary 已就位', (await call('doc:get', { where: dirSum })).summary, '回滚前的旧句子')
+failWritePaths.add(sumFile)
+const failSum = await call('doc:set', {
+  model: (() => { const m = JSON.parse(JSON.stringify(getSum.model)); m.summary = '这句不该留下'; return m })(),
+  where: dirSum,
+})
+ok('写盘失败时 doc:set 报 saved:false', failSum && failSum.saved === false, failSum && failSum.saved)
+eq('写盘失败后 summary 回滚到旧值', (await call('doc:get', { where: dirSum })).summary, '回滚前的旧句子')
+failWritePaths.delete(sumFile)
+
+// ---------- [18] 检查点（快照）：谁改的、能不能退回去 ----------
+console.log('【检查点（快照）】')
+const dirHist = '/tmp/proj-hist'
+const histFile = dirHist + '/.arch-canvas/architecture.mmd'
+files.set(histFile, 'flowchart TD\n  h1["入口"] --> h2["核心"]\n')
+const docH0 = await call('doc:get', { where: dirHist })
+ok('进入检查点测试库成功', docH0 && docH0.ok === true)
+eq('打开本身就算一个检查点', docH0.historyCount, 1)
+const hist0 = await call('doc:history', { where: dirHist })
+eq('doc:history 能列出清单', hist0 && hist0.ok, true)
+eq('打开那一刻 by=open', hist0.entries.length === 1 && hist0.entries[0].by, 'open')
+ok('只有一份时它标记为当前', hist0.entries[0].current === true)
+eq('清单不带正文（省带宽）', hist0.entries[0].text, undefined)
+
+// 1. AI 改一次 → 多一份 by=ai 的检查点，且记下了动了哪些节点
+const histAi = await tool('arch_edit').execute({
+  ops: [{ op: 'add_node', id: 'hCache', label: '缓存层' }],
+}, {})
+eq('AI 改图生效', histAi && histAi.appliedCount, 1)
+const hist1 = await call('doc:history', { where: dirHist })
+eq('AI 改完变成 2 份', hist1.entries.length, 2)
+eq('最新那份 by=ai', hist1.entries[0].by, 'ai')
+ok('最新那份记下了改动涉及哪些节点', hist1.entries[0].changed.indexOf('hCache') >= 0, hist1.entries[0].changed)
+eq('只有最新那份是当前', hist1.entries.filter((e) => e.current).length, 1)
+eq('AI 那一条的来源是 arch_edit', hist1.entries[0].site, 'arch_edit')
+
+// 2. 用户改一次 → 再多一份 by=user（两种来源在同一个时间线上分得清）
+const mHistUser = JSON.parse(JSON.stringify((await call('doc:get', { where: dirHist })).model))
+mHistUser.nodes.find((n) => n.id === 'h2').label = '核心（用户改）'
+await call('doc:set', { model: mHistUser, where: dirHist })
+const hist2 = await call('doc:history', { where: dirHist })
+eq('用户改完变成 3 份', hist2.entries.length, 3)
+eq('最新那份 by=user', hist2.entries[0].by, 'user')
+
+// 3. 同样的内容再存一次：不重复记（历史是「改动」列表，不是「操作」日志）
+const mSame = JSON.parse(JSON.stringify((await call('doc:get', { where: dirHist })).model))
+mSame.nodes.find((n) => n.id === 'h2').label = '核心（用户改）'
+await call('doc:set', { model: mSame, where: dirHist })
+eq('内容没变就不新增检查点', (await call('doc:history', { where: dirHist })).entries.length, 3)
+
+// 4. 退回 AI 那一份：节点回到 AI 改完的样子，用户那次改动被退掉
+const seqAi = hist1.entries[0].seq
+const back = await call('doc:rollback', { seq: seqAi, where: dirHist })
+ok('doc:rollback 成功', back && back.ok !== false, back && back.error)
+eq('回执里说明退到了哪一份', back.rolledBackTo, seqAi)
+const afterBack = await call('doc:get', { where: dirHist })
+ok('节点回到了 AI 改完的状态（hCache 在）', afterBack.model.nodes.some((n) => n.id === 'hCache'))
+eq('用户那次改动被退掉了', afterBack.model.nodes.find((n) => n.id === 'h2').label, '核心')
+ok('退回本身也记了一份检查点（时间线只增不减）', afterBack.historyCount >= 4)
+const hist3 = await call('doc:history', { where: dirHist })
+eq('退回后最新那份仍是 user（这是用户的操作）', hist3.entries[0].by, 'user')
+ok('退回那条的来源写着 rollback:<seq>', String(hist3.entries[0].site).indexOf('rollback:') === 0, hist3.entries[0].site)
+ok('被退掉的那份检查点还在 —— 能再往前走', hist3.entries.some((e) => e.seq === seqAi))
+
+// 5. 再退到更晚的那一份：把用户改动拿回来（证明「退回」不是单向的）
+const seqUser = hist2.entries[0].seq
+const forward = await call('doc:rollback', { seq: seqUser, where: dirHist })
+ok('可以再退到更晚的那一份（等价于「前进」）', forward && forward.ok !== false, forward && forward.error)
+eq('用户那次改动回来了', (await call('doc:get', { where: dirHist })).model.nodes.find((n) => n.id === 'h2').label, '核心（用户改）')
+
+// 6. 边界：编号不存在 / 退到当前状态，都要有话说，且一个字节都不改
+const beforeBad = await call('doc:get', { where: dirHist })
+const badSeq = await call('doc:rollback', { seq: 999999, where: dirHist })
+eq('不存在的编号被拒', badSeq.ok, false)
+ok('拒绝理由说明历史只在内存里', String(badSeq.error).indexOf('重启') >= 0, badSeq.error)
+const curSeq = (await call('doc:history', { where: dirHist })).entries.find((e) => e.current).seq
+const sameSeq = await call('doc:rollback', { seq: curSeq, where: dirHist })
+eq('退到当前状态被拒（不做无意义的写盘）', sameSeq.ok, false)
+const noSeq = await call('doc:rollback', { where: dirHist })
+eq('不给 seq 被拒', noSeq.ok, false)
+eq('三次被拒都没改图', (await call('doc:get', { where: dirHist })).revision, beforeBad.revision)
+
+// 7. 写盘失败的那一次不留检查点（历史里不能有「从来没写进去过」的状态）
+failWritePaths.add(histFile)
+const failEdit = await tool('arch_edit').execute({ ops: [{ op: 'add_node', id: 'hGhost', label: '不该留下' }] }, {})
+ok('写盘失败的回执是 ok:false', failEdit && failEdit.ok === false, failEdit && failEdit.error)
+failWritePaths.delete(histFile)
+const histAfterFail = await call('doc:history', { where: dirHist })
+ok('失败的改动没有进历史',
+  !histAfterFail.entries.some((e) => (e.changed || []).indexOf('hGhost') >= 0),
+  histAfterFail.entries.map((e) => e.changed))
+
+// 8. 历史按文件分开：换一张图不会串味
+files.set(dirHist + '/.arch-canvas/other.mmd', 'flowchart TD\n  o1["另一张"]\n')
+const docOther = await call('doc:open', { key: 'other', where: dirHist })
+ok('打开同库里的另一张图', docOther && docOther.ok !== false, docOther && docOther.error)
+eq('另一张图的历史从「打开」开始，不带上一张的条目', docOther.historyCount, 1)
+const histOther = await call('doc:history', { where: dirHist })
+eq('它的清单里只有自己那一份', histOther.entries.length, 1)
+eq('文件名也跟着换', histOther.file, dirHist + '/.arch-canvas/other.mmd')
+const backArch = await call('doc:open', { key: 'architecture', where: dirHist })
+ok('切回来历史还在（内存里按文件存着）', backArch && backArch.historyCount >= 5, backArch && backArch.historyCount)
+
+// 9. 上限：环形缓冲不涨破
+for (let i = 0; i < 60; i++) {
+  await tool('arch_edit').execute({ ops: [{ op: 'set_label', id: 'h1', label: '第 ' + i + ' 次' }] }, {})
+}
+const capped = await call('doc:history', { where: dirHist })
+eq('历史被上限截住（50 份）', capped.entries.length, 50)
+eq('留下的是新的那些（最新一份是当前）', capped.entries[0].current, true)
+
+// ---------- [19] 沙箱执行策略与会话透传 ----------
+console.log('【沙箱执行策略透传】')
+agentMap.set('sess-proj-x', { session: { id: 'sess-proj-x', cwd: '/tmp/proj-x' } })
+sandboxResolveCalls = []
+lastWriteArgs = null
+
+const mPolicy = JSON.parse(JSON.stringify(getAfterDel.model))
+const setWithSession = await call('doc:set', {
+  model: mPolicy,
+  where: dirNote,
+  session: 'sess-proj-x',
+})
+ok('带 session 的 doc:set 成功', setWithSession && setWithSession.ok !== false)
+ok('fs.writeText 收到了第 5 个参数 sandboxPolicy', !!(lastWriteArgs && lastWriteArgs.sandboxPolicy))
+eq('sandboxPolicy.mode 是 workspace-write', lastWriteArgs && lastWriteArgs.sandboxPolicy && lastWriteArgs.sandboxPolicy.mode, 'workspace-write')
+eq('sandboxPolicy.workspaceRoot 等于会话 cwd', lastWriteArgs && lastWriteArgs.sandboxPolicy && lastWriteArgs.sandboxPolicy.workspaceRoot, '/tmp/proj-x')
+
+ok('sandboxPolicy.resolve 被调用过', sandboxResolveCalls.length > 0)
+const lastResolveCall = sandboxResolveCalls[sandboxResolveCalls.length - 1]
+eq('没有传 mode 给 resolve（不放大权限）', lastResolveCall && lastResolveCall.mode, undefined)
+ok('传给 resolve 的对象带 session', !!(lastResolveCall && lastResolveCall.session))
+eq('传给 resolve 的 session.cwd 正确', lastResolveCall && lastResolveCall.session && lastResolveCall.session.cwd, '/tmp/proj-x')
+
+// agents 桩返回 undefined 时退回行为
+lastWriteArgs = null
+const setWithoutAgent = await call('doc:set', {
+  model: mPolicy,
+  where: dirNote,
+  session: 'non-existent-sess',
+})
+ok('未知 session 的 doc:set 不抛错且成功', setWithoutAgent && setWithoutAgent.ok !== false)
+ok('fs.writeText 仍然发生', !!lastWriteArgs)
+eq('未找到 agent 时 sandboxPolicy 参数退回 undefined', lastWriteArgs && lastWriteArgs.sandboxPolicy, undefined)
+
+// doc:rev 会话化与 where 解析测试
+const dirProjB = '/tmp/test-arch-proj-b'
+const revB = await call('doc:rev', { where: dirProjB, session: 'sess-proj-x' })
+eq('doc:rev 响应 where 指定的项目图库目录', revB && revB.dir, dirProjB + '/.arch-canvas')
+eq('doc:rev 响应 diagram 名', revB && revB.diagram, 'architecture')
+
+// 每一处落盘都要带策略。这条是被**活体探针**抓出来的：doc:set 修好了，但
+// 「新建一张图」那条路（doc:open create）漏了，于是新建的图落不了盘、刷新就没了。
+// 只断言最后一次写入不够 —— 必须断言「所有写入」。
+console.log('【每一处落盘都带策略】')
+const dirW = '/tmp/proj-writes'
+agentMap.set('sess-w', { session: { id: 'sess-w', cwd: dirW } })
+allWriteArgs.length = 0
+await call('doc:list', { where: dirW, session: 'sess-w' })
+const openNew = await call('doc:open', { key: 'newbie', create: true, where: dirW, session: 'sess-w' })
+ok('新建一张图成功', openNew && openNew.ok !== false, openNew && openNew.error)
+await call('doc:rename', { from: 'newbie', to: 'renamed', where: dirW, session: 'sess-w' })
+await call('doc:delete', { key: 'renamed', where: dirW, session: 'sess-w' })
+await call('doc:restore', { key: 'renamed', where: dirW, session: 'sess-w' })
+
+ok('这一步确实发生了写入（否则下面那条是空测试）', allWriteArgs.length >= 3, allWriteArgs.length)
+const noPolicy = allWriteArgs.filter((w) => !w.policy)
+eq('所有写入都带了 sandboxPolicy（漏一个就是静默失败）', noPolicy.length, 0)
+ok('写入的路径都在测试图库里', allWriteArgs.every((w) => String(w.targetKey).indexOf(dirW) === 0), allWriteArgs.map((w) => w.targetKey))
+
+// ---------- 任务 1 守门断言：未建库项目读路径绝不创建，写路径与显式创建正常 ----------
+console.log('【任务 1 守门断言：读路径不建库，写路径防隐式创建】')
+const dirFresh = '/tmp/proj-fresh-' + Date.now()
+const filesBefore = new Set([...files.keys()])
+
+// 1. doc:get 返回空图
+const freshGet = await call('doc:get', { where: dirFresh })
+ok('全新项目 doc:get 返回 ok', freshGet && freshGet.ok === true)
+eq('全新项目 doc:get 节点数为 0', freshGet.nodeCount, 0)
+eq('全新项目 doc:get 连线数为 0', freshGet.edgeCount, 0)
+
+// 2. 桩 files Map 里没有新增任何该目录下的文件
+const filesAfter = [...files.keys()]
+const freshNewFiles = filesAfter.filter((k) => !filesBefore.has(k) && k.startsWith(dirFresh))
+eq('桩 files Map 里没有新增该目录下的任何文件', freshNewFiles.length, 0, freshNewFiles)
+
+// 3. arch_write / arch_edit 被拒，且 error 指明「还没有图库」
+const writeBlocked = await tool('arch_write').execute({
+  mermaid: 'flowchart TD\n  x["A"] --> y["B"]\n',
+}, {})
+eq('未建库项目 arch_write 被拒 (ok === false)', writeBlocked.ok, false)
+ok('arch_write 错误信息指出还没有图库', String(writeBlocked.error).indexOf('还没有图库') >= 0, writeBlocked.error)
+
+const editBlocked = await tool('arch_edit').execute({
+  ops: [{ op: 'add_node', id: 'n1', label: '试加节点' }],
+}, {})
+eq('未建库项目 arch_edit 被拒 (ok === false)', editBlocked.ok, false)
+ok('arch_edit 错误信息指出还没有图库', String(editBlocked.error).indexOf('还没有图库') >= 0, editBlocked.error)
+
+// 4. doc:open { create: true } 随后能建出来，absent 标记已清掉
+const createFresh = await call('doc:open', { where: dirFresh, name: 'architecture', create: true })
+ok('doc:open { create: true } 能成功建出图', createFresh && createFresh.ok === true)
+const freshFilesCreated = [...files.keys()].filter((k) => k.startsWith(dirFresh + '/.arch-canvas/'))
+ok('图库目录与文件已建出', freshFilesCreated.length > 0, freshFilesCreated)
+
+// 建出后 arch_write 恢复可用
+const writeAllowed = await tool('arch_write').execute({
+  mermaid: 'flowchart TD\n  x["入口"] --> y["出口"]\n',
+}, {})
+eq('建库后 arch_write 成功 (ok !== false)', writeAllowed && writeAllowed.ok !== false, true)
 
 console.log('')
 console.log(fail === 0 ? `全部通过：${pass} / ${pass}` : `通过 ${pass}，失败 ${fail}`)

@@ -26,6 +26,8 @@ var DIR_SET = { TD: 1, TB: 1, BT: 1, LR: 1, RL: 1 }
 
 var fs = ctx.get('fs')
 var systemPromptSvc = ctx.get('systemPrompt')
+var sandboxPolicySvc = ctx.get('sandboxPolicy')
+var agentsSvc = ctx.get('agents')
 
 // webServer 不在这里取快照（服务何时可用由 Cordis 定，行顺序不承载加载语义）：
 // 快照一次的后果是路由静默 404。路由交给 harness.route 登记，由外层在就绪后注册。
@@ -50,6 +52,12 @@ var doc = {
   nodes: [], edges: [], groups: [], extras: [],
   direction: 'TD', revision: 0, updatedBy: 'init', updatedAt: Date.now(),
   file: '', warnings: [], notes: [], tombstoned: false,
+  // 整张图的一句话总结（`%% @summary`）：图级字段，不挂节点。进提示词的头部，
+  // 也随图库清单回给界面 —— 它回答的是「这张图讲的是什么」，不必读完整个文件。
+  summary: '',
+  absent: false,
+  // 代码锚点的失效校验结果（派生数据，不落盘）：{ 节点id: { 引用: 'ok'|'missing'|'symbol-missing'|'unknown' } }
+  fileStatus: {},
   // 打开的是项目里某个 .mmd / .mermaid 文件时，这里放它的绝对路径（图库里的图是 null）。
   // 有它就意味着「别被图库加载冲掉」+ 提示词里要写明这张图的真相源是哪个文件。
   external: null,
@@ -83,6 +91,8 @@ function adopt(parsed) {
   doc.groups = parsed.groups
   doc.extras = parsed.extras || []
   doc.direction = parsed.direction || 'TD'
+  // 一句话总结是图级的，解析器直接给出来；解析结果里没有就归零（删掉那一行 = 真的删掉）。
+  doc.summary = cleanSummary(parsed.summary)
   // 解析器发现的异常行、指向不存在节点的注释 —— 这些是「图悄悄少了一块」的唯一线索，
   // 收进 warnings 供 RPC / 日志带出去，别让它烂在解析结果里。
   var parsedWarnings = parsed.warnings || []
@@ -118,13 +128,90 @@ function seedDoc() {
   ].join('\n'))
 }
 
-async function persist() {
+// 记录沙箱策略缺失原因，同原因只报一次，防止高频刷屏
+var reportedSandboxMissingReasons = {}
+
+/**
+ * 获取会话对应的沙箱执行策略。
+ * 必须传会话：fs 服务的写入受按调用沙箱策略约束，若不传会退回后端默认（部署工作区根，而非当前项目）。
+ * 绝不自己声明 mode：传 mode 会被视为「一次已批准的显式模式」从而覆盖会话自身的模式（权限放大）。
+ * 只传 { session }，由策略归属方 sandboxPolicy 决定真实的 mode 与 workspaceRoot。
+ */
+function policyOfSession(sess) {
+  if (!sess) {
+    if (!reportedSandboxMissingReasons['no-session']) {
+      reportedSandboxMissingReasons['no-session'] = true
+      logEvent('warn', 'sandbox.policy.missing', { reason: 'no-session' })
+    }
+    return undefined
+  }
+  if (!sandboxPolicySvc || typeof sandboxPolicySvc.resolve !== 'function') {
+    if (!reportedSandboxMissingReasons['no-service']) {
+      reportedSandboxMissingReasons['no-service'] = true
+      logEvent('warn', 'sandbox.policy.missing', { reason: 'no-service' })
+    }
+    return undefined
+  }
+  try {
+    return sandboxPolicySvc.resolve({ session: sess })
+  } catch (e) {
+    var r = 'resolve-failed:' + msgOf(e)
+    if (!reportedSandboxMissingReasons[r]) {
+      reportedSandboxMissingReasons[r] = true
+      logEvent('warn', 'sandbox.policy.missing', { reason: r })
+    }
+    return undefined
+  }
+}
+
+function policyOfAgent(agent) {
+  return policyOfSession(agent && agent.session)
+}
+
+function policyOfSessionId(id) {
+  if (!id) return undefined
+  if (!agentsSvc || typeof agentsSvc.get !== 'function') {
+    if (!reportedSandboxMissingReasons['no-agents-service']) {
+      reportedSandboxMissingReasons['no-agents-service'] = true
+      logEvent('warn', 'sandbox.policy.missing', { reason: 'no-agents-service' })
+    }
+    return undefined
+  }
+  try {
+    var agent = agentsSvc.get(id)
+    return policyOfAgent(agent)
+  } catch (e) {
+    var r = 'agents-get-failed:' + msgOf(e)
+    if (!reportedSandboxMissingReasons[r]) {
+      reportedSandboxMissingReasons[r] = true
+      logEvent('warn', 'sandbox.policy.missing', { reason: r })
+    }
+    return undefined
+  }
+}
+
+/**
+ * 落盘。`site` 只是记进检查点标签（谁在哪儿改的），不影响写什么。
+ * 写成功之后在这里记一份检查点 —— 这是唯一的收口：所有写入路径都经过 persist，
+ * 于是「AI 改的」「用户改的」自动都留档，不需要每个调用点各自记得。
+ */
+async function persist(policy?, site?) {
   if (!fs) return 'fs 服务不可用'
   try {
+    if (doc.absent) {
+      var targetDir = doc.file.slice(0, doc.file.lastIndexOf('/'))
+      if (lib.scope === 'project') {
+        var inherited = await inheritGlobalOnce({ dir: targetDir }, policy)
+        if (inherited) doc.notes.push(inherited)
+      }
+      await ensureDir(targetDir, policy)
+    }
     var body = serializeDoc(doc)
     // 软删除过的图再落盘时要把墓碑保住，否则一次无关的写就把「已删除」抹掉了
     if (doc.tombstoned) body = TOMBSTONE + '\n' + body
-    await fs.writeText(await fs.resolve(doc.file), body)
+    await fs.writeText(await fs.resolve(doc.file), body, undefined, undefined, policy)
+    doc.absent = false
+    pushHistory(body, site)
     return null
   } catch (e) {
     return msgOf(e)
@@ -152,6 +239,20 @@ function whereOfExec(exec) {
     for (var i = 0; i < cands.length; i++) {
       if (typeof cands[i] === 'string' && cands[i]) return cands[i]
     }
+  } catch (e) {}
+  return undefined
+}
+
+/**
+ * 从工具执行上下文里取会话 id —— 落盘要用它换一份沙箱策略（见 policyOfSessionId）。
+ * 取不到就返回 undefined：那一路退回「不传策略」的旧行为，而不是伪造一把更宽的围栏。
+ */
+function sessionIdOfExec(exec) {
+  try {
+    var a = exec && exec.agent
+    if (!a) return undefined
+    if (a.session && a.session.id) return a.session.id
+    if (a.id) return a.id
   } catch (e) {}
   return undefined
 }
@@ -185,6 +286,7 @@ async function listDiagrams(dir) {
       edges: parsed.edges.length,
       links: parsed.nodes.filter(function (n) { return !!n.link }).length,
       bytes: entry.size || text.length,
+      summary: cleanSummary(parsed.summary),
     })
   }
   items.sort(function (a, b) {
@@ -199,14 +301,14 @@ async function listDiagrams(dir) {
  * 多数后端在写文件时会顺手建父目录；不行再问 directoryPickerController。
  * 占位文件用 .gitkeep，顺便让这个目录容易被纳入版本管理。
  */
-async function ensureDir(path) {
+async function ensureDir(path, policy?) {
   if (!fs) return false
   try {
     var t = await fs.resolve(path)
     if (await fs.stat(t)) return true
   } catch (e) {}
   try {
-    await fs.writeText(await fs.resolve(path + '/.gitkeep'), '')
+    await fs.writeText(await fs.resolve(path + '/.gitkeep'), '', undefined, undefined, policy)
     return true
   } catch (e) {}
   try {
@@ -225,7 +327,7 @@ async function ensureDir(path) {
  * 一打开项目就会看到空画布 —— 看起来像丢了。用全局目录里的标记文件保证只发生一次
  * （之后新建的项目从干净的图库开始）。
  */
-async function inheritGlobalOnce(target) {
+async function inheritGlobalOnce(target, policy?) {
   if (!fs) return ''
   try {
     var marker = await fs.resolve(GLOBAL_DIR + '/.inherited')
@@ -234,9 +336,9 @@ async function inheritGlobalOnce(target) {
     var live = items.filter(function (x) { return !x.deleted })
     for (var i = 0; i < live.length; i++) {
       var text = await fs.readText(await fs.resolve(GLOBAL_DIR + '/' + live[i].name + '.mmd'))
-      await fs.writeText(await fs.resolve(fileAt(target.dir, live[i].name)), text)
+      await fs.writeText(await fs.resolve(fileAt(target.dir, live[i].name)), text, undefined, undefined, policy)
     }
-    await fs.writeText(marker, '首次进入项目图库时做过一次继承：' + new Date().toISOString() + '\n')
+    await fs.writeText(marker, '首次进入项目图库时做过一次继承：' + new Date().toISOString() + '\n', undefined, undefined, policy)
     return live.length > 0 ? '已把全局图库里的 ' + live.length + ' 张图复制到 ' + target.dir : ''
   } catch (e) {
     doc.warnings.push('继承全局图库失败: ' + msgOf(e))
@@ -343,7 +445,7 @@ function baseNameOf(path) {
  * 打开项目里任意位置的一个 mermaid 文件：此后画布编辑的就是这个文件本身（落盘写回原路径）。
  * 它不属于任何图库，所以不参与改名/软删除那一套 —— 这张图的「key」就是路径。
  */
-async function openExternal(path, create) {
+async function openExternal(path, create, policy?) {
   if (!fs) return { ok: false, error: 'fs 服务不可用' }
   if (!isDiagramPath(path)) return { ok: false, error: '只支持 .mmd / .mermaid 文件：' + path }
   var text = null
@@ -361,13 +463,14 @@ async function openExternal(path, create) {
   doc.name = baseNameOf(path)
   doc.file = path
   doc.tombstoned = false
+  doc.absent = false
   doc.warnings = []
   doc.notes = []
   if (text !== null) {
     adopt(parseMermaid(text))
   } else {
     adopt(emptyDoc())
-    var err = await persist()
+    var err = await persist(policy, 'doc:openPath')
     if (err) doc.warnings.push('写入失败: ' + err)
   }
   bump('switch')
@@ -494,6 +597,7 @@ async function buildLibraryItems(scan: ProjectScan) {
         project: info.project,
         key: info.project ? info.project + '/' + name : name,
         dir: info.dir,
+        summary: cleanSummary(parsed.summary),
       })
     }
   }
@@ -554,7 +658,7 @@ async function refreshLibrary(force?: boolean) {
 /** 载入一张图。create 为真时不存在就建；默认图总是允许隐式创建。
  *  target 是这一趟的图库：加载期间的 await 点上 lib 可能已经被别的请求切走，
  *  路径必须从这里取，不能看全局 lib —— 否则 A 库的内容会落到 B 库的文件里。 */
-async function loadInto(name, create, target) {
+async function loadInto(name, create, target, policy?) {
   var clean = cleanName(name)
   if (fs && !create && clean !== DEFAULT_DIAGRAM) {
     try {
@@ -582,19 +686,36 @@ async function loadInto(name, create, target) {
     }
   }
   if (text !== null) {
+    doc.absent = false
     doc.tombstoned = hasTombstone(text)
     adopt(parseMermaid(text))
+    // 打开也是一个检查点：这是「AI 第一次动手之前」那个状态，最常被退回到的就是它。
+    pushHistory(text, 'open', 'open')
   } else {
-    // 种子示例只出现在「全局图库还完全空着」时；项目图库里新图从空白开始 ——
-    // 用户要画的是自己的框架，不是我的示例。
-    var seed = false
-    if (target.scope === 'global' && clean === DEFAULT_DIAGRAM) {
+    // 读路径（loadInto）绝不创建任何东西：不 ensureDir、不 inheritGlobalOnce、不播种默认图。
+    // 项目图库目录或文件不存在时，把 doc 置成空文档，doc.file 仍指向本该写入的路径，标记 absent = true。
+    // 只有显式 create（例如 doc:open { create: true } / arch_switch { create: true }）或全局图库才允许创建。
+    if (create) {
+      if (target.scope === 'project') {
+        var inherited = await inheritGlobalOnce(target, policy)
+        if (inherited) doc.notes.push(inherited)
+        await ensureDir(target.dir, policy)
+      }
+      adopt(emptyDoc())
+      doc.absent = false
+      var err = await persist(policy, 'doc:new')
+      if (err) doc.warnings.push('写入失败: ' + err)
+    } else if (target.scope === 'global' && clean === DEFAULT_DIAGRAM) {
       var items = await listDiagrams(target.dir)
-      seed = items.length === 0
+      var seed = items.length === 0
+      adopt(seed ? seedDoc() : emptyDoc())
+      doc.absent = false
+      var errG = await persist(policy, 'seed')
+      if (errG) doc.warnings.push('写入失败: ' + errG)
+    } else {
+      adopt(emptyDoc())
+      doc.absent = true
     }
-    adopt(seed ? seedDoc() : emptyDoc())
-    var err = await persist()
-    if (err) doc.warnings.push('写入失败: ' + err)
   }
   doc.notes = []
   // 同一份内容不重复落行（治噪音）：hmr 每次构建都会重新 loadInto 一遍，实测单日 50 行 doc.load，
@@ -622,7 +743,8 @@ async function loadInto(name, create, target) {
  * 哪个库」与 lib 对不上，后续落盘就把 A 的图写进了 B 的图库。排队之后，每个任务在轮到自己
  * 时才定目标库，谁也不覆盖谁。
  */
-function ensureLoaded(where?: string) {
+function ensureLoaded(where?: string, sessionId?: string) {
+  var policy = policyOfSessionId(sessionId)
   if (typeof where === 'string') {
     var next = resolveLib(where)
     if (next.dir !== root.dir) {
@@ -644,7 +766,7 @@ function ensureLoaded(where?: string) {
   return enqueueLoad(function () {
     // 排到自己时才看 lib：这时它是最新一次切库的结果
     if (loadedFor === lib.dir) return { ok: true }
-    return loadDiagram(lib)
+    return loadDiagram(lib, policy)
   })
 }
 
@@ -658,30 +780,20 @@ function enqueueLoad(task) {
  * 按 key 打开/新建一张图（doc:open、arch_switch 走这里）。
  * 也排队：这两个入口是直接改 lib 再加载的，不排队就仍与 ensureLoaded 有交叉窗口。
  */
-function loadDiagramAt(target, name, create) {
+function loadDiagramAt(target, name, create, policy?) {
   return enqueueLoad(async function () {
-    // 新建 `子项目/图名` 时那个图库可能还不存在：先把目录弄出来，否则第一次落盘会失败
-    if (target.scope === 'project') await ensureDir(target.dir)
-    var r = await loadInto(name, create, target)
+    // 显式新建（create === true）时才创建目录；读路径绝不建目录
+    if (create && target.scope === 'project') await ensureDir(target.dir, policy)
+    var r = await loadInto(name, create, target, policy)
     // 只有目标仍是当前层时才认这一趟；否则下次 ensureLoaded 会重新加载
     if (r && r.ok && lib.dir === target.dir) loadedFor = target.dir
     return r
   })
 }
 
-async function loadDiagram(target) {
-  var inherited = ''
-  if (target.scope === 'project') {
-    // 顺序要紧：先判断「这个图库本来就不存在」再继承，最后才建目录。
-    // 反过来的话目录已被建出来，「不存在才继承」就永远为假 —— 继承变死代码。
-    var dirInfo = null
-    try { dirInfo = await fs.stat(await fs.resolve(target.dir)) } catch (e) {}
-    if (!dirInfo) inherited = await inheritGlobalOnce(target)
-    await ensureDir(target.dir)
-  }
-  var result = await loadInto(doc.name || DEFAULT_DIAGRAM, target.scope === 'project', target)
-  // loadInto 会清空 notes，所以继承的提示要在这之后补
-  if (inherited) doc.notes.push(inherited)
+async function loadDiagram(target, policy?) {
+  // 读路径绝不创建任何东西：不 ensureDir、不 inheritGlobalOnce、不播种默认图
+  var result = await loadInto(doc.name || DEFAULT_DIAGRAM, false, target, policy)
   loadedFor = target.dir
   // 只有「真的换了」才 bump —— 界面靠修订号变化发现图库变了并重新适应视图
   if (everLoaded) {
@@ -704,6 +816,19 @@ function normalizeModel(model) {
     var id = cleanId(n.id)
     if (seen[id]) continue
     seen[id] = true
+    // 用户注释：从界面/文件进来的自由文本，长度要设闸门 —— 它会被原样注入每一步的提示词，
+    // 一条超长注释能把上下文挤爆。空注释一律归一成「不存在」：没有正文时 noteDone 没有意义。
+    var noteText = typeof n.note === 'string' ? n.note : ''
+    if (noteText.length > 2000) noteText = noteText.slice(0, 2000)
+    // 代码锚点：数组，逐条 trim / 去重 / 设闸门 —— 它同样会进提示词，而且会被拿去 stat。
+    var fileList = []
+    var rawFiles = Array.isArray(n.files) ? n.files : []
+    for (var fi = 0; fi < rawFiles.length && fileList.length < 20; fi++) {
+      if (typeof rawFiles[fi] !== 'string') continue
+      var fv = rawFiles[fi].trim()
+      if (!fv || fv.length > 300) continue
+      if (fileList.indexOf(fv) < 0) fileList.push(fv)
+    }
     nodes.push({
       id: id,
       label: typeof n.label === 'string' ? n.label : id,
@@ -712,6 +837,9 @@ function normalizeModel(model) {
       x: typeof n.x === 'number' && isFinite(n.x) ? n.x : null,
       y: typeof n.y === 'number' && isFinite(n.y) ? n.y : null,
       link: normLink(n.link),
+      note: noteText,
+      noteDone: noteText !== '' && n.noteDone === true,
+      files: fileList,
     })
   }
   var edges = []
@@ -752,7 +880,15 @@ function normalizeModel(model) {
   for (var x = 0; x < rawExtras.length; x++) {
     if (typeof rawExtras[x] === 'string') extras.push(rawExtras[x])
   }
-  return { nodes: nodes, edges: edges, groups: groups, direction: dir, extras: extras }
+  return {
+    nodes: nodes, edges: edges, groups: groups, direction: dir, extras: extras,
+    // 图级的一句话总结：白名单里必须带上它 —— normalizeModel 是逐字段重建，
+    // 漏了就是「用户每保存一次，总结被静默清空一次」（与元素注释同一个坑）。
+    // 唯一的例外是**字段整个缺席**：那是旧界面（换宿主前就打开的页面）发来的模型，
+    // 它根本不知道有 summary 这回事 —— 这时保留现状，而不是把它当成「要清空」。
+    // 显式清空走 summary: ''（新界面/工具一直是这么发的）。
+    summary: typeof model.summary === 'string' ? cleanSummary(model.summary) : cleanSummary(doc.summary),
+  }
 }
 
 function adoptModel(model) {
@@ -762,20 +898,35 @@ function adoptModel(model) {
   doc.groups = norm.groups
   doc.direction = norm.direction
   doc.extras = norm.extras
+  doc.summary = norm.summary
 }
 
 function modelOf() {
   return {
     nodes: doc.nodes, edges: doc.edges, groups: doc.groups,
     direction: doc.direction, extras: doc.extras,
+    summary: doc.summary,
   }
+}
+
+/** 未解决 / 已解决的元素注释条数。已解决的不进提示词（见 plugin.ts promptText），所以两处都要用。 */
+function noteCounts() {
+  var open = 0
+  var done = 0
+  for (var i = 0; i < doc.nodes.length; i++) {
+    if (!doc.nodes[i].note) continue
+    if (doc.nodes[i].noteDone) done += 1; else open += 1
+  }
+  return { open: open, done: done }
 }
 
 // 把当前所有节点的关键字段压成一个可比较的快照。
 // 用「改完求差」而不是「在 applyOps 里逐个记录」：这样 arch_edit / arch_write /
 // 用户回写 三条路都自动覆盖，也不会漏掉某个 op 分支。
 function nodeKey(n) {
-  return n.label + '\u0000' + n.shape + '\u0000' + n.group + '\u0000' + n.x + '\u0000' + n.y + '\u0000' + n.link
+  return n.label + '\u0000' + n.shape + '\u0000' + n.group + '\u0000' + n.x + '\u0000' + n.y +
+    '\u0000' + n.link + '\u0000' + (n.note || '') + '\u0000' + (n.noteDone === true ? '1' : '0') +
+    '\u0000' + (n.files || []).join('\u0001')
 }
 
 function snapshotNodes() {
@@ -842,9 +993,10 @@ function setEdgeLabel(from, to, label) {
 /** 落盘前的模型快照。写盘失败时用它把内存恢复回去，别让内存与磁盘各说各话。 */
 function snapshotModel() {
   return JSON.stringify({
-    name: doc.name, file: doc.file, tombstoned: doc.tombstoned,
+    name: doc.name, file: doc.file, tombstoned: doc.tombstoned, absent: doc.absent === true,
     nodes: doc.nodes, edges: doc.edges, groups: doc.groups,
-    direction: doc.direction, extras: doc.extras, notes: doc.notes,
+    direction: doc.direction, extras: doc.extras, notes: doc.notes, fileStatus: doc.fileStatus,
+    summary: doc.summary,
   })
 }
 
@@ -853,12 +1005,15 @@ function restoreModel(saved) {
   doc.name = m.name
   doc.file = m.file
   doc.tombstoned = m.tombstoned
+  doc.absent = m.absent === true
   doc.nodes = m.nodes
   doc.edges = m.edges
   doc.groups = m.groups
   doc.direction = m.direction
   doc.extras = m.extras
   doc.notes = m.notes
+  doc.fileStatus = m.fileStatus || {}
+  doc.summary = cleanSummary(m.summary)
 }
 
 /**
@@ -866,14 +1021,50 @@ function restoreModel(saved) {
  * 不恢复的后果：这一版改动只活在内存里，而后续任何一次落盘又会把它写出去 ——
  * 用户看到的是「明明改了，重启之后没了 / 时有时无」。
  */
-async function persistOrRollback(saved, site) {
-  var err = await persist()
+async function persistOrRollback(saved, site, policy?) {
+  var err = await persist(policy, site)
   if (!err) return null
   restoreModel(saved)
   if (lastChange) lastChange = { by: lastChange.by, rev: doc.revision, nodes: [] }
   doc.warnings.push('保存失败，本次改动已回滚: ' + err)
   logEvent('error', 'persist.fail', { site: site, file: doc.file, error: err })
   return err
+}
+
+/**
+ * 回到某个检查点。
+ *
+ * **这不是「撤销一步」**：把那一份正文重新装进文档、落盘，然后在历史末尾追加一条
+ * 「用户 · 回到检查点」。时间线只增不减 —— 于是退回之后还能再往前走（更晚的那些检查点还在），
+ * 而不是「一退就再也回不来」。界面上的 60 步撤销是另一层（只在内存、只管这一次会话的手动编辑）。
+ *
+ * 为什么用 `inheritPositions`：老快照里某些节点可能没有坐标（用户摆过、后来才写进文件），
+ * 继承当前位置比让它们跳回去更符合直觉 —— 与 arch_write 同一条规则。
+ */
+async function applyRollback(seq, policy?) {
+  var entry = findHistory(seq)
+  if (!entry) return { ok: false, error: '这个检查点不在历史里了（历史只在内存里，重启 dsh 会清空）' }
+  if (entry.text === currentText()) return { ok: false, error: '这就是当前状态，不用退回' }
+  var parsed = inheritPositions(parseMermaid(entry.text))
+  if (parsed.nodes.length === 0 && parsed.extras.length === 0) {
+    return { ok: false, error: '那份快照里没有节点也没有内容行，已放弃（图没有变）' }
+  }
+  var saved = snapshotModel()
+  adopt(parsed)
+  adoptModel(modelOf())
+  doc.tombstoned = hasTombstone(entry.text)
+  bump('user')
+  noteUserChange()
+  doc.notes = ['回到检查点：' + historyLabelOf(entry)]
+  var err = await persistOrRollback(saved, 'rollback:' + seq, policy)
+  if (err) {
+    logEvent('error', 'history.rollback.fail', { seq: seq, file: doc.file, error: err })
+    return { ok: false, error: err }
+  }
+  logEvent('info', 'history.rollback', {
+    seq: seq, file: doc.file, fromRev: entry.rev, nodes: doc.nodes.length, edges: doc.edges.length,
+  })
+  return { ok: true }
 }
 
 /**
@@ -907,6 +1098,9 @@ function applyOps(ops) {
         x: typeof op.x === 'number' ? op.x : null,
         y: typeof op.y === 'number' ? op.y : null,
         link: normLink(op.link),
+        note: '',
+        noteDone: false,
+        files: [],
       })
       done.push('新增节点 ' + nid)
     } else if (kind === 'set_label') {
@@ -1008,6 +1202,31 @@ function applyOps(ops) {
       if (!DIR_SET[dv]) { problems.push(tag + ': 方向只能是 TD/BT/LR/RL'); continue }
       doc.direction = dv === 'TB' ? 'TD' : dv
       done.push('方向 -> ' + doc.direction)
+    } else if (kind === 'set_summary') {
+      // 整张图的一句话总结（图级，不挂节点）：传空串 = 清掉。用 label 传文本，
+      // 与其它 op 一致（工具 schema 里 label 的描述写明了这一条）。
+      var sumNext = cleanSummary(typeof op.label === 'string' ? op.label : '')
+      doc.summary = sumNext
+      done.push(sumNext ? '这张图的一句话总结已更新' : '清掉了这张图的一句话总结')
+    } else if (kind === 'set_files') {
+      // 代码锚点：整组替换（不是增删单条）—— 「这个节点对应哪几个文件」是一个整体判断，
+      // 增量改容易改出半截状态。传空数组 = 清掉。
+      var ffid = opRef(op.id, 'id', tag, problems)
+      if (ffid === null) continue
+      var ffn = findNode(ffid)
+      if (!ffn) { problems.push(tag + ': 找不到节点 ' + String(op.id)); continue }
+      var nextFiles = []
+      var rawFs = Array.isArray(op.files) ? op.files : []
+      for (var fk = 0; fk < rawFs.length && nextFiles.length < 20; fk++) {
+        if (typeof rawFs[fk] !== 'string') continue
+        var fsv = rawFs[fk].trim()
+        if (!fsv || fsv.length > 300) continue
+        if (nextFiles.indexOf(fsv) < 0) nextFiles.push(fsv)
+      }
+      ffn.files = nextFiles
+      done.push(nextFiles.length
+        ? ('给 ' + ffn.id + ' 标了 ' + nextFiles.length + ' 个代码锚点')
+        : ('清掉 ' + ffn.id + ' 的代码锚点'))
     } else {
       problems.push(tag + ': 未知操作类型')
     }
@@ -1026,4 +1245,102 @@ function inheritPositions(parsed) {
     if ((p.x === null || p.x === undefined) && old[p.id]) { p.x = old[p.id].x; p.y = old[p.id].y }
   }
   return parsed
+}
+
+/**
+ * 把「用户在元素上留的东西」（注释 + 代码锚点）继承到一份新文本解析出来的模型上，返回继承了几处。
+ *
+ * 为什么只给 arch_write 用、不给 doc:applyText 用 —— 这条边界是刻意的：
+ * 注释与锚点都是**用户**的东西，AI 整体重画时不该把它悄悄抹掉；但用户自己在「源码」页删掉那一行，
+ * 就是真的要删，这时还去继承，它们就成了删不掉的幽灵
+ * （和 `@pos` 那条「注释不许让节点复活」是同一个坑，只是方向相反）。
+ *
+ * 图级的一句话总结（`%% @summary`）走同一条边界：新文本自己写了就用新的，
+ * 没写就继承 —— 重画时把它悄悄清掉，等于把「这张图讲的是什么」也一起丢了。
+ */
+function inheritUserMarks(parsed) {
+  var old = {}
+  for (var i = 0; i < doc.nodes.length; i++) {
+    var n = doc.nodes[i]
+    if (n.note || (n.files && n.files.length)) {
+      old[n.id] = { note: n.note || '', done: n.noteDone === true, files: (n.files || []).slice() }
+    }
+  }
+  var kept = 0
+  for (var j = 0; j < parsed.nodes.length; j++) {
+    var p = parsed.nodes[j]
+    if (p.note) continue        // 新文本自己带了注释，以它为准
+    if (!old[p.id]) continue    // 节点没重画出来，注释与锚点跟着它一起走
+    p.note = old[p.id].note
+    p.noteDone = old[p.id].done
+    // 代码锚点同理：AI 重画时不该把用户标的文件引用抹掉（新文本自己写了就用新的）
+    if (!(p.files && p.files.length)) p.files = old[p.id].files.slice()
+    kept += 1
+  }
+  if (!cleanSummary(parsed.summary)) parsed.summary = cleanSummary(doc.summary)
+  return kept
+}
+
+// ==================== 代码锚点的失效校验 ====================
+// 为什么必须校验：文件会改名、会移动，而注释不会自己更新 —— **一条过期锚点比没有锚点更坏**，
+// 它会把 AI 自信地送到错的文件。所以加载/保存后 stat 一遍（带 #符号的再查一次符号），
+// 把结论显式摆到界面与提示词里 —— 让腐烂可见，这是这个功能能不能帮上忙的分水岭。
+var FILE_REF_LIMIT = 40     // 一次最多校验多少条：有人塞一千条也不能把加载拖死
+
+/** `路径#符号` → { path, symbol }；没有 `#` 时 symbol 为空串。 */
+function splitFileRef(ref) {
+  var s = String(ref == null ? '' : ref)
+  var i = s.indexOf('#')
+  if (i < 0) return { path: s, symbol: '' }
+  return { path: s.slice(0, i), symbol: s.slice(i + 1) }
+}
+
+/** 锚点相对谁解析：项目图库相对项目根；外部文件相对它自己所在的目录；其余判不了。 */
+function fileRefRoot() {
+  if (lib.scope === 'project' && lib.workspace) return lib.workspace.replace(/\/+$/, '')
+  if (doc.external) return doc.external.replace(/\/[^/]*$/, '')
+  return ''
+}
+
+async function checkFileRef(ref, root) {
+  var parts = splitFileRef(ref)
+  if (!parts.path) return 'missing'
+  var abs = /^\//.test(parts.path) ? parts.path : (root ? root + '/' + parts.path : '')
+  if (!abs) return 'unknown'
+  try {
+    var t = await fs.resolve(abs)
+    var info = await fs.stat(t)
+    if (!info) return 'missing'
+    if (!parts.symbol) return 'ok'
+    var text = await fs.readText(t)
+    return text.indexOf(parts.symbol) >= 0 ? 'ok' : 'symbol-missing'
+  } catch (e) {
+    // 读不出来就当它坏了 —— 宁可说「这条不能用」，也不假装没问题
+    return 'missing'
+  }
+}
+
+/**
+ * 重算每个节点上代码锚点的状态，写进 doc.fileStatus（派生数据，不进文件）。
+ * 调用方：加载/切库之后、doc:get、doc:set 之后、arch_read —— 这几处覆盖了界面与提示词两条消费路径。
+ */
+async function verifyFileRefs() {
+  var status = {}
+  if (!fs) { doc.fileStatus = status; return status }
+  var root = fileRefRoot()
+  var budget = FILE_REF_LIMIT
+  for (var i = 0; i < doc.nodes.length; i++) {
+    var n = doc.nodes[i]
+    var refs = n.files || []
+    if (!refs.length) continue
+    var per = {}
+    for (var j = 0; j < refs.length; j++) {
+      if (budget <= 0) { per[refs[j]] = 'unknown'; continue }
+      budget -= 1
+      per[refs[j]] = await checkFileRef(refs[j], root)
+    }
+    status[n.id] = per
+  }
+  doc.fileStatus = status
+  return status
 }

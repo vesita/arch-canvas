@@ -1,8 +1,7 @@
 %% arch-canvas —— 由「架构画布」面板与 AI 共同维护
-%% @pos <节点id> <x> <y> 是画布坐标注释，对 Mermaid 渲染无任何影响，可忽略或手改
-%% @pos human 65 -147
-%% @pos bootC 62 -327
-%% @pos bootH 1107 -493
+%% @pos <节点id> <x> <y> 是画布坐标注释，@link <节点id> <图名> 是下钻到另一张图；
+%% @note <节点id> <文本> 是用户留给 AI 的注释，@done 是同一件事但已解决；
+%% 以上对 Mermaid 渲染都无任何影响，可忽略或手改
 %% @pos canvas 463 -447
 %% @pos picker 650 -536
 %% @pos exp 454 -290
@@ -11,12 +10,15 @@
 %% @pos parser 737 -35
 %% @pos lib 892 170
 %% @pos file 752 76
-%% @pos prompt 1378 227
 %% @pos alog 1330 60
+%% @pos prompt 1378 227
 %% @pos tools 1174 335
 %% @pos i1 422 10
 %% @pos i2 420 -118
 %% @pos i3 431 155
+%% @pos human 65 -147
+%% @pos bootC 62 -327
+%% @pos bootH 1107 -493
 flowchart TD
   subgraph cl["Client 侧 · 人的那一半"]
     canvas["自绘 SVG 画布<br/>拖拽 · 连线 · 高亮 · 撤销重做"]

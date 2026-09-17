@@ -39,6 +39,7 @@ npm run check
    没有模块系统。要复用就靠拼接顺序 + 函数声明提升，别写 `import` / `require`。
 2. **`%% @pos` 是坐标的唯一载体。** 坐标只写在注释里，图体里没有第二个地方存布局。
    注释指向图里不存在的节点时**直接丢弃**（不许凭注释把节点复活），不然删掉节点后图会被注释拽回来。
+   用户的元素注释（`%% @note` / `%% @done`）走同一套载体、同一条幽灵规则（见下节）。
 3. **host 的分片是 `apply(ctx)` 的函数体，client 的分片自带 `return {...}`。**
    两者包装方式不同（见 `tools/build.mjs`），别把 host 的分片写成自带 return。
 4. **工具的 `parameters` 必须是规范 JSON Schema**：根 `type: 'object'` + `properties`（`required` 写在这一层
@@ -51,21 +52,155 @@ npm run check
    守门人是 `test/tools.schema.mjs`：它不抄定义，直接抓构建产物注册的那四个真定义，
    用 dsh 自己的 `assertObjectJsonSchema` 过一遍，**同时**再过一遍沙箱 `defineTool`（两条加载路都要活）。
 
+## 元素上的东西：`@note`/`@done`、`@file`、`@summary`
+
+用户在图上给某个元素留话、标源码文件，以及给整张图写一句「这张图讲的是什么」——
+这些都要能进下一步的对话。六条不许破的性质：
+
+1. **注释两态是两种注释，不是给注释加一个状态字段。** `%% @note <id> <文本>` 未解决、
+   `%% @done <id> <文本>` 已解决。拆开写是为了让 `promptText()` 能用一行
+   （`l.indexOf('%% @done ') !== 0`）把已解决的从**注入给模型的源码里**滤掉 ——
+   注释会单调累积，全灌进去 AI 就会开始重新讨论早就定下来的事（那是负的表达力）。
+   代价是「注入用的视图」与文件不再逐字相同，所以提示词里明说了「另有 N 条已解决、要看全部用 `arch_read`」。
+2. **一个节点一条注释，扁平两个字段 `note` + `noteDone`。** 空文本 = 没有注释
+   （`noteDone` 一并归一成 false）；别留「有状态没正文」的半截形态，不然会写出没有意义的 `%% @done`。
+   字段名**不能**叫 `notes` —— `doc.notes` 已经被「AI 改图后的一句话说明」占用（内存态，`doc:get` 后清空）。
+3. **代码锚点 `%% @file <id> <路径>` 是数组，一个节点可多条。** 它回答的是「中文标签 ↔
+   英文路径」这个 grep 不出来的映射。它会**腐烂**（文件改名/移动而注释不会自己更新），
+   所以加载/保存后一律 `verifyFileRefs()` 重算 `doc.fileStatus`
+   （`ok` / `missing` / `symbol-missing` / `unknown`）—— **一条过期锚点比没有锚点更坏**，
+   它会把 AI 自信地送到错的文件。结论要同时摆到界面（`▤` 角标，失效变红）与提示词（⚠ + 「不要照着用」）上。
+   判不了根时返回 `unknown`，**不许假装 ok**。
+4. **一句话总结 `%% @summary` 是图级字段，不挂节点。** 它必须占**一行**、有 500 字上限、
+   规范化只有一处（`cleanSummary()`，`mermaid.ts`）—— 解析（读文件）与 `normalizeModel`
+   （读界面/AI 传来的模型）两条路共用，两边不一致往返就不幂等。它进提示词的头部
+   （「**这张图讲的是**」），也随图库清单回给界面（选择器/起始页显示它）。
+   它**没有幽灵问题**（不指向节点），但**字段整个缺席 ≠ 要清空**：旧界面发来的模型
+   根本不知道有 `summary`，那是「保留现状」；显式清空走 `summary: ''`。
+5. **注释 / 锚点 / 总结都是用户的东西：AI 重画要继承，用户改源码不继承。** 边界在
+   `inheritUserMarks()`（只被 `arch_write` 调用）：AI 整体重画时按节点 id 把注释与锚点留下来、
+   图级总结沿用旧句子（新文本自己写了就用新的）；但 `doc:applyText`（用户在「源码」页编辑）
+   **不继承** —— 用户删掉那一行就是真的删。继承了的话它们就成了删不掉的幽灵，
+   与 `@pos` 那条「注释不许让节点复活」是同一个坑、方向相反。
+6. **这些走的是读路径，与「谁能改图」无关。** `promptText` 每步注入整份源码，所以注释、锚点、
+   总结与 AI 能不能改图是两件事 —— 它们是**用户 → AI** 的单向通道。改 `promptText` 时
+   别把「`%%` 是元数据、不要讨论」那条纪律重新盖到它们头上，那会**反向压制**整个功能。
+   `skills/arch-canvas/SKILL.md` 里同一句话也要跟着改。
+
+**加字段要同时改 `normalizeModel()` 的白名单（`document.ts`）与 `snapshotModel`/`restoreModel`**
+—— 它是逐字段重建，漏了就是**用户每保存一次，那个字段被静默清空一次**，不报错。
+
+### 文件头的格式说明行一律 `%%!` 前缀
+
+`serializeDoc()` 写出的头部那几行是**给人看的模板**（`%%! @note <节点id> <文本> …`）。
+从前它们就是普通的 `%% @xxx` 行，于是**每解析一次文件就凭空多一条**
+「注释 @note `<节点id>` 指向图里不存在的节点，已丢弃」的假警告 —— 而这条警告会出现在
+`arch_read` 的返回值里，读的人（AI）每次都要先排掉这口噪音。现在：
+
+- 写出时说明行一律 `%%!`，解析器见到 `%%!` 整行跳过；
+- 0.4.x 写出的老文件靠 `LEGACY_TEMPLATE_RE`（`%% @pos|link|note|done|file <...>`）兜住 ——
+  `<...>` 不可能是合法节点 id，见到就当说明；
+- 提示词注入时把 `%%!` 行也滤掉（每张图逐字相同，格式上面已经讲清了），
+  所以「注入的视图」与文件的差异有两处：`@done` 行与 `%%!` 行。
+
+守门人：`test/mermaid.test.cjs` 第 [14] 节（注释往返/幂等/转义/幽灵/两态）、
+第 [15] 节（锚点）、第 [16] 节（总结）、第 [17] 节（`%%!` 说明行不产生假警告，含 0.4.x 老文件）；
+`test/host.e2e.mjs`【代码锚点 %% @file】【一句话总结 %% @summary】两节（落盘往返 / `fileStatus` 四态 /
+`set_files`·`set_summary` / 继承边界 / 提示词措辞 / 回滚），`test/ui.render.mjs` 第 [4d] 节
+（`▤` 角标与 broken / 锚点编辑框与逐条校验 / 清单里的总结）。
+
+## 图库不会自动创建（opt-in）
+
+**读路径一个字节都不创建。** 项目里没有 `.arch-canvas/`（或那张 `.mmd` 不存在）时，
+`loadInto` 把 `doc` 置成空文档并标记 `doc.absent = true`，**不 `ensureDir`、不 `inheritGlobalOnce`、
+不播种默认图**。只有两个显式入口会建：`doc:open { create: true }` / `arch_switch { create: true }`
+（工具侧在建之前还会要求先征得用户同意，见 `skills/arch-canvas/SKILL.md`）。
+
+- 为什么：早先「打开面板」这个动作本身就会在会话 cwd 下凭空建出一个 `.arch-canvas/`，
+  用户只是路过了几个目录，磁盘上就多出一串空图库 —— 一个只读的界面动作不该有写副作用。
+- `arch_write` / `arch_edit` 在 `doc.absent` 时**硬拒绝**（错误信息里说明「图库不会自动创建」）：
+  这是**唯一**一道写图闸门了（早先那道「AI 写图开关」已连同它的界面一起移除，见下节）。
+- `persist()` 是唯一会把 `absent` 清掉的地方（写成功后目录已存在）。
+  `snapshotModel`/`restoreModel` 必须带上它，否则「写盘失败回滚」会把空库状态也一起回滚掉。
+
+守门人：`test/host.e2e.mjs`【任务 1 守门断言：读路径不建库，写路径防隐式创建】
+（读路径不新增任何文件 / 未建库时两个写工具的错误信息 / 建库后恢复可用）。
+
+## 写盘必须带会话（2026-09-17 实测）
+
+`fs` 的写入受**按调用沙箱策略**约束；不传策略的调用是 **agentless call**，会掉到部署默认
+（可写根 = `process.cwd()`）。症状：dsh 从别的项目目录启动时，画布上每一次保存都被拒 ——
+`persist.fail: cannot write ...: file access denied under workspace-write mode`，
+而**日志照写不误**（日志走外层注入的 `node:fs`，不经过这道围栏）。这不是权限不够，
+是「这次写属于哪个会话」没说。**正解不是绕开 `fs`**：
+
+```js
+const policy = ctx.sandboxPolicy.resolve({ session })   // 只传 session，绝不传 mode
+await fs.writeText(target, body, undefined, undefined, policy)
+```
+
+四条不许破：
+
+1. **绝不自己传 `mode`。** 传 mode 等于声称「一次已批准的显式模式」，会越过会话自己的模式
+   —— 那是**放大权限**，不是修复。让归属方去算。守门人是 `test/host.e2e.mjs` 里那条
+   断言 `resolve` 入参 `mode === undefined`。
+2. **会话从哪来**：AI 工具走 `exec.agent.session`；面板的 RPC 走客户端传上来的 `sessionId`
+   → `ctx.get('agents').get(id).session`。客户端本来就拿得到它（`sidebar.right.pane.tab`
+   是 `scope: session` 的槽位，`sessionId` 是标准 props）。
+3. **两个服务都走 `ctx.get`**（`sandboxPolicy` / `agents` 都是可选的，不进 `inject`）；
+   拿不到会话就**不伪造策略**（退回 `undefined` = 旧行为）并落一行 `sandbox.policy.missing`
+   —— 不静默，也不替用户发明一把更宽的围栏。
+4. **读不传**：`stat` / `readText` / `listDir` 不受围栏，只有 `writeText` / `editText` 收策略。
+
+dsh 侧的原文（`dsh-sandbox-policy`）："A session cwd is its workspace-write boundary;
+the configured root is the fallback for **agentless calls** and sessions without a cwd."
+
 ## 改动生效路径（重要：不知道这条会以为是 bug）
 
 | 改了什么 | 怎么让它生效 |
 |---|---|
 | `src/client/*` | `npm run build` → **刷新页面**（host 每次请求都现读 `lib/ui.js`） |
-| `src/host/*`、`src/package/*` | `npm run build` → **自动重载**（hmr 盯着 `lib/index.js`） |
-| `src/bootstrap/*` | 同上（它是动态 Package 形态的引导层，装机路径不经过它） |
+| `src/host/*`、`src/package/*` | 先看部署是**链接**还是**快照**（见下）；最稳的是 build → 重装 → **重启 dsh** |
+| `src/bootstrap/*` | 动态 Package 形态：重新 `cordis_define` + `cordis_run` |
 
-交付形态是**真插件包**，用 `dsh plugin --profile web add <本目录>` 装。hmr 的两条硬约束
-（原话在 `~/.dsh/profiles/web/cordis.patch.yml`）：`base` 必须显式写项目目录，否则 `root`
-解析错、**静默不重载**；`ignored` 必须排除 `dist/**`，否则构建的事件洪流会把 watcher 冲傻，
-症状是「只有第一次重载生效」。
+**先查部署是哪种安装 —— 这一步决定上面所有结论（2026-09-17 实测）**：
 
-不打开 hmr 时的退路：`src/host/*` / `src/package/*` 的改动要**重启 dsh**；
-动态 Package 形态（`src/bootstrap/*`）要重新 `cordis_define` + `cordis_run`。
+```sh
+grep arch-canvas ~/.dsh/profiles/web/package.json    # file:...tgz = 快照；link:... = 链接
+ls -l ~/.dsh/profiles/web/node_modules/arch-canvas    # 真目录 = 快照副本；符号链接 = 指向项目
+```
+
+- **`link:` / 符号链接**（`dsh plugin --profile web add <本目录>` 装出来的就是这种）：
+  `node_modules` 指向项目目录，本机 profile 里 hmr 的 `base` 也对得上，`npm run build`
+  之后文件真的换了 → 能重载。这是文档一直假设的形态，也是**推荐**的装法。
+- **`file:...tgz` / 真目录**：pnpm 复制了一份**快照**。此后**改仓库对运行态零影响**，
+  盯着仓库的 hmr 只会把那份**旧快照**重新挂一遍 —— 症状与「没重载」一样，日志里却有一条
+  `plugin.mount`，极容易被误判成「已经生效」。
+
+  实测（当时正是快照安装）：把安装目录更新成新构建之后，运行态**仍是旧宿主代码**；
+  三种重载触发全部无效 —— `touch lib/index.js`、往 `lib/index.js` 追加真实内容、
+  改 profile 的 `cordis.patch.yml`（指望 `patchReload: live`）。**只有重启 dsh
+  才能换掉已经加载进内存的宿主代码。**
+
+**半新的客户端是最危险的**：`lib/ui.js` 是 host **每次请求现读磁盘**的，所以一更新安装目录，
+界面立刻是新的、宿主还在内存里跑旧的。旧宿主的 `normalizeModel` 是逐字段重建
+（见「元素注释」一节），它会**静默丢掉**新界面发来的字段 —— 用户看到「写了就没了」。
+所以要么两边一起换（重启），要么先别动。
+
+上线的顺序：`npm run build` → `npm run pack`（落点 `${DSH_HOME:-~/.dsh}/packages/`）→
+`dsh plugin --profile web add <包>`（改写 profile 依赖，最干净）或直接把包解到
+`~/.dsh/profiles/web/node_modules/arch-canvas/` → **重启 dsh**。
+
+**怎么确认真的上线了（测试抓不到的那一层）**：`test/*` 用的是桩 `fs`，
+「真机上存不下来」这类问题它一条都抓不到。对活着的进程打一次真 RPC：
+
+```sh
+curl -s -X POST http://127.0.0.1:3080/arch-canvas/rpc -H 'content-type: application/json' \
+  -d '{"method":"doc:get","args":{"where":"<项目目录>"}}'
+```
+
+挑一个**只有新宿主才会返回**的字段来验（例如加注释功能时的 `noteCount`）。
+**`plugin.mount` 那一行不能当证据** —— 它可能只是把旧快照重新挂了一遍。
 
 **这个插件对 console 一字不吐。** 正常挂载完全安静（早先成功时打过一行
 `[arch-canvas] 已挂载：4 个 AI 工具（…），3 条路由`，但 hmr 每次 `npm run build` 都会重新挂一遍，
@@ -86,16 +221,37 @@ npm run check
 `doc.load` 按文件名+内容去重）。实测 hmr 每次构建会让模块重新求值，一天能刷出 46 行
 逐字节相同的 `plugin.mount`。
 
-## AI 写图默认关闭（`src/host/settings.ts`）
+## 检查点：安全靠「退得回去」，不靠「拦得住」（`src/host/history.ts`）
 
-用户没在面板顶栏打开开关之前，`arch_write` / `arch_edit` **在工具执行处硬拒绝**（返回
-`{ ok: false }`，一个字节都不改）。三条不许破坏的性质：
+**这里换掉的是早先那道「AI 写图开关」，而它被换掉的原因是它根本用不了**（2026-09-18 活体实测）：
 
-1. **fail-closed**：文件缺失 / 写坏 / 读不出来 ⇒ 一律按「关」；
-2. **闸门在宿主、界面只是镜像**：所以界面状态错了也不会让 AI 偷偷改图；反过来用户点了开关
-   必须以 `setting:set` 的返回值为准回写界面（写盘失败要显示出来）；
-3. **随包 skill 的第一条纪律就是它**（`skills/arch-canvas/SKILL.md` §0）：改 skill 时别把这条删了 ——
-   工具拒绝只是最后一道，AI 一开始就不该试。
+```
+setting:set → {"ok":false,"error":"cannot write \"~/.dsh/arch-canvas/settings.json\":
+               file access denied under workspace-write mode"}
+```
+
+开关状态要落盘到 `<dataDir>/settings.json`（在会话工作区之外），而那次 `fs.writeText`
+**没带沙箱策略** —— 与「写盘必须带会话」是同一个坑，只是藏在一个不常走的 RPC 里。
+后果是：面板上那个按钮在真机上永远打不开（日志里连着三行 `rpc.fail method=setting:set` 就是用户
+反复点它）。**别在一个不可用的机制上继续加安全论证** —— 换成一条真正兜底的路：
+
+1. **每次落盘留一份快照，并标明是谁改的。** 收口在 `persist()`（所有写入的唯一出口），
+   标签取 `doc.updatedBy` + `lastChange.nodes` + 站点（`arch_edit` / `doc:set` / `rollback:<seq>` …）。
+   于是「AI 改的」和「用户改的」在同一条时间线上分得清，且**不需要每个调用点自己记得记一笔**。
+2. **「退回」不是撤销，是重放。** `applyRollback(seq)` 把那一份正文重新装进文档并落盘，
+   然后在末尾**追加**一条「用户 · 回到检查点」—— 时间线只增不减，所以退回之后还能再往前走
+   （更晚的检查点还在）。界面上那 60 步 Ctrl+Z 是另一层（只在内存、只管这一次会话的手动编辑）。
+3. **只在内存里，按文件分开存**（键就是 `doc.file`，上限 50 份，内容逐字节相同不重复记）。
+   真相源始终是那个 `.mmd` 文件，历史只在「刚刚改坏了、撤回去」这个窗口里有价值；
+   写盘要再挂一条沙箱策略路径（正是上面那个坑），代价与收益不成比例。
+   代价是**重启后清空** —— 面板上如实写着这句，别让它看起来像个持久化版本库。
+4. **写盘失败的那一次不进历史**：历史里不能有「从来没落到盘上」的状态。
+   反过来，两个写工具在落盘失败时**必须回 `ok: false` + 把原因塞进 `problems`**
+   （内存已经回滚了，回执还说「已更新」就是骗 AI）。
+
+守门人：`test/host.e2e.mjs`【检查点（快照）】（打开即一份 / AI 与用户分得清 / 内容没变不重复记 /
+退回 + 再前进 / 三种边界拒绝 / 失败不进历史 / 按文件分开 / 50 份上限），
+`test/ui.render.mjs` 第 [4e] 节（「历史 N」按钮、清单、两步确认、真发 `doc:rollback`）。
 
 ## 服务时序：一律 inject，不要 ctx.get 取快照
 
@@ -209,6 +365,8 @@ tools.schema 四个文件里的桩 —— 2026-09 加定时器时整整踩了三
   **外部文件**（`doc.external`）是按路径打开的 `.mmd` / `.mermaid`：不属于任何图库，
   `ensureLoaded` 里那道「有 external 就直接返回」的闸不能拆 —— 拆了界面轮询就把它冲回图库的图；
   它的「key」就是路径，落盘写回原文件。
+- `src/host/history.ts` —— 检查点（快照）环形缓冲：按文件存正文、标明谁改的、退回即重放。
+  排在 `document.ts` 之后拼接（它读 `doc` / `lastChange` / `serializeDoc`，同一段作用域）。
 - `src/host/plugin.ts` —— 对外接口面。改工具描述等于改 AI 的行为，要慎重。
   RPC 与工具注册统一走 `onRpc` / `onTool` / `onRoute`，现场记录就挂在那一层。
 - `src/client/studio.ts` —— 编辑历史的关键是 `committedRef`：
