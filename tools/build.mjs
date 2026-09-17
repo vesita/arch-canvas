@@ -67,6 +67,8 @@ const HOST_PARTS = [
   'src/host/mermaid.js',
   'src/host/log.js',
   'src/host/document.js',
+  // settings 排在 document 之后：它读 GLOBAL_DIR / 用 ensureDir，同属这一段作用域。
+  'src/host/settings.js',
   'src/host/plugin.js',
 ]
 const UI_PARTS = [

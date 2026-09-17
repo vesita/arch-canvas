@@ -106,31 +106,17 @@ npm run check     # 上面全部 + 工具 schema 校验（改完必须过这一�
 把 `lib/ui.js` 真渲染出来点一遍 —— 在没有浏览器可看的情况下，这是「按钮在不在、点了有没有反应」
 唯一的验证手段（它当场抓出过一次 `var` 提升导致的渲染崩溃）。
 
-## 加载方式（为什么改代码不用重新定义插件）
+## 加载方式
 
-**交付形态是真插件**（`lib/index.js` + `lib/client.js` + `lib/host-logic.js` + `lib/ui.js`
-+ `assets/mermaid.min.js`）。下面这段讲的是**早期动态 Cordis Package 形态**的加载技巧 ——
-它现在只作为「不装包也能在会话里跑起来」的开发/演示路径保留，装机分发一律走真插件。
+交付形态是真插件包（`lib/index.js` + `lib/client.js` + `lib/ui.js` + `assets/mermaid.min.js`），
+用 `dsh plugin --profile web add <目录或 tgz>` 安装。改代码的生效路径见下文「改代码怎么生效」：
+**改 `src/host/*`、`src/package/*` 只 `npm run build` 即自动重载，`src/client/*` 再加刷新页面**，
+只有动到引导层本身（`src/bootstrap/*`）才需要重新 define 或重装。
 
-动态 Cordis Package 一旦定义就不可变，改一行都要重新 define。所以这里把**易变的部分全放到磁盘上**，
-Package 里只留两段不怎么会变的引导层（合计 151 行）：
-
-| 产物 | 是什么 | 谁加载它 |
-|---|---|---|
-| `dist/host.js` | 宿主逻辑真身 | `bootstrap/host.js` 读盘后用 `eval` 包成工厂调用 |
-| `dist/ui.js` | 界面真身 | 浏览器 `<script src="/arch-canvas/ui.js">`（host 现读现发） |
-| `dist/bootstrap-host.js` | Package 的 `code.host` | Cordis |
-| `dist/bootstrap-client.js` | Package 的 `code.client` | Cordis |
-
-于是：**改 host 或改界面都只要 `npm run build`**，界面还可能只刷个页面就行。
-只有动到引导层本身才需要重新 define。
-
-两边的加载手段不同，原因在沙箱能力：client 没有 `import` 但有 `document`（走 `<script>`）；
-host 没有 `import` 但有 `eval`（走工厂函数 —— 宿主逻辑顶层带 `return`，不能直接 eval）。
-
-代价摊开说：真身不在 Package 里，所以 `cordis_inspect_self` 看到的是壳；
-要审阅真正的逻辑请看 `dist/host.js` / `dist/ui.js`。另外 `dist/ui.js` 是运行时读盘的，
-**项目目录被移走界面就没了**（host 会返回 404 并提示去 build）。
+另一条不装包也能跑的**动态 Cordis Package 形态**（`src/bootstrap/*` 引导层读盘 `dist/host.js` /
+`dist/ui.js`）仍作为开发/演示路径保留：它的完整机制、加载手段差异与沙箱约束
+（client 无 `import`、host 无 `import` 走工厂函数、`dist/ui.js` 运行时读盘等）见
+`AGENTS.md` 的「Package 里只应该有引导层」「沙箱里没有的东西」「服务时序」三节。
 
 ## 图库与图引用
 
@@ -195,9 +181,22 @@ arch-canvas 的框架本身（client / host / AI 三侧、四个不变式、引�
 |---|---|
 | 每步注入 | `systemPrompt.context` 把当前 Mermaid 全文塞进模型上下文 |
 | `arch_read` | 读当前图源码（通常不必调，上下文里已有） |
-| `arch_edit` | 增量改图，**推荐**；不破坏用户布局 |
+| `arch_edit` | 增量改图，**推荐**；不破坏用户布局 — **需要 AI 写图开关打开** |
 | `arch_switch` | 切到另一张图（用户画布跟着切）；不存在时报错并列出可选 key |
-| `arch_write` | 整图替换；会继承同 id 节点的旧坐标 |
+| `arch_write` | 整图替换；会继承同 id 节点的旧坐标 — **需要 AI 写图开关打开** |
+
+### AI 写图开关（默认关）
+
+**默认 AI 只能读。** 面板顶栏有一个开关，初始显示「AI 只读」；点一下变成「AI 可改图」，
+再点是关回来。关着时宿主**硬拒绝** `arch_write` / `arch_edit` —— 不是提示，是执行前返回
+`{ ok: false }`，一个字节都不改，拒绝理由里写明"去面板上打开开关"。
+
+- 状态存在 `<dataDir>/settings.json`（与图库、日志同一个地方），只认显式 `aiWrite: true`。
+- **fail-closed**：文件不存在、写坏、读不出来 —— 一律按「关」处理（宁可少写，不许偷改）。
+- 用户点开关走 `setting:get` / `setting:set` 两条 RPC（见下）；界面只是镜像，
+  真正的闸门在工具执行处，所以界面状态错了也不会让 AI 偷偷改图。
+- 每步注入的上下文里有一行 `AI 改图开关：已打开 / 关闭`，AI 不必靠试错才知道能不能写；
+  随包 skill 也把这条写成了第一条纪律。
 
 ## Client ↔ Host 私有 RPC
 
@@ -212,6 +211,7 @@ arch-canvas 的框架本身（client / host / AI 三侧、四个不变式、引�
 | `doc:open` | 按 key 打开图库里的图（可跨子项目），并把「当前层」切过去 |
 | `doc:openPath` | **按路径打开**项目里任意一个 `.mmd` / `.mermaid`（相对项目根或绝对路径；`create: true` 可新建） |
 | `doc:rename` / `doc:delete` / `doc:restore` | 改名 / 软删除 / 恢复 |
+| `setting:get` / `setting:set` | 读 / 写 AI 写图开关（`get` **每次现读磁盘**，所以手改或写坏都能如实反映） |
 | `mermaid:info` | 拿本地 mermaid bundle 的路由（失败回退 CDN） |
 | `ui:info` | 拿界面脚本的路由（引导层用它决定去哪加载） |
 
@@ -237,8 +237,17 @@ PNG 是 2 倍图。
   不依赖定时器，也就没有随插件卸载泄漏的钩子。
 - 记什么：`plugin.mount`（挂上了没、注册了几个工具/路由）、`doc.load` / `doc.switch`（打开了哪张图、多少节点）、
   `tool.arch_edit` / `tool.arch_write`（AI 改了什么、几个 op 没生效）、`tool.reject`（入参被拒）、
+  `aiwrite.blocked`（AI 想改图但开关关着，被闸门拒了）、`aiwrite.set`（用户开关写图权限）、
   `rpc.fail`（某个私有 RPC 抛错）、`persist.fail`（落盘失败并已回滚）、`doc.warnings`（解析告警）、
   `log.retention`（这次清掉了几个旧文件）。轮询这类高频成功路径**不记**，免得把日志变成噪音。
+- **级别门槛**：`debug` / `info` / `warn` / `error`，缺省 `info`。真插件形态读环境变量
+  `ARCH_CANVAS_LOG_LEVEL`（`ARCH_CANVAS_LOG_LEVEL=debug` 就能把降级的巡检事件也写出来）；
+  动态形态给不出（沙箱里没有 `process`）就走缺省。认不出的取值退回 `info`。
+- **重复行已去重**（2026-09 实测：单日 46 行 `plugin.mount`、50 行 `doc.load`，同一次构建里
+  26 毫秒内连发 4 行且**逐字节相同**）：`plugin.mount` 用 `globalThis` 上的标记按"挂载形状"
+  去重（形状变了才再记一行，模块级变量会随 hmr 重载归零，所以不能用它）；`doc.load` 按
+  "文件名 + 内容"去重。`library.scan` 降为 `debug`。「挂上了没」「打开了哪张图」这两个现场
+  一个没丢，丢掉的只是重复。
 - 当日文件写满 8 MB 就封顶：写一条 `log.capped` 说明，之后不再写。
   「出故障」时最怕日志自己变成故障。
 - 写盘能力由外层按形态注入（`hostEnv.logBackend`）：真插件形态用 `node:fs`
@@ -304,10 +313,10 @@ dsh plugin --profile web remove arch-canvas
 
 `tools/build.mjs` 里还有一条结构性断言：源码里一旦出现 `console.log/error/warn/…` 调用，构建直接失败。
 
-两个已修的坑：
+两条硬约束：
 
-- **`ctx.get('tools')` 取快照**：装机后拿到 `undefined`，插件挂上了但工具和路由都没注册。
-  现在硬依赖走 `inject: ['fs','tools','systemPrompt']`；`webServer` 不进 inject
-  （headless 形态没有它），改用 `ctx.inject(['webServer'], …)` 注册路由。
-- **包内资源写死项目目录**：`assets/mermaid.min.js` 与 `lib/ui.js` 改为按包自身定位
-  （`__dirname`），tarball 装到别的机器上界面与渲染都在。
+- **服务依赖一律走 `inject`，不要 `ctx.get('tools')` 取快照**：装机后 `ctx.get` 拿到
+  `undefined`，插件挂上了但工具和路由都没注册。硬依赖走 `inject: ['fs','tools','systemPrompt']`；
+  `webServer` 不进 inject（headless 形态没有它），改用 `ctx.inject(['webServer'], …)` 注册路由。
+- **包内资源按包自身定位**：`assets/mermaid.min.js` 与 `lib/ui.js` 用 `__dirname`，
+  不写死项目目录 —— tarball 装到别的机器上界面与渲染都在。

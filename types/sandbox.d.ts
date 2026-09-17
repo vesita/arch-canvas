@@ -70,6 +70,12 @@ declare const hostEnv: {
   /** 数据目录：全局图库与日志写在这里（真插件按 $DSH_HOME / ~/.dsh 算）。 */
   dataDir: string
   logBackend?: LogBackend
+  /**
+   * 日志门槛（`debug` / `info` / `warn` / `error`），缺省 `info`。
+   * 真插件形态从 `ARCH_CANVAS_LOG_LEVEL` 读；动态形态给不出（沙箱里没有 process）就走缺省。
+   * 认不出的取值在 log.ts 里退回 `info`。
+   */
+  logLevel?: string
 } | undefined
 
 /** 真插件形态是普通 Node，靠它读 $DSH_HOME 定数据目录。 */

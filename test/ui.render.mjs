@@ -32,6 +32,8 @@ const ARCHIVE = { id: 't1', kind: 'arch' }
 
 // ---------- 打桩的 RPC：形状照着宿主真实的回执 ----------
 const rpcCalls = []
+/** AI 写图开关的假宿主状态：默认关（与 src/host/settings.ts 的默认值一致）。 */
+const SETTING = { aiWrite: false }
 const EMPTY_MODEL = { nodes: [], edges: [], groups: [], direction: 'TD', extras: [] }
 function fullDoc(extra) {
   return Object.assign({
@@ -60,6 +62,8 @@ function respond(method, args) {
   }
   if (method === 'mermaid:info') return { url: '/arch-canvas/mermaid.min.js' }
   if (method === 'ui:info') return { url: '/arch-canvas/ui.js', file: '/dev/null' }
+  if (method === 'setting:get') return { ok: true, aiWrite: !!SETTING.aiWrite, file: '/tmp/uiproj/settings.json' }
+  if (method === 'setting:set') { SETTING.aiWrite = !!(args && args.aiWrite); return { ok: true, aiWrite: SETTING.aiWrite } }
   return { ok: false, error: '没打桩的方法 ' + method }
 }
 
@@ -131,6 +135,29 @@ ok('起始页：标题', html().indexOf('这张图还是空的') >= 0)
 ok('起始页：三个动作按钮', !!byText('＋ 加一个节点') && !!byText('打开文件…') && !!byText('图库…'), buttons().map((b) => b.textContent))
 ok('起始页：列出这个项目里已有的图', html().indexOf('这个项目里的图') >= 0 && html().indexOf('arch-canvas/architecture') >= 0)
 ok('起始页：列出项目里的 mermaid 文件', html().indexOf('项目里的 mermaid 文件') >= 0 && html().indexOf('docs/design.mmd') >= 0)
+
+console.log('\n[1b] AI 写图开关：默认「AI 只读」，点一下才允许 AI 改图')
+{
+  const toggle = byText('AI 只读')
+  ok('顶栏有开关，且默认显示「AI 只读」', !!toggle, buttons().map((b) => b.textContent))
+  ok('面板加载时读了宿主状态', rpcCalls.some((c) => c.method === 'setting:get'), rpcCalls.map((c) => c.method))
+  rpcCalls.length = 0
+  if (toggle) {
+    await act(async () => { toggle.dispatchEvent(new window.MouseEvent('click', { bubbles: true })) })
+    await flush()
+  }
+  const setCall = rpcCalls.find((c) => c.method === 'setting:set')
+  ok('点击写了宿主（setting:set aiWrite:true）', !!setCall && setCall.args.aiWrite === true, setCall)
+  ok('宿主确认后按钮变成「AI 可改图」', !!byText('AI 可改图'), buttons().map((b) => b.textContent))
+  ok('关掉时不再显示旧文案', !byText('AI 只读'))
+  // 再点一下回到只读
+  const on = byText('AI 可改图')
+  if (on) {
+    await act(async () => { on.dispatchEvent(new window.MouseEvent('click', { bubbles: true })) })
+    await flush()
+  }
+  ok('再点一下回到「AI 只读」', !!byText('AI 只读'), buttons().map((b) => b.textContent))
+}
 
 console.log('\n[2b] 起始页里直接点开一张已有的图')
 rpcCalls.length = 0

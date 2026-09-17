@@ -18,6 +18,18 @@ var logBackend = (typeof hostEnv === 'object' && hostEnv && hostEnv.logBackend) 
 var logState = { day: '', bytes: 0, capped: false, cappedDropped: 0 }
 var logQueue: Promise<any> = Promise.resolve()
 
+// 落盘门槛。**为什么需要它**：日志纪律里有两类事件 —— 故障/动作（error/warn/info）与高频成功的
+// 巡检（debug）。后者在默认门槛下不落盘，需要排查时把门槛调低就能看到，不必改代码。
+// 门槛由外层经 hostEnv.logLevel 递进来（真插件读 `ARCH_CANVAS_LOG_LEVEL`，动态形态缺省）、
+// 缺省 `info`；认不出的取值一律退回 `info`（**不**放宽，也不把日志整个关掉）。
+// 层级别写错成 debug 的后果是"这条现场没了"，所以每一处 debug 都要在注释里说明为什么它可降级。
+var LOG_LEVELS: Record<string, number> = { debug: 10, info: 20, warn: 30, error: 40 }
+function logThreshold() {
+  var raw = (typeof hostEnv === 'object' && hostEnv && typeof hostEnv.logLevel === 'string') ? hostEnv.logLevel.toLowerCase() : ''
+  var lv = LOG_LEVELS[raw]
+  return typeof lv === 'number' ? lv : LOG_LEVELS.info
+}
+
 /** 日志落地目录：跟全局图库同一个位置，排查时只找一个地方。 */
 function logDir() { return GLOBAL_DIR + '/logs' }
 
@@ -52,9 +64,11 @@ function logText(level, event, fields) {
   return text + '\n'
 }
 
-/** 记一行。异步、串行、永不抛错 —— 日志写不进去也只是没日志。 */
+/** 记一行。异步、串行、永不抛错 —— 日志写不进去也只是没日志。低于门槛的级别直接丢。 */
 function logEvent(level, event, fields) {
   if (!logBackend) return
+  var lvl = LOG_LEVELS[level] || LOG_LEVELS.info
+  if (lvl < logThreshold()) return
   var text = logText(level, event, fields)
   logQueue = logQueue.then(function () { return writeLog(text) }).catch(function () {})
 }

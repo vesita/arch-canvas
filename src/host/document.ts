@@ -13,6 +13,8 @@ var DSH_ROOT = DATA_DIR.replace(/\/[^/]+$/, '')
 var GLOBAL_DIR = DATA_DIR
 var PROJECT_SUBDIR = '.arch-canvas'
 var DEFAULT_DIAGRAM = 'architecture'
+/** 上一次真正落过 doc.load 的内容键：用来把「同一份图被反复读进来」的重复行压掉。 */
+var lastDocLoadKey = ''
 // 软删除：文件里出现这行即视为已删除，列表里隐藏但内容原样保留。
 // fs 服务没有 unlink/rename，而我不愿意为了删两个文件给插件开 bash 权限；
 // 软删除反而更契合「记录思路」——删错了能捞回来，彻底删由你自己 rm。
@@ -538,7 +540,9 @@ async function refreshLibrary(force?: boolean) {
     libraryCache = await buildLibraryItems(scan)
     libraryFingerprint = fp
     libraryRev += 1
-    logEvent('info', 'library.scan', {
+    // 高频成功的巡检降为 debug：指纹没变就不读文件、不解析，这条记录的诊断价值只在于
+    // "清单确实变了"。默认门槛（info）下不落盘；把 ARCH_CANVAS_LOG_LEVEL=debug 打开就能看到。
+    logEvent('debug', 'library.scan', {
       libs: scan.dirs.length, files: scan.files.length, items: libraryCache.length,
       revision: libraryRev, visited: scan.visited, truncated: scan.truncated,
     })
@@ -593,11 +597,18 @@ async function loadInto(name, create, target) {
     if (err) doc.warnings.push('写入失败: ' + err)
   }
   doc.notes = []
-  logEvent('info', 'doc.load', {
-    file: doc.file, diagram: doc.name, scope: target.scope,
-    nodes: doc.nodes.length, edges: doc.edges.length, groups: doc.groups.length,
-    tombstoned: doc.tombstoned, warnings: doc.warnings.slice(0, 10),
-  })
+  // 同一份内容不重复落行（治噪音）：hmr 每次构建都会重新 loadInto 一遍，实测单日 50 行 doc.load，
+  // 其中绝大多数内容**逐字节相同**（同一份图被反复读进来）。换了一张图、或文本真的变了才再落一行 ——
+  // 「打开了哪张图」这个现场一点没丢，丢掉的只是重复。
+  var loadKey = doc.file + '|' + (text === null ? '#new#' + doc.nodes.length : text)
+  if (loadKey !== lastDocLoadKey) {
+    lastDocLoadKey = loadKey
+    logEvent('info', 'doc.load', {
+      file: doc.file, diagram: doc.name, scope: target.scope,
+      nodes: doc.nodes.length, edges: doc.edges.length, groups: doc.groups.length,
+      tombstoned: doc.tombstoned, warnings: doc.warnings.slice(0, 10),
+    })
+  }
   return { ok: true }
 }
 

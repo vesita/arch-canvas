@@ -50,6 +50,9 @@ function promptText() {
     '- 图引用一律用「相对项目根的 key」：`架构` 指根图库里的图，`支付/对账` 指子项目「支付」的图库里的图。`arch_switch` / `arch_read` / `set_link` 都用这个写法。',
     '- 用户的手动改动会立即反映到下一步的你。回答图相关内容时以下面这份为准，不要凭记忆。',
     '- 改图优先用 `arch_edit` 做增量修改（add_node / add_edge / set_label / set_link / move_node / remove_node / add_group ...），这样用户已摆好的布局不会被清掉；只有整体重画时才用 `arch_write`。',
+    aiWriteEnabled
+      ? '- AI 改图开关：**已打开**（用户在画布面板顶栏打开的）—— `arch_write` / `arch_edit` 可用。'
+      : '- AI 改图开关：**关闭**（默认值）—— `arch_write` / `arch_edit` 会被硬拒绝。本次不要尝试改图：用 `arch_read` 读，把想改的内容写进回复请用户确认；用户想让你动手时，点面板顶栏的「AI 只读」开关（打开后显示「AI 可改图」）。',
     '- `%%` 开头的行是元数据：`@pos` 是画布坐标，`@link` 是「这个节点下钻到另一张图」。请原样保留，也不要把它们当成图的内容来讨论。',
     '- 你改动过的节点会在用户画布上短暂高亮 —— 用户能直接看到你动了哪里，所以说明里点名节点 id 会很有用。',
   ]
@@ -66,7 +69,9 @@ function promptText() {
   }
   head.push('- 只读当前图时用 `arch_read`。')
   if (doc.nodes.length === 0) {
-    head.push('', '画布目前是空的。可以用 `arch_write` 画一版初稿，或用 `arch_edit` 逐块搭建。')
+    head.push('', aiWriteEnabled
+      ? '画布目前是空的。可以用 `arch_write` 画一版初稿，或用 `arch_edit` 逐块搭建。'
+      : '画布目前是空的。AI 改图开关关着，所以**不要**直接写：把建议的框架用文字（或一小段 mermaid）写在回复里，等用户打开开关或明确要你画。')
     return head.join('\n')
   }
   var src = serializeDoc(doc).replace(/\n+$/, '')
@@ -421,6 +426,22 @@ ctx.effect(function () {
 // ==================== 给 AI 的动态工具 ====================
 var OUT_SCHEMA = { type: 'object', additionalProperties: true }
 
+// ==================== AI 写图开关的 RPC ====================
+// 面板顶栏那个开关经这两条读写它。**没有 RPC 就没有开关**：客户端不 inject 设置服务
+// （真插件形态的客户端只 inject slots / sidebarRightTabs / layout），所以状态由宿主这边管。
+onRpc('setting:get', async function () {
+  // **每次现读磁盘**，不吃 ensureAiWriteLoaded 的缓存：这条 RPC 是给界面/排障用的，
+  // 用户手改过 settings.json、或文件被写坏，都要在这里如实反映（写坏 ⇒ 退回"关"）。
+  await readAiWriteSetting().catch(function () { aiWriteEnabled = false })
+  return { ok: true, aiWrite: aiWriteEnabled, file: aiWriteSettingPath() }
+})
+
+onRpc('setting:set', async function (args) {
+  var on = !!(args && args.aiWrite === true)
+  await setAiWriteEnabled(on)
+  return { ok: true, aiWrite: aiWriteEnabled }
+})
+
 var readTool = harness.defineTool({
   name: 'arch_read',
   description: '读取一张逻辑框架图的 Mermaid 源码。默认读当前与用户共享的这张；给 diagram 可以只读同一个图库里的另一张（不会切换用户看到的图）。注意：当前这张图通常已经自动出现在你的上下文里，只有怀疑它过期、或要看别的图时才需要调用。',
@@ -546,6 +567,12 @@ var writeTool = harness.defineTool({
   execute: async function (args, exec) {
     var t0 = Date.now()
     await ensureLoaded(whereOfExec(exec))
+    // AI 写图闸门：默认关（见 settings.ts）。放在解析之后、动手之前 —— 拒绝时一个字节都不改。
+    await ensureAiWriteLoaded()
+    if (!aiWriteEnabled) {
+      logEvent('warn', 'aiwrite.blocked', { tool: 'arch_write' })
+      return { ok: false, error: aiWriteOffMessage('arch_write') }
+    }
     var text = args && typeof args.mermaid === 'string' ? args.mermaid : ''
     if (!text.trim()) return toolReject('arch_write', 'mermaid 不能为空', t0)
     var parsed = inheritPositions(parseMermaid(text))
@@ -627,6 +654,12 @@ var editTool = harness.defineTool({
   execute: async function (args, exec) {
     var t0 = Date.now()
     await ensureLoaded(whereOfExec(exec))
+    // AI 写图闸门：默认关（见 settings.ts）—— 关着时一个 op 都不应用。
+    await ensureAiWriteLoaded()
+    if (!aiWriteEnabled) {
+      logEvent('warn', 'aiwrite.blocked', { tool: 'arch_edit', ops: (args && Array.isArray(args.ops) ? args.ops.length : 0) })
+      return { ok: false, error: aiWriteOffMessage('arch_edit') }
+    }
     var ops = args && Array.isArray(args.ops) ? args.ops : []
     if (ops.length === 0) return toolReject('arch_edit', 'ops 不能为空', t0)
     var before = snapshotNodes()
@@ -666,11 +699,31 @@ if (systemPromptSvc) {
 
 // 挂载现场：这个插件对 console 一字不吐，「挂上了没」以前只能靠人去数注册结果，
 // 现在落一行到日志文件里，顺带留下日志目录与形态。
-logEvent('info', 'plugin.mount', {
-  tools: registeredTools.join(','), toolCount: registeredTools.length,
-  routes: registeredRoutes.join(','), routeCount: registeredRoutes.length,
-  dir: lib.dir, scope: lib.scope, logDir: logDir(), logBackend: logBackend ? 'file' : 'none',
-})
+//
+// **同进程内同内容只落一行**（0.9.x，治噪音）：hmr 每次构建都会把这份模块重新求值一遍，
+// 实测同一次事件里 26 毫秒内连发 4 行、单日 46 行、**逐字节相同**（只有 t 不同）。那种重复
+// 对「挂上了没」这个问题没有任何新信息，只会把日志撑成噪音。
+// 判据用 `globalThis` 上的一个标记，而**不是**模块级变量：模块被清缓存重载后模块级变量会归零，
+// 那正是 4 连发的成因之一。挂载形状（工具/路由/图库/形态）一变，判据就变，于是照旧落一行。
+var MOUNT_MARK_KEY = '__archCanvasMountMark'
+var mountShape = registeredTools.join(',') + '|' + registeredRoutes.join(',') + '|' + lib.dir + '|' + lib.scope
+var mountMark = null
+try { mountMark = (globalThis as any)[MOUNT_MARK_KEY] || null } catch (e) { mountMark = null }
+if (!mountMark || mountMark.shape !== mountShape) {
+  logEvent('info', 'plugin.mount', {
+    tools: registeredTools.join(','), toolCount: registeredTools.length,
+    routes: registeredRoutes.join(','), routeCount: registeredRoutes.length,
+    dir: lib.dir, scope: lib.scope, logDir: logDir(), logBackend: logBackend ? 'file' : 'none',
+    mounts: (mountMark && mountMark.shape === mountShape && mountMark.n ? mountMark.n : 0) + 1,
+  })
+  try { (globalThis as any)[MOUNT_MARK_KEY] = { shape: mountShape, n: 1 } } catch (e) { /* 标记写不进去只是少一条去重，不影响挂载 */ }
+} else {
+  mountMark.n = (mountMark.n || 1) + 1
+}
+
+// 开关状态尽早读一次：promptText 与两个写工具的闸门都读它，别等第一次工具调用才发现文件在哪。
+// 读不到就是「关」（fail-closed，见 settings.ts）。
+ensureAiWriteLoaded().catch(function () {})
 
 // ==================== 自动扫描：周期重扫图库 ====================
 // 面板开着时是 doc:rev 的轮询在驱动重扫；面板关掉后没人驱动了，所以再挂一个慢速定时器 ——

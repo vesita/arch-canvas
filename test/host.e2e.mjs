@@ -160,7 +160,9 @@ const plugin = await vm.runInContext(`(async () => {\n${code}\n})()`, sandbox, {
 console.log('【插件对象】')
 ok('返回了 { apply } 形状的插件', plugin && typeof plugin.apply === 'function', plugin === null ? 'null' : typeof plugin)
 plugin.apply(ctx)
-ok('注册了 13 个 RPC 处理器', handlers.size === 13, [...handlers.keys()])
+ok('注册了 15 个 RPC 处理器', handlers.size === 15, [...handlers.keys()])
+ok('注册了 AI 写图开关的两条 RPC',
+  handlers.has('setting:get') && handlers.has('setting:set'), [...handlers.keys()])
 ok('注册了 4 个工具', tools.length === 4, tools.map((t) => t.name))
 ok('工具名单里有 arch_switch', tools.some((t) => t.name === 'arch_switch'))
 ok('注册了 1 条提示词上下文', prompts.length === 1, prompts.map((p) => p.name))
@@ -232,6 +234,50 @@ ok('doc:set 后 mermaid 含新坐标', s1.mermaid.indexOf('%% @pos n2 777 888') 
 ok('doc:set 落盘', files.get(DOC).indexOf('%% @pos n2 777 888') >= 0)
 ok('用户改动标成 user（界面据此不高亮）', s1.lastChange && s1.lastChange.by === 'user', s1.lastChange)
 ok('用户改动不点名任何节点', s1.lastChange.nodes.length === 0)
+
+// ---------- AI 写图开关（默认关）----------
+// 闸门在工具执行处，不是界面上的一句提示：关着时 arch_write / arch_edit 一个字节都不许改。
+console.log('【AI 写图开关：默认关（硬闸门）】')
+const SETTINGS = '/home/vesita/.dsh/arch-canvas/settings.json'
+{
+  const get0 = await call('setting:get', {})
+  ok('默认是关的（文件不存在 ⇒ 关）', get0 && get0.aiWrite === false, get0)
+
+  const before = await call('doc:get')
+  const blockedEdit = await tool('arch_edit').execute({
+    ops: [{ op: 'add_node', id: 'secret', label: '不该出现' }],
+  }, {})
+  ok('开关关着：arch_edit 被拒', blockedEdit && blockedEdit.ok === false, blockedEdit)
+  ok('拒绝理由说清是「关闭」并要求用户打开开关',
+    String(blockedEdit && blockedEdit.error).indexOf('关闭') >= 0 && String(blockedEdit.error).indexOf('AI 只读') >= 0,
+    blockedEdit && blockedEdit.error)
+  const blockedWrite = await tool('arch_write').execute({ mermaid: 'flowchart TD\n  x["不该出现"]' }, {})
+  ok('开关关着：arch_write 同样被拒', blockedWrite && blockedWrite.ok === false, blockedWrite)
+
+  const after = await call('doc:get')
+  eq('被拒的两次都没改图（节点数不变）', after.nodeCount, before.nodeCount)
+  eq('被拒的两次都没改图（修订号不变）', after.revision, before.revision)
+  ok('被拒的两次都没落盘', files.get(DOC).indexOf('不该出现') < 0)
+  await new Promise((r) => setTimeout(r, 30)) // 日志是异步队列，等它落盘再断言
+  ok('拒绝留下了现场（aiwrite.blocked）',
+    [...logStorage.values()].join('\n').indexOf('"ev":"aiwrite.blocked"') >= 0)
+
+  // 用户在面板顶栏点开关 ⇒ 界面的那条 RPC。
+  const on = await call('setting:set', { aiWrite: true })
+  ok('打开开关：RPC 返回 ok 且状态是开', on && on.ok === true && on.aiWrite === true, on)
+  ok('开关落盘到 settings.json', files.has(SETTINGS), [...files.keys()].filter((k) => k.indexOf('settings') >= 0))
+  ok('落盘内容只认显式 true', JSON.parse(files.get(SETTINGS)).aiWrite === true, files.get(SETTINGS))
+  const get1 = await call('setting:get', {})
+  ok('再读是开着的', get1 && get1.aiWrite === true, get1)
+
+  // 负向对照：文件被写坏 ⇒ 回到"关"（fail-closed，绝不放宽）。
+  files.set(SETTINGS, '{ 这不是 JSON')
+  const getBad = await call('setting:get', {})
+  ok('settings.json 损坏 ⇒ 退回关（fail-closed）', getBad && getBad.aiWrite === false, getBad)
+  const blockedAgain = await tool('arch_edit').execute({ ops: [{ op: 'add_node', id: 'nope2' }] }, {})
+  ok('损坏后写入再次被拒', blockedAgain && blockedAgain.ok === false, blockedAgain)
+  await call('setting:set', { aiWrite: true })
+}
 
 console.log('【AI 增量改图：arch_edit】')
 const e1 = await tool('arch_edit').execute({

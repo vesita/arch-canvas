@@ -76,7 +76,7 @@ console.log('【通过引导层加载后的注册结果】')
 // 这个插件对 console 一字不吐（正常操作噪音一律不出，故障走 throw）——
 // 引导层与宿主逻辑都在 vm 里跑，它们的 console 就是上面那个收集器，所以这里能兜住。
 ok('挂载过程不往 console 写任何东西', logs.length === 0, logs)
-eq('注册了 13 个 RPC 处理器', handlers.size, 13)
+eq('注册了 15 个 RPC 处理器', handlers.size, 15)
 eq('注册了 4 个工具', tools.length, 4)
 eq('工具名对得上', tools.map((t) => t.name).sort().join(','), 'arch_edit,arch_read,arch_switch,arch_write')
 eq('注册了 1 条提示词上下文', prompts.length, 1)
@@ -89,6 +89,15 @@ const g = await handlers.get('doc:get')({})
 ok('doc:get 返回 ok', g && g.ok === true, g && g.error)
 eq('种子节点数', g.nodeCount, 5)
 ok('带 lastChange 字段', 'lastChange' in g)
+
+// AI 写图默认关（硬闸门）：先确认被拒，再由用户侧打开开关，让后面那条"真的能改"有意义。
+const gate0 = await handlers.get('setting:get')({})
+ok('AI 写图默认关', gate0 && gate0.aiWrite === false, gate0)
+const denied = await tools.find((t) => t.name === 'arch_edit').execute({
+  ops: [{ op: 'add_node', id: 'denied', label: '不该出现' }],
+}, {})
+ok('开关关着时 arch_edit 被拒（引导层这条路也吃闸门）', denied && denied.ok === false, denied)
+await handlers.get('setting:set')({ aiWrite: true })
 
 const e = await tools.find((t) => t.name === 'arch_edit').execute({
   ops: [{ op: 'add_node', id: 'probe', label: '引导层探针' }],

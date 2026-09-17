@@ -83,6 +83,13 @@ function ArchStudio(props) {
   var svg = svgState[0]
   var setSvg = svgState[1]
 
+  // AI 写图开关（宿主侧的状态，见 src/host/settings.ts）：**默认关**。
+  // 界面只镜像它：真正的闸门在工具执行处，所以这里显示错了也不会让 AI 偷偷改图 ——
+  // 但反过来，用户点了开关必须看到真实结果，因此 set 之后用返回值回写，不看本地猜测。
+  var aiWriteState = React.useState(false)
+  var aiWrite = aiWriteState[0]
+  var setAiWrite = aiWriteState[1]
+
   var errState = React.useState('')
   var renderError = errState[0]
   var setRenderError = errState[1]
@@ -292,6 +299,27 @@ function ArchStudio(props) {
       }
     }
   }, [])
+
+  // AI 写图开关：进面板时读一次宿主的真实状态（默认关），点一下写回宿主。
+  React.useEffect(function () {
+    var alive = true
+    rpc('setting:get', {}).then(function (r) {
+      if (alive && r && r.ok) setAiWrite(!!r.aiWrite)
+    }).catch(function () { /* 读不到就是"关"：界面上显示只读，与宿主闸门一致 */ })
+    return function () { alive = false }
+  }, [])
+
+  /**
+   * 切换 AI 写图开关。**以宿主的返回值为准回写界面**（本地不抢先宣布成功）：
+   * 写盘失败时宿主抛错，这里要把它如实显示出来 —— 否则界面显示"已打开"、闸门其实还关着。
+   */
+  function toggleAiWrite(next) {
+    setAiWrite(!!next)
+    rpc('setting:set', { aiWrite: !!next }).then(function (r) {
+      if (r && r.ok) setAiWrite(!!r.aiWrite)
+      else { setAiWrite(!next); setStatus('切换 AI 改图开关失败：' + String((r && r.error) || '未知原因')) }
+    }).catch(function (e) { setAiWrite(!next); setStatus('切换 AI 改图开关失败：' + msgOf(e)) })
+  }
 
   // 拉取与切换图：cwd 变化（从不就绪变就绪、或切会话）时重新拉取并重置视图
   React.useEffect(function () {
@@ -1191,6 +1219,15 @@ function ArchStudio(props) {
         className: 'ac-tab', title: '重做 (Ctrl/Cmd+Shift+Z)', onClick: redo,
         disabled: histRef.current.future.length === 0,
       }, '↷'),
+      // AI 写图开关：**默认只读**，用户点一下才允许 AI 改图（真正的闸门在宿主侧，
+      // 见 src/host/settings.ts；这里只是它的可见控件）。
+      React.createElement('button', {
+        className: 'ac-tab ac-aiwrite' + (aiWrite ? ' on' : ''),
+        title: aiWrite
+          ? 'AI 改图：已允许。点一下改为只读 —— 关闭时 AI 的 arch_write / arch_edit 会被拒绝。'
+          : 'AI 改图：只读（默认）。点一下允许 AI 用 arch_write / arch_edit 改这张图。',
+        onClick: function () { toggleAiWrite(!aiWrite) },
+      }, aiWrite ? 'AI 可改图' : 'AI 只读'),
     ),
     React.createElement('div', { className: 'ac-tools' },
       tab === 'canvas' ? React.createElement('button', { className: 'ac-btn', onClick: addNode }, '＋ 节点') : null,
