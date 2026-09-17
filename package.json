@@ -36,7 +36,7 @@
     "check": "npm run typecheck && npm run test && npm run test:schema",
     "typecheck": "tsc -p tsconfig.host.json --noEmit && tsc -p tsconfig.client.json --noEmit",
     "prepack": "npm run build",
-    "pack": "npm pack --pack-destination /home/vesita/coding/my/dist"
+    "pack": "npm pack --pack-destination \"${DSH_HOME:-$HOME/.dsh}/packages\""
   },
   "devDependencies": {
     "jsdom": "^30.0.1",
