@@ -66,8 +66,9 @@ npm run check
 
 **证据来源**：本地 8 个真实仓库上的 9 组测量（Python: `meno` `krice` `nanoSeek` `stross`；
 TS/JS: `dsh-antigravity` `dsh-collab`；Rust: `stross` `breeze` `exreg`）。
-当时的探针是临时脚本（已清掉，且 TS 那支依赖临时装的 `@babel/parser`）——
-方法是「同一份语料上跑两遍：一遍正则、一遍真解析器，逐条比集合」，要复跑就按这句话重写，
+当时的探针是临时脚本，还留在 `/tmp/ac-auto/`（`probe.py` / `probe-js.mjs` / `probe-rs.py`，
+**重启就没了**；TS 那支另需一个临时装的 `@babel/parser`）——
+方法是「同一份语料上跑两遍：一遍正则、一遍真解析器，逐条比集合」，要复跑就按这句话重写。
 别指望仓库里有现成的。下表的数就是那时候量出来的。
 
 | 环节 | 实测 | 说明 |
