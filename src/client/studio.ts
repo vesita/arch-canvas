@@ -226,10 +226,10 @@ function ArchStudio(props) {
     if (model && model.nodes) {
       for (var i = 0; i < model.nodes.length; i++) {
         var n = model.nodes[i]
-        // 节点默认只画标题，点开（= 选中）才画描述与引用行 —— 尺寸必须跟着同一个判据走，
-        // 否则展开时文字会溢出没长高的框。所以 sel 也是这个 memo 的依赖。
-        var open = !!(sel && sel.kind === 'node' && sel.id === n.id)
-        var s = open ? nodeSize(n.label, refRowCount(n.files)) : nodeSize(splitLabel(n.label).title, 0)
+        // 节点**永远只画标题**，具体信息一律去检查器里看（2026-09 用户要求取消就地展开）。
+        // 好处不只是省地方：尺寸不再与选中有关，于是选中一个方块**不会改变它的几何** ——
+        // 连在它上面的线就不会因为你点一下而全部重画。
+        var s = nodeSize(splitLabel(n.label).title, 0)
         out[n.id] = { x: n.x == null ? 0 : n.x, y: n.y == null ? 0 : n.y, w: s.w, h: s.h }
       }
     }
@@ -1496,13 +1496,13 @@ function ArchStudio(props) {
         var rx2 = kind === 'rect' ? 9 : gm.h / 2
         shapeEl = React.createElement('rect', { className: 'ac-shape', x: x0, y: y0, width: gm.w, height: gm.h, rx: rx2 })
       }
-      // 默认只画标题；点开（选中）才画描述与引用行 —— 与 gstate 的尺寸判据必须一致，
-      // 否则文字会溢出没长高的框（或框里留一大块空白）。
-      var open = !!(sel && sel.kind === 'node' && sel.id === node.id)
+      // 节点**永远只画标题**：描述与引用行都不在画布上画，一律去检查器里看。
+      // 这里刻意保留 descLines / refText 两个空值，下面那段 JSX 就不用动
+      // （它们为空时 descEl / refEl 自然就是 null）。
       var lines = String(node.label == null ? '' : node.label).split('\n')
-      var descLines = open ? lines.slice(1) : []
-      var refText = open ? refRowText(node.files) : ''
-      var rows = (open ? lines.length : 1) + (refText ? 1 : 0)
+      var descLines = []
+      var refText = ''
+      var rows = 1
       var spanStart = -((rows - 1) * 19) / 2
       // 标题必须是 .ac-lbl 的**全部**文本：测试与用户都靠它认节点。
       var titleEl = React.createElement('text', { className: 'ac-lbl' },

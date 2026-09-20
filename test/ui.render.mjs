@@ -679,37 +679,33 @@ console.log('\n[4f] 节点卡片分段与源码页解析警告')
   //     所以必须是负向断言（元素不存在），而不是"有但看不见"。
   ok('未选中时节点不画 .ac-desc', !c1El?.querySelector('.ac-desc'))
   ok('未选中时节点不画 .ac-ref', !c1El?.querySelector('.ac-ref'))
+  // 记下**未选中时**的方块高度 —— 下面要证明"选中不改变几何"
+  const c1HeightIdle = c1El?.querySelector('rect:not(.ac-hl)')?.getAttribute('height')
 
   // a3. 点一下节点 = 选中 = 展开：描述与引用行这时才出现。
   await act(async () => {
     c1El.dispatchEvent(new dom.window.PointerEvent('pointerdown', { bubbles: true, button: 0 }))
   })
   await flush()
+  // a3. 选中**不再展开**（2026-09 用户要求取消就地展开，具体信息一律去检查器里看）。
+  //     所以这里是负向契约：点开之后画布上依然只有标题。
   const c1Open = findCardNode('核心服务')
-  ok('选中后节点出现 .ac-desc', !!c1Open?.querySelector('.ac-desc'))
+  ok('选中后画布节点依然不画 .ac-desc（不再就地展开）', !c1Open?.querySelector('.ac-desc'))
+  ok('选中后画布节点依然不画 .ac-ref', !c1Open?.querySelector('.ac-ref'))
+  eq('选中后 .ac-lbl 仍然只是标题那一段', c1Open?.querySelector('.ac-lbl')?.textContent, '核心服务')
 
-  // b. 展开后同一节点内有 .ac-desc，其文本包含其余段
-  const descEl = c1Open?.querySelector('.ac-desc')
-  ok('多行节点内存在 .ac-desc', !!descEl)
-  const descText = descEl?.textContent || ''
-  ok('.ac-desc 包含意图行', descText.indexOf('意图：处理高并发请求') >= 0, descText)
-  ok('.ac-desc 包含原理行', descText.indexOf('原理：基于事件循环与非阻塞IO') >= 0, descText)
-  ok('.ac-desc 包含普通描述行', descText.indexOf('补充说明行') >= 0, descText)
+  // a4. 取消展开带来的一条硬性质：**选中不改变节点几何**。
+  //     尺寸要是还跟着 sel 走，点一下方块就会让它长大一圈 —— 连在它上面的线全都要重画，
+  //     看上去就是"点一下就抖"。所以直接量方块高度，选中前后必须一样。
+  eq('节点高度不随选中变化（几何稳定，连线不会因为点一下而重画）',
+    c1Open?.querySelector('rect:not(.ac-hl)')?.getAttribute('height'), c1HeightIdle)
 
-  // c. 「意图：」开头带 ac-intent、「原理：」开头带 ac-rationale、无前缀的段都不带
-  const descSpans = Array.from(descEl?.querySelectorAll('tspan') || [])
-  const intentSpan = descSpans.find((s) => s.textContent.indexOf('意图：') === 0)
-  const rationaleSpan = descSpans.find((s) => s.textContent.indexOf('原理：') === 0)
-  const plainSpan = descSpans.find((s) => s.textContent.indexOf('补充说明行') === 0)
-  ok('「意图：」开头的 tspan 带 class ac-intent', intentSpan?.getAttribute('class') === 'ac-intent', intentSpan?.getAttribute('class'))
-  ok('「原理：」开头的 tspan 带 class ac-rationale', rationaleSpan?.getAttribute('class') === 'ac-rationale', rationaleSpan?.getAttribute('class'))
-  ok('无前缀的描述段不带 ac-intent 也不带 ac-rationale',
-    plainSpan && !plainSpan.classList.contains('ac-intent') && !plainSpan.classList.contains('ac-rationale'), plainSpan?.getAttribute('class'))
-
-  // d. 带 files 的节点（展开后）有 .ac-ref，文字形如 ▤ xxx.ts
-  const refEl = c1Open?.querySelector('.ac-ref')
-  ok('带 files 的节点存在 .ac-ref', !!refEl)
-  eq('带 files 的节点 .ac-ref 内容为 ▤ core.ts', refEl?.textContent.trim(), '▤ core.ts')
+  // a5. 描述与引用没有丢 —— 它们现在只在检查器里（那一侧由 [4d] 节守着）。
+  //     这里钉的是画布这一侧：一个都不画。
+  ok('选中后画布上不再出现完整 label（只剩标题，没有「意图/原理」那些行）',
+    (c1Open?.querySelector('.ac-lbl')?.textContent || '').indexOf('意图') < 0,
+    c1Open?.querySelector('.ac-lbl')?.textContent)
+  // d. 锚点行也只在检查器里 —— 画布上不再有 .ac-ref（见上面 a3 的负向契约）。
 
   // e. 负向对照：不带 files 的节点**即使展开**也没有 .ac-ref。
   //    必须展开后再断言 —— 不展开的话"没有 .ac-ref"是必然的，断言会恒真、抓不到任何回归。
