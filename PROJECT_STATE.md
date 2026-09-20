@@ -52,11 +52,50 @@ npm run check
 
 - **字段表生成** parse/serialize/normalize/snapshot：写盘前的往返守恒检查已经拦住「字段写不出去」，
   收益不够（真值表见 `AGENTS.md` 的「写盘前的往返守恒检查」）。
-- **`arch_drift`（锚点腐烂报告）/ `arch_import` / `arch_check`**：等真的攒下一批图和锚点之后再说。
+- **`arch_drift`（锚点腐烂报告）/ `arch_import` / `arch_check`**：**搁置期内都不做**。
+  真要复工时的顺序是 `arch_drift` → `arch_import`（见下面那份调查记录），触发条件是「撞到第二次」。
 - **LLM 直接生成框架图**：只在「有正式声明/目录粒度/图当约束」时才可靠（CodeSee 已停、Swarm 类
-  采样幻觉多）。AC 的路线是先 `arch_drift`，再 `arch_import`，最后 `arch_check`（拿依赖图 diff 当约束）。
+  采样幻觉多）。理由与实测见下面那份调查记录。
 - **借别人的语法/布局**：`lhead/ltail`、`%% @rank same`、Structurizr 式多视图、libavoid/elkjs WASM。
 - **从仓库里删旧数据**：`~/.dsh/arch-canvas/architecture.mmd`（0.3 时代的全局兜底）、三天前的日志。
+
+## 调查记录：能不能自动构建初始框架图（2026-09-21）
+
+问题：用算法（尤其**纯文本**，不引解析器）自动生成初始框架图，可行到什么程度？
+结论留在这里，省得下次从头论证。
+
+**证据来源**：本地 8 个真实仓库上的 9 组测量（Python: `meno` `krice` `nanoSeek` `stross`；
+TS/JS: `dsh-antigravity` `dsh-collab`；Rust: `stross` `breeze` `exreg`）。
+当时的探针是临时脚本（已清掉，且 TS 那支依赖临时装的 `@babel/parser`）——
+方法是「同一份语料上跑两遍：一遍正则、一遍真解析器，逐条比集合」，要复跑就按这句话重写，
+别指望仓库里有现成的。下表的数就是那时候量出来的。
+
+| 环节 | 实测 | 说明 |
+|---|---|---|
+| 抽取：正则 vs 真解析器（Python 1888 条引用） | 补两轮正则后 1323 / 1326 | 漏的是 `import a, b as c` 这类**枚举不完的写法**；而且**漏了不报错** |
+| 抽取：TS/JS 两套策略 | 紧：漏 4–5、误报 0；松：漏 0、**误报 5–6** | 误报来自真实仓库里「代码作为字符串」（`collab-plugin.host.js` 嵌着插件源码）与英文散文 `from 'saved row'` |
+| 决议（真正贵的部分） | `meno` 194 条内部引用，**朴素规则 0 条解开**，全靠「`src` 布局」这条工程知识；TS 加一条 `./x.js → x.ts` 让内部边 **59 → 105**、解不开 **46 → 0** | 抽取几乎免费，决议要按生态写规则 |
+| Rust | `crate::` 起头 178/230 靠文件名约定解开；但 **175/423 是 `super::`/`self::`**（要先按 `mod` 重建模块树） | `#[path]` / `include!` 在这三个仓库都是 0，约定没被绕开 |
+| 单元卫生 | `dsh-antigravity` 46 个文件里 **29 个是构建产物**（63%），15 个 basename 重复出现 | 不先排除就是 2–3 倍假节点与假枢纽 |
+| 语义（最关键） | 本图 23 个节点落在 **7 个文件**（一个文件 2.9 个概念）；而 `src/` 13 个 `.ts` 里**只有 5 行 import** | 它的连接介质是 `tools/build.mjs` 的 `HOST_PARTS`/`UI_PARTS` —— **import 工具在 AC 自己身上得到 0 条边**，而人画的 23 条边是「渲染 / 上下文注入 / 锚点 / 留话」 |
+
+外部调研（引用已核对存在）：依赖抽取 P/R 可 >90%，但动态特性下真实调用边会漏掉 20–75%
+（[ICSE 2020](https://2020.icse-conferences.org/details/icse-2020-papers/47/On-the-Recall-of-Static-Call-Graph-Construction-in-Practice)）；
+**即使喂 100% 准确的依赖图**，自动恢复的逻辑组件也只有 ~55–75% 吻合，而「简单目录基线」经常打败无监督聚类
+（[Lutellier ICSE 2015](https://dl.acm.org/doi/abs/10.5555/2819009.2819022)、
+[Candela TSE 2018](https://www.computer.org/csdl/journal/ts/2018/02/07859416/13rRUxcsYNK)）；
+工业界一致的做法是 [Reflexion Model](https://www.computer.org/csdl/journal/ts/2001/04/e0364/13rRUIIVleg)
+—— **人给意图骨架 + 机器提取事实 + 显式映射**，Structure101 / Lattix / Structurizr 都要架构师写切片与规则。
+**AC 现在的形状（人画图 + `%% @file` 锚点 + `arch_read` 回读）正是这个形态。**
+
+因此的取舍：
+
+- 先做**零决议知识**的那一档：`arch_drift`（锚点腐烂 + 新文件没人画）。
+- `arch_import` 若做：目录/包粒度、**只出候选不落盘**、每条边带**出处行号**、自带排除名单（测试/产物/生成物）
+  与每生态几行决议规则；**「解不开的引用」要当成一等输出列给人看**，不许静默丢。
+- **不做**：LLM 直接生成、无监督聚类出「逻辑端」、拿机器骨架覆盖用户摆的坐标。
+- **硬约束**：宿主逻辑两种形态共用 `src/host/*`，而动态 Package 形态**没有 `require`/`process`** ——
+  所以不能调 `dependency-cruiser` / `pydeps` / `cargo-modules`，只能自己用 `fs` 读文件、自己实现决议。
 
 ## 下一段：按体验走（2026-09-21 起）
 
