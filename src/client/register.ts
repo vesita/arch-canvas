@@ -8,7 +8,7 @@ function ArchTab(props) {
   var cwd = typeof useSessions === 'function' && sessionId
     ? useSessions(function (sessions) { return sessions && sessions.byId && sessions.byId[sessionId] ? sessions.byId[sessionId].cwd : undefined })
     : undefined
-  return React.createElement(ArchStudio, { cwd: cwd, sessionId: sessionId })
+  return React.createElement(ArchStudio, Object.assign({}, props, { cwd: cwd, sessionId: sessionId }))
 }
 
 // ==================== 侧栏底部入口 ====================

@@ -228,12 +228,17 @@ console.log('\n[4c] 元素注释：带注释渲染、角标、清单已解决切
     return prevRespond(method, args)
   }
 
+  let draftText = ''
+  const mockInputActions = {
+    setDraft: (text) => { draftText = text },
+  }
+
   const noteHost = document.createElement('div')
   document.body.appendChild(noteHost)
   const noteRoot = createRoot(noteHost)
   await act(async () => {
     noteRoot.render(React.createElement(captured['sidebar.right.pane.tab'], {
-      cwd: UI, sessionId: 's1', useSessions: () => UI,
+      cwd: UI, sessionId: 's1', useSessions: () => UI, inputActions: mockInputActions,
     }))
   })
   await flush()
@@ -265,6 +270,22 @@ console.log('\n[4c] 元素注释：带注释渲染、角标、清单已解决切
 
   const headText = notesPanel()?.querySelector('.ac-lib-head')?.textContent || ''
   ok('面板头部文案含未解决与已解决条数', headText.indexOf('节点留言：2 条待办') >= 0 && headText.indexOf('1 条已解决') >= 0, headText)
+
+  // 3b. 头部批量「发送这一轮留言 (N)」按钮正面断言
+  const batchSendBtn = () => Array.from(notesPanel()?.querySelectorAll('.ac-lib-head button') || []).find((b) => b.textContent.includes('发送这一轮留言'))
+  ok('存在「发送这一轮留言 (2)」按钮', !!batchSendBtn() && batchSendBtn().textContent.trim() === '发送这一轮留言 (2)')
+
+  draftText = ''
+  await act(async () => { batchSendBtn().click() })
+  await flush()
+
+  ok('批量发送调了 setDraft 且同时包含两条留言的节点 id 与正文',
+    draftText.indexOf('`n1`（节点甲）：这里为什么不用队列？') >= 0 &&
+    draftText.indexOf('`n2`（节点乙）：这里需要限流') >= 0 &&
+    draftText.indexOf('关于画布「') >= 0 &&
+    draftText.indexOf('3 条留言') < 0 &&
+    draftText.indexOf('2 条留言') >= 0,
+    draftText)
 
   const rows = () => Array.from(notesPanel()?.querySelectorAll('.ac-lib-row') || [])
   const n1Row = () => rows().find((r) => r.textContent.indexOf('n1') >= 0)
@@ -310,6 +331,15 @@ console.log('\n[4c] 元素注释：带注释渲染、角标、清单已解决切
 
   const markBtn = () => dock()?.querySelector('.ac-note-actions button')
   eq('有未解决注释时按钮文案为「标记已解决」', markBtn()?.textContent.trim(), '标记已解决')
+
+  const sendAiBtn = () => Array.from(dock()?.querySelectorAll('.ac-note-actions button') || []).find((b) => b.textContent.trim() === '发送给 AI')
+  ok('检查器内出现「发送给 AI」按钮', !!sendAiBtn())
+  ok('有留言时「发送给 AI」按钮可用', sendAiBtn() && !sendAiBtn().disabled)
+
+  draftText = ''
+  await act(async () => { sendAiBtn().click() })
+  await flush()
+  ok('点击「发送给 AI」调了 setDraft 且包含节点标题与留言', draftText.indexOf('节点乙') >= 0 && draftText.indexOf('这里需要限流') >= 0, draftText)
 
   rpcCalls.length = 0
   await act(async () => { markBtn().click() })

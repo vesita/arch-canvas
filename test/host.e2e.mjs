@@ -45,6 +45,7 @@ const agentsSvc = {
 }
 const fsSvc = {
   resolve: async (p) => ({ targetKey: p, displayPath: p }),
+  processPath: (t) => (t && t.targetKey) || String(t),
   stat: async (t) => {
     if (files.has(t.targetKey)) return { version: 'v1', type: 'file', size: files.get(t.targetKey).length }
     // 目录：只要有文件住在它下面就算存在。真 fs 会给 type:'directory'，
@@ -916,6 +917,82 @@ ok('模型中已无节点 n3', !getAfterDel.model.nodes.some((n) => n.id === 'n3
 eq('删节点后当前图 noteCount 为 1（仅剩 n1，n3 已成孤儿）', getAfterDel.noteCount, 1)
 eq('删节点后 resolvedNoteCount 为 0', getAfterDel.resolvedNoteCount, 0)
 eq('删节点后 warnings 为空（不报错）', getAfterDel.warnings.length, 0)
+
+// 6. notes.json 写入两道闸保险与加载日志测试
+console.log('【notes.json 写入保险与 load 日志】')
+const dirSafe = '/tmp/proj-safe'
+const mmdSafe = dirSafe + '/.arch-canvas/architecture.mmd'
+const notesSafe = dirSafe + '/.arch-canvas/notes.json'
+files.set(mmdSafe, 'flowchart TD\n  s1["安全测试节点"]\n')
+
+// (a) 正常写入：不存在时能正常写入
+const docSafe0 = await call('doc:get', { where: dirSafe })
+ok('安全测试库加载成功', docSafe0 && docSafe0.ok === true)
+const mSafe1 = JSON.parse(JSON.stringify(docSafe0.model))
+mSafe1.nodes[0].note = '正常留言'
+const setSafe1 = await call('doc:set', { model: mSafe1, where: dirSafe })
+ok('正常情况仍然能写', setSafe1 && setSafe1.ok !== false)
+ok('notes.json 已成功创建并写入', files.has(notesSafe) && files.get(notesSafe).indexOf('正常留言') >= 0)
+
+// (b) 闸门 2：现有 notes.json 不是合法 JSON 时拒绝写、内容原样保留
+const foreignContent = 'flowchart TD\n  foreign["这是被误写进来的流程图内容而非JSON"]\n'
+files.set(notesSafe, foreignContent)
+// 清除内存缓存，触发从磁盘加载非 JSON 内容
+const docSafeForeign = await call('doc:get', { where: dirSafe + '-foreign' }) // 切换触发缓存清理或直接测 loadNoteStoreFor
+// 直接测试带非法内容的图库
+const dirCorrupt = '/tmp/proj-corrupt'
+files.set(dirCorrupt + '/.arch-canvas/architecture.mmd', 'flowchart TD\n  c1["损坏测试"]\n')
+files.set(dirCorrupt + '/.arch-canvas/notes.json', foreignContent)
+
+const docCorrupt = await call('doc:get', { where: dirCorrupt })
+ok('读取含有非法 JSON 的 notes.json 不崩溃', docCorrupt && docCorrupt.ok === true)
+// 验证 loadNoteStoreFor 记了日志且带有 head 字段
+await new Promise((r) => setTimeout(r, 10))
+const logsAfterLoad = (logStorage.get(todayLogKey) || '').trim().split('\n').map((l) => {
+  try { return JSON.parse(l) } catch (e) { return null }
+}).filter(Boolean)
+const corruptLoadLog = logsAfterLoad.reverse().find((row) => row.ev === 'notes.load.fail' && row.path?.includes('proj-corrupt'))
+ok('loadNoteStoreFor 失败日志带有 head 字段', !!corruptLoadLog && typeof corruptLoadLog.head === 'string' && corruptLoadLog.head.startsWith('flowchart TD'), corruptLoadLog)
+
+// 尝试在损坏的 notes.json 存在时保存新留言
+const mCorrupt = JSON.parse(JSON.stringify(docCorrupt.model))
+mCorrupt.nodes[0].note = '尝试覆盖'
+const setCorrupt = await call('doc:set', { model: mCorrupt, where: dirCorrupt })
+ok('现有 notes.json 不是合法 JSON 时拒绝写并记录警告', setCorrupt && setCorrupt.warnings.some((w) => w.includes('已拒绝覆盖')), setCorrupt.warnings)
+eq('现有 notes.json 不是合法 JSON 时内容原样保留', files.get(dirCorrupt + '/.arch-canvas/notes.json'), foreignContent)
+
+// 验证记了 notes.save.refused 日志，且 reason 为 foreign-content
+const logsAfterSaveRefused = (logStorage.get(todayLogKey) || '').trim().split('\n').map((l) => {
+  try { return JSON.parse(l) } catch (e) { return null }
+}).filter(Boolean)
+const foreignSaveRefusedLog = logsAfterSaveRefused.reverse().find((row) => row.ev === 'notes.save.refused' && row.path?.includes('proj-corrupt'))
+ok('记了 foreign-content 拒绝写入日志', !!foreignSaveRefusedLog && foreignSaveRefusedLog.reason === 'foreign-content', foreignSaveRefusedLog)
+
+// (c) 闸门 1：目标是别的路径时拒绝写、不产生写入
+const dirMismatch = '/tmp/proj-mismatch'
+files.set(dirMismatch + '/.arch-canvas/architecture.mmd', 'flowchart TD\n  m1["路径不匹配测试"]\n')
+// 临时 hook fsSvc.resolve，让 notes.json 解析到别的 targetKey
+const origResolve = fsSvc.resolve
+fsSvc.resolve = async (p) => {
+  if (p === dirMismatch + '/.arch-canvas/notes.json') {
+    return { targetKey: '/tmp/hijacked/other.json', displayPath: '/tmp/hijacked/other.json' }
+  }
+  return origResolve(p)
+}
+const docMismatch = await call('doc:get', { where: dirMismatch })
+const mMismatch = JSON.parse(JSON.stringify(docMismatch.model))
+mMismatch.nodes[0].note = '尝试写入劫持路径'
+const setMismatch = await call('doc:set', { model: mMismatch, where: dirMismatch })
+fsSvc.resolve = origResolve // 恢复
+
+ok('目标是别的路径时拒绝写并记录警告', setMismatch && setMismatch.warnings.some((w) => w.includes('目标路径不一致')), setMismatch.warnings)
+ok('目标是别的路径时不产生写入', !files.has('/tmp/hijacked/other.json'))
+
+const logsAfterMismatch = (logStorage.get(todayLogKey) || '').trim().split('\n').map((l) => {
+  try { return JSON.parse(l) } catch (e) { return null }
+}).filter(Boolean)
+const mismatchLog = logsAfterMismatch.reverse().find((row) => row.ev === 'notes.save.refused' && row.reason === 'path-mismatch')
+ok('记了 path-mismatch 拒绝写入日志', !!mismatchLog && mismatchLog.reason === 'path-mismatch' && mismatchLog.actual === '/tmp/hijacked/other.json', mismatchLog)
 
 // ---------- [16] 代码锚点 %% @file ----------
 console.log('【代码锚点 %% @file】')
