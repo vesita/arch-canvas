@@ -1370,6 +1370,19 @@ ok('未知 session 的 doc:set 不抛错且成功', setWithoutAgent && setWithou
 ok('fs.writeText 仍然发生', !!lastWriteArgs)
 eq('未找到 agent 时 sandboxPolicy 参数退回 undefined', lastWriteArgs && lastWriteArgs.sandboxPolicy, undefined)
 
+// 缺策略的写入**必须留下能指路的现场**。2026-09 的生产日志里躺着 6 条
+// `sandbox.policy.missing / no-session`，只说了"没策略"，谁在写、写哪个文件一概看不到 ——
+// 按本项目自己的规矩，那等于匿名。现在 persist() 按 site 去重补一条 persist.no-policy。
+await new Promise((r) => setTimeout(r, 60))
+const noPolicyLines = (logStorage.get(todayLogKey) || '').trim().split('\n').map((l) => {
+  try { return JSON.parse(l) } catch (e) { return null }
+}).filter(Boolean)
+const noPolicyRows = noPolicyLines.filter((row) => row.ev === 'persist.no-policy')
+ok('缺策略的落盘记了 persist.no-policy（不再是匿名警告）', noPolicyRows.length >= 1, noPolicyRows.length)
+ok('那条日志带着 site 与 file，能一眼指出是哪条入口丢了会话',
+  !!noPolicyRows[0] && typeof noPolicyRows[0].site === 'string' && typeof noPolicyRows[0].file === 'string',
+  noPolicyRows[0])
+
 // doc:rev 会话化与 where 解析测试
 const dirProjB = '/tmp/test-arch-proj-b'
 const revB = await call('doc:rev', { where: dirProjB, session: 'sess-proj-x' })

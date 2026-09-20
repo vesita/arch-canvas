@@ -131,6 +131,8 @@ function seedDoc() {
 
 // 记录沙箱策略缺失原因，同原因只报一次，防止高频刷屏
 var reportedSandboxMissingReasons = {}
+// 落盘时没有沙箱策略的入口（按 site 去重）。见 persist() 里的说明：缺策略的写入从前是匿名的。
+var reportedNoPolicySites = {}
 
 /**
  * 获取会话对应的沙箱执行策略。
@@ -198,6 +200,19 @@ function policyOfSessionId(id) {
  */
 async function persist(policy?, site?) {
   if (!fs) return 'fs 服务不可用'
+  // `policy` 缺席意味着这次写是 **agentless call** —— 它会掉到部署默认的可写根，
+  // 而不是这个会话的工作区。这正是当初「面板上每一次保存都被拒、日志却照写不误」的形态。
+  //
+  // 从前它只在上游 policyOfSessionId 里记一条不带现场的警告（而且 `!id` 那条路连警告都没有），
+  // 于是 2026-09 的日志里躺着 6 条 `sandbox.policy.missing / no-session`，谁在写、写哪个文件
+  // 一概看不到 —— 按这个项目自己的规矩，那就等于匿名。这里按 site 去重记一条能指路的。
+  if (!policy) {
+    var pk = String(site || 'unknown')
+    if (!reportedNoPolicySites[pk]) {
+      reportedNoPolicySites[pk] = true
+      logEvent('warn', 'persist.no-policy', { site: pk, file: doc.file, scope: lib.scope })
+    }
+  }
   try {
     if (doc.absent) {
       var targetDir = doc.file.slice(0, doc.file.lastIndexOf('/'))

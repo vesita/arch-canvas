@@ -492,7 +492,12 @@ function ArchStudio(props) {
       var n = model.nodes[i]
       if (n && n.note && !n.noteDone) ids.push(n.id)
     }
-    if (ids.length === 0) return
+    if (ids.length === 0) {
+      // 待办清空了，签名也要跟着清 —— 否则「写一条留言 → 清掉 → 在同一个节点上再写一条」
+      // 会撞上同一个签名，effect 以为这一批加过了，新留言永远进不了输入框。
+      autoFilledRef.current = ''
+      return
+    }
     var sig = ids.join(',')
     if (autoFilledRef.current === sig) return
     autoFilledRef.current = sig

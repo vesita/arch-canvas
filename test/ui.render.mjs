@@ -1697,6 +1697,72 @@ console.log('\n[4n] 未办留言自动进输入框：一次补全、不重复、
   await act(async () => { afterDelete.root.unmount() })
   afterDelete.host.remove()
 
+  // d. 回归：待办被清空之后，**同一个实例 / 同一个节点**上再写一条留言，照样要自动进输入框。
+  //
+  //    注意这条**必须在同一个已挂载的实例里**走完「写 → 清 → 再写」：autoFilledRef 是 useRef，
+  //    每次重新挂载都是新的空签名，卸载重挂是复现不出来的（第一版就是这么写成了空转断言 ——
+  //    把修复撤掉它照样通过，白测了）。所以这里用检查器真写三条留言，让 model 状态自己变。
+  const CYCLE_MODEL = {
+    nodes: [{ id: 'z1', label: '节点子', shape: 'rect', group: null, x: 0, y: 0, note: '', noteDone: false }],
+    edges: [], groups: [], direction: 'TD', extras: [],
+  }
+  const prevRespondCycle = respond
+  const cycleModel = JSON.parse(JSON.stringify(CYCLE_MODEL))
+  respond = function (method, args) {
+    if (method === 'doc:get') return fullDoc({ model: cycleModel, nodeCount: cycleModel.nodes.length })
+    if (method === 'doc:set') { cycleModel.nodes = args.model.nodes; return fullDoc({ model: args.model, revision: 9, updatedBy: 'user' }) }
+    return prevRespondCycle(method, args)
+  }
+  const cycCalls = []
+  const cycHost = document.createElement('div')
+  document.body.appendChild(cycHost)
+  const cycRoot = createRoot(cycHost)
+  await act(async () => {
+    cycRoot.render(React.createElement(captured['sidebar.right.pane.tab'], {
+      cwd: UI, sessionId: 's1', useSessions: () => UI,
+      inputActions: { setDraft: (t) => { cycCalls.push(t) } },
+      useInput: (sel) => sel({ draft: '我打的字' }),
+    }))
+  })
+  await flush()
+  eq('开局没有留言 → 一个引用也不补', cycCalls.length, 0)
+
+  const cycNodeEl = Array.from(cycHost.querySelectorAll('g.ac-node'))
+    .find((g) => (g.textContent || '').indexOf('节点子') >= 0)
+  await act(async () => {
+    cycNodeEl.dispatchEvent(new dom.window.PointerEvent('pointerdown', { bubbles: true, button: 0 }))
+  })
+  await flush()
+  const cycArea = () => cycHost.querySelector('.ac-dock textarea[placeholder*="这里为什么不用队列"]')
+  ok('检查器里出现留言输入框', !!cycArea())
+  const setCycValue = Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, 'value').set
+  const writeNote = async (text) => {
+    await act(async () => {
+      setCycValue.call(cycArea(), text)
+      cycArea().dispatchEvent(new dom.window.Event('input', { bubbles: true }))
+    })
+    await flush()
+    await act(async () => {
+      cycArea().dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    })
+    await flush()
+  }
+
+  await writeNote('第一条留言')
+  eq('写完第一条 → 自动补一次', cycCalls.length, 1)
+  eq('补的是那一条', cycCalls[0], '我打的字 @z1')
+
+  await writeNote('')          // 清空：待办集合变空
+  eq('清空留言时不再补引用', cycCalls.length, 1)
+
+  await writeNote('第二条留言') // 同一个实例、同一个节点，再写一条
+  eq('同一个节点上重新写留言 → 仍然要自动补进输入框', cycCalls.length, 2)
+  eq('补的是重新写的那一条', cycCalls[1], '我打的字 @z1')
+
+  await act(async () => { cycRoot.unmount() })
+  cycHost.remove()
+  respond = prevRespondCycle
+
   respond = prevRespondAutoNote
 }
 console.log('\n[4o] Esc 两段式：第一下只拿焦点，第二下才关编辑页')
