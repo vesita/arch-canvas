@@ -1178,6 +1178,139 @@ ok('退回原生定时器（轮询挂在原生 setInterval 上）', nativeInterv
 ok('起始页在装机形态下也在', strictHost.innerHTML.indexOf('这张图还是空的') >= 0)
 await act(async () => { strictRoot.unmount() })
 
+console.log('\n[4j] 连线布线：正交折线 + 避让中间的方块')
+{
+  // 甲 → 中间障碍 → 乙 三者同列：直接连过去必然压过障碍。
+  // 这是本次改动的**核心断言** —— 线必须绕开它，而不是穿过去。
+  const ROUTE_MODEL = {
+    nodes: [
+      { id: 'ra', label: '甲', shape: 'rect', group: null, x: 0, y: 0 },
+      { id: 'rc', label: '中间障碍', shape: 'rect', group: null, x: 0, y: 220 },
+      { id: 'rb', label: '乙', shape: 'rect', group: null, x: 0, y: 440 },
+    ],
+    edges: [{ id: 're1', from: 'ra', to: 'rb', label: '', arrow: '-->' }],
+    groups: [],
+    direction: 'TD',
+    extras: [],
+  }
+
+  const prevRespondRoute = respond
+  const routeModel = JSON.parse(JSON.stringify(ROUTE_MODEL))
+  respond = function (method, args) {
+    if (method === 'doc:get') {
+      return fullDoc({ model: routeModel, nodeCount: routeModel.nodes.length, edgeCount: routeModel.edges.length })
+    }
+    return prevRespondRoute(method, args)
+  }
+
+  const rHost = document.createElement('div')
+  document.body.appendChild(rHost)
+  const rRoot = createRoot(rHost)
+  await act(async () => {
+    rRoot.render(React.createElement(captured['sidebar.right.pane.tab'], {
+      cwd: UI, sessionId: 's1', useSessions: () => UI,
+    }))
+  })
+  await flush()
+
+  const epEl = rHost.querySelector('path.ac-edge')
+  const dAttr = epEl ? epEl.getAttribute('d') : ''
+  ok('连线路径存在', !!dAttr, dAttr)
+  // 正交的定义：只有 M / L，没有三次贝塞尔 C。这也是"不再有怪异弧度"的直接证据。
+  ok('路径只有 M/L，没有 C 曲线', /^M /.test(dAttr) && dAttr.indexOf('C') < 0 && dAttr.indexOf('L') >= 0, dAttr)
+  // 为了下面好读，这里退掉锚点前缀（避免误判，见上面那条）
+  void 0
+
+  const nums = (dAttr.match(/-?\d+(?:\.\d+)?/g) || []).map(Number)
+  const rpts = []
+  for (let i = 0; i + 1 < nums.length; i += 2) rpts.push({ x: nums[i], y: nums[i + 1] })
+  ok('路径至少两个点', rpts.length >= 2, rpts)
+  let allOrth = rpts.length >= 2
+  for (let i = 0; i + 1 < rpts.length; i++) {
+    if (Math.abs(rpts[i].x - rpts[i + 1].x) > 0.01 && Math.abs(rpts[i].y - rpts[i + 1].y) > 0.01) allOrth = false
+  }
+  ok('每一段都是水平或垂直（没有斜线）', allOrth, rpts)
+
+  // 从 DOM 量出障碍方块的真实矩形：节点形状用的是绝对坐标，所以 rect 的 x/y/w/h 就是它的几何。
+  const routeNodes = Array.from(rHost.querySelectorAll('g.ac-node'))
+  const obsEl = routeNodes.find((g) => (g.textContent || '').indexOf('中间障碍') >= 0)
+  const obsRectEl = obsEl ? obsEl.querySelector('rect:not(.ac-hl)') : null
+  const obsRect = obsRectEl ? {
+    x1: Number(obsRectEl.getAttribute('x')),
+    y1: Number(obsRectEl.getAttribute('y')),
+    x2: Number(obsRectEl.getAttribute('x')) + Number(obsRectEl.getAttribute('width')),
+    y2: Number(obsRectEl.getAttribute('y')) + Number(obsRectEl.getAttribute('height')),
+  } : null
+  ok('量到了障碍方块的矩形', !!obsRect && obsRect.x2 > obsRect.x1 && obsRect.y2 > obsRect.y1, obsRect)
+
+  // 与实现同一条判据：轴对齐线段是否真的穿过矩形（严格不等号 = 贴边不算穿）
+  const segCrosses = (x1, y1, x2, y2, r) => {
+    if (y1 === y2) {
+      if (y1 <= r.y1 || y1 >= r.y2) return false
+      return Math.max(x1, x2) > r.x1 && Math.min(x1, x2) < r.x2
+    }
+    if (x1 === x2) {
+      if (x1 <= r.x1 || x1 >= r.x2) return false
+      return Math.max(y1, y2) > r.y1 && Math.min(y1, y2) < r.y2
+    }
+    return true
+  }
+  let crossed = false
+  if (obsRect) {
+    for (let i = 0; i + 1 < rpts.length; i++) {
+      if (segCrosses(rpts[i].x, rpts[i].y, rpts[i + 1].x, rpts[i + 1].y, obsRect)) crossed = true
+    }
+  }
+  ok('线绕开了中间的方块（没有任何一段穿过它）', !!obsRect && !crossed, { obsRect, rpts })
+  ok('确实是从旁边绕的（存在远离中轴的拐点）', rpts.some((p) => Math.abs(p.x) > 30), rpts.map((p) => p.x))
+
+  // 负向对照：这个场景**本身**确实是"直连会穿过"的 —— 否则上面那条断言是空的、什么都没证明。
+  const rectOfLabel = (label) => {
+    const g = routeNodes.find((el) => (el.textContent || '').indexOf(label) >= 0)
+    const r = g ? g.querySelector('rect:not(.ac-hl)') : null
+    if (!r) return null
+    return {
+      x1: Number(r.getAttribute('x')), y1: Number(r.getAttribute('y')),
+      x2: Number(r.getAttribute('x')) + Number(r.getAttribute('width')),
+      y2: Number(r.getAttribute('y')) + Number(r.getAttribute('height')),
+    }
+  }
+  const raRect = rectOfLabel('甲')
+  const rbRect = rectOfLabel('乙')
+  ok('负向对照成立：直连（甲底到乙顶的一条竖线）确实会穿过障碍',
+    !!raRect && !!rbRect && !!obsRect && segCrosses(0, raRect.y2, 0, rbRect.y1, obsRect),
+    { raRect, rbRect, obsRect })
+
+  // 平行边：同一对节点之间的两条线不许重叠成一条
+  const PAR_MODEL = JSON.parse(JSON.stringify(ROUTE_MODEL))
+  PAR_MODEL.edges = [
+    { id: 'pe1', from: 'ra', to: 'rb', label: '', arrow: '-->' },
+    { id: 'pe2', from: 'rb', to: 'ra', label: '', arrow: '-->' },
+  ]
+  const parModel = JSON.parse(JSON.stringify(PAR_MODEL))
+  respond = function (method, args) {
+    if (method === 'doc:get') {
+      return fullDoc({ model: parModel, nodeCount: parModel.nodes.length, edgeCount: parModel.edges.length })
+    }
+    return prevRespondRoute(method, args)
+  }
+  const pHost = document.createElement('div')
+  document.body.appendChild(pHost)
+  const pRoot = createRoot(pHost)
+  await act(async () => {
+    pRoot.render(React.createElement(captured['sidebar.right.pane.tab'], {
+      cwd: UI, sessionId: 's1', useSessions: () => UI,
+    }))
+  })
+  await flush()
+  const pPaths = Array.from(pHost.querySelectorAll('path.ac-edge')).map((p) => p.getAttribute('d'))
+  eq('一对节点之间的两条线都画出来了', pPaths.length, 2)
+  ok('两条平行线不重叠（路径不相同）', pPaths.length === 2 && pPaths[0] !== pPaths[1], pPaths)
+
+  await act(async () => { rRoot.unmount(); pRoot.unmount() })
+  respond = prevRespondRoute
+}
+
 console.log('\n[7] 卸载不留尾')
 await act(async () => { root.unmount(); footRoot.unmount() })
 dispose()

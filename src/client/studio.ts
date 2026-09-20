@@ -1369,12 +1369,35 @@ function ArchStudio(props) {
   }
 
   if (model) {
+    // 连线要避让**其它可见方块**。一律取 visGeom：被折叠收起的节点会映射到组块几何上，
+    // 于是"藏在块里的东西"天然不会挡路。按几何对象去重（折叠组里多个节点共用一个几何）。
+    var visList = []
+    var visSeen = []
+    for (var vi = 0; vi < model.nodes.length; vi++) {
+      var vg = visGeom(model.nodes[vi].id)
+      if (!vg || visSeen.indexOf(vg) >= 0) continue
+      visSeen.push(vg)
+      visList.push(vg)
+    }
+    // 同一对节点之间的多条线要错开，否则会完全重叠成一条（有向还是无向都按同一对算）。
+    var pairCount = {}
+    for (var pi = 0; pi < model.edges.length; pi++) {
+      var pe = model.edges[pi]
+      var pk = pe.from < pe.to ? pe.from + '|' + pe.to : pe.to + '|' + pe.from
+      pairCount[pk] = (pairCount[pk] || 0) + 1
+    }
+    var pairSeen = {}
     for (var ei = 0; ei < model.edges.length; ei++) {
       var ed = model.edges[ei]
       // 两端落在同一个折叠组里 → 那是组内的内部关系，收起来就该一起收掉。
       // 留一条穿进块里的线会把「有东西被藏起来了」变成误导。
       if (foldMap[ed.from] && foldMap[ed.from] === foldMap[ed.to]) continue
-      var geo = edgeGeometry(visGeom(ed.from), visGeom(ed.to))
+      var ek = ed.from < ed.to ? ed.from + '|' + ed.to : ed.to + '|' + ed.from
+      var en = pairCount[ek] || 1
+      var eidx = pairSeen[ek] || 0
+      pairSeen[ek] = eidx + 1
+      var geo = edgeGeometry(visGeom(ed.from), visGeom(ed.to), visList,
+        en > 1 ? (eidx - (en - 1) / 2) * 10 : 0)
       if (!geo) continue
       var dashed = ed.arrow === '-.->'
       var isEdgeSel = sel && sel.kind === 'edge' && sel.from === ed.from && sel.to === ed.to
