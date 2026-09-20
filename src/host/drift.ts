@@ -33,6 +33,10 @@ var DRIFT_SKIP_DIRS: Record<string, number> = {
   assets: 1, static: 1, public: 1, docs: 1, doc: 1, examples: 1,
 }
 var DRIFT_SOURCE_RE = /\.(ts|tsx|mts|cts|js|mjs|cjs|jsx|vue|svelte|py|rs|go|java|kt|kts|cs|rb|php|swift|dart|c|h|cc|cpp|hpp)$/i
+// `lib` / `es` / `cjs` 与 `src` 同级时几乎一定是**编译产物**（TS 编到 lib/、打包到 es/）。
+// 这一条是拿本仓库自己试出来的：第一次跑 drift，`lib/` 里 4 个产物文件被报成「有源码没画到」。
+// 只在同级真有 `src` 时才跳过 —— 别的项目把真源码放 `lib/` 的情况不能一起枪毙。
+var DRIFT_BUILD_DIRS: Record<string, number> = { lib: 1, es: 1, cjs: 1, esm: 1, umd: 1 }
 
 var driftStoreCache: Record<string, any> = {}
 var driftStoreLoading: Record<string, Promise<any>> = {}
@@ -166,18 +170,25 @@ async function sourceDirsOf(root: string): Promise<any> {
     if (budget.dirs > DRIFT_WALK_MAX_DIRS) { out.truncated = true; return }
     var kids = []
     try { kids = await fs.listDir(await fs.resolve(absDir)) } catch (e) { return }
+    var hasSrc = false
+    for (var hs = 0; hs < kids.length; hs++) {
+      if (kids[hs].type === 'directory' && kids[hs].name === 'src') { hasSrc = true; break }
+    }
     for (var i = 0; i < kids.length; i++) {
       var kid = kids[i]
       if (kid.name.charAt(0) === '.') continue
       var childRel = rel ? rel + '/' + kid.name : kid.name
       if (kid.type === 'directory') {
         if (SKIP_DIRS[kid.name] || DRIFT_SKIP_DIRS[kid.name]) continue
+        if (hasSrc && DRIFT_BUILD_DIRS[kid.name]) continue
         await walk(absDir + '/' + kid.name, childRel)
         if (out.truncated) return
         continue
       }
       if (kid.type !== 'file') continue
       if (!DRIFT_SOURCE_RE.test(kid.name)) continue
+      // 类型声明不是「要画进框架图的源码」：`.d.ts` 只是声明，画它没有意义。
+      if (/\.d\.[cm]?ts$/i.test(kid.name)) continue
       if (/\.min\./i.test(kid.name)) continue
       if (budget.files >= DRIFT_WALK_MAX_FILES) { out.truncated = true; return }
       budget.files += 1

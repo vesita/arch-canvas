@@ -406,7 +406,14 @@ ok('写盘后文件写出，目录因此存在',
   [...files.keys()].some((k) => k.indexOf('/proj-a/.arch-canvas/') === 0), [...files.keys()].filter((k) => k.indexOf('/proj-a/') === 0))
 ok('全局图库的图在首次写盘时被继承了过来',
   files.has('/proj-a/.arch-canvas/architecture.mmd'), [...files.keys()].filter((k) => k.indexOf('/proj-a/') === 0))
-ok('继承有标记文件，只做一次', files.has(TEST_DATA_DIR + '/.inherited'))
+// 「只做一次」不再靠标记文件，而是靠「目标图库里已经有图了」这个事实本身：
+// 往全局图库**新加**一张，再在同一个项目里建图 —— 它不该被继承过来。
+// （不动全局那份 architecture.mmd：它是后面几个用例的公共夹具。）
+files.set(TEST_DATA_DIR + '/占位新图.mmd', 'flowchart TD\n  g9["全局后来加的"]\n')
+await call('doc:open', { where: '/proj-a', name: '另一张', create: true })
+ok('第二次进同一个项目图库：不再重新继承', !files.has('/proj-a/.arch-canvas/占位新图.mmd'),
+  [...files.keys()].filter((k) => k.indexOf('/proj-a/.arch-canvas/') === 0))
+files.delete(TEST_DATA_DIR + '/占位新图.mmd')
 const P2 = await call('doc:get', { where: '/proj-b' })
 ok('读路径未建占位文件', !files.has('/proj-b/.arch-canvas/.gitkeep'))
 eq('第二个项目读路径也是干净空图', P2.nodeCount, 0)
@@ -414,6 +421,39 @@ eq('第二个项目读路径也是干净空图', P2.nodeCount, 0)
 // 所以后面要继续测支付图，必须显式切回来。这一步也顺便验证了那条设计。
 const backA = await call('doc:open', { where: '/proj-a', name: '支付主流程' })
 ok('切回 /proj-a 并重新打开支付主流程', backA.diagram === '支付主流程', backA.diagram)
+
+// ---------- 回归：建新图绝不许覆盖目标图库里已有的图（2026-09-21 实测事故）----------
+// 事故现场：本仓库的 .arch-canvas/architecture.mmd（23 节点）在 arch_switch { create: true }
+// 里被全局兜底那张老图整份盖掉，日志里一条都没留。根因是 inheritGlobalOnce 用「全局目录下的
+// .inherited 标记」判「做过一次」，而且复制时同名直接覆盖。
+console.log('【回归：建新图不许覆盖已有的图】')
+{
+  const dirKeep = '/tmp/proj-keep'
+  const keepFile = dirKeep + '/.arch-canvas/architecture.mmd'
+  files.set(keepFile, 'flowchart TD\n  keep1["我自己的图"]\n')
+  const keepBefore = files.get(keepFile)
+  const keepOpen = await call('doc:open', { where: dirKeep, name: '第二张', create: true })
+  ok('已有图的项目里建新图仍然成功', keepOpen && keepOpen.ok !== false, keepOpen && keepOpen.error)
+  eq('已有的同名图一个字节都没被动', files.get(keepFile), keepBefore)
+  ok('全局图库没有盖过来（还是我自己的内容）', files.get(keepFile).indexOf('我自己的图') >= 0, files.get(keepFile))
+  ok('新图确实建出来了', files.has(dirKeep + '/.arch-canvas/第二张.mmd'))
+
+  // 护栏 2 单独验：目标图库里只有一张**已删除**的图时，护栏 1 不拦（没有活着的图），
+  // 但同名文件必须仍然不许被盖。
+  const dirTomb = '/tmp/proj-tomb'
+  const tombFile = dirTomb + '/.arch-canvas/architecture.mmd'
+  files.set(tombFile, '%% @deleted\nflowchart TD\n  t1["已经删掉了，但内容还在文件里"]\n')
+  const tombBefore = files.get(tombFile)
+  const tombOpen = await call('doc:open', { where: dirTomb, name: '新图', create: true })
+  ok('墓碑图库里的 create 也成功', tombOpen && tombOpen.ok !== false, tombOpen && tombOpen.error)
+  eq('已删除的图（内容还在文件里）也不会被覆盖', files.get(tombFile), tombBefore)
+  ok('同一层里有别的图时，全局里同名的那张不会被复制进来',
+    files.get(tombFile).indexOf('全局') < 0, files.get(tombFile))
+
+  // 这两段探过别的图库，必须切回来 —— 否则后面的用例会拿着别的项目的图跑（踩过一次）。
+  const backKeep = await call('doc:open', { where: '/proj-a', name: '支付主流程' })
+  ok('回归段结束时切回 /proj-a', backKeep && backKeep.diagram === '支付主流程', backKeep && backKeep.diagram)
+}
 
 console.log('【下钻链接：%% @link】')
 const beforeLk = await call('doc:get', { where: '/proj-a' })
@@ -1154,6 +1194,9 @@ console.log('【锚点保鲜 drift：文件在图之后改过 / 有源码却没�
   files.set(dirDr + '/tools/build.mjs', 'export const PARTS = []\n')   // 同上（构建脚本也是源码）
   files.set(dirDr + '/test/x.test.ts', 'it("x", () => {})\n')          // 测试：图本来就不画它
   files.set(dirDr + '/node_modules/left-pad/index.js', 'module.exports = 1\n')
+  // 两条**拿本仓库自己试出来的**假阳性：与 src 同级的 lib/ 是编译产物；.d.ts 只是声明。
+  files.set(dirDr + '/lib/bundle.js', 'module.exports = {}\n')
+  files.set(dirDr + '/types/env.d.ts', 'declare const x: number\n')
 
   // 1. 还没有基线：**不许把「未知」说成「过期」**
   const dr0 = await call('doc:get', { where: dirDr })
@@ -1195,6 +1238,8 @@ console.log('【锚点保鲜 drift：文件在图之后改过 / 有源码却没�
   ok('被锚点覆盖的目录不算漏画', unc.indexOf('src/host') < 0, unc)
   ok('测试目录不算漏画（图本来就不画测试）', unc.indexOf('test') < 0, unc)
   ok('node_modules 不算漏画', unc.indexOf('node_modules') < 0, unc)
+  ok('与 src 同级的 lib/ 是编译产物，不算漏画', unc.indexOf('lib') < 0, unc)
+  ok('目录本身就叫 types 的，也不该因为里面的 .d.ts 被算成漏画', unc.indexOf('types') < 0, unc)
   const toolsRow = (dr1.drift.uncovered || []).find((x) => x.dir === 'tools')
   eq('漏画的目录带上文件数', toolsRow && toolsRow.files, 1)
 

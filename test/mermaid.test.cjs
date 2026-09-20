@@ -157,8 +157,14 @@ console.log('\n[8] 项目自己的框架图 .arch-canvas/architecture.mmd');
   const text = fs.readFileSync(p, 'utf8');
   const d = parseMermaid(text);
   const strip = x => ({ direction: x.direction, nodes: x.nodes.map(n => [n.id, n.label, n.shape, n.group, n.x, n.y, n.link]), edges: x.edges.map(e => [e.from, e.to, e.label, e.arrow]), groups: x.groups.map(g => [g.id, g.label]) });
-  check('解析出 23 个节点', d.nodes.length === 23, d.nodes.length);
-  check('解析出 4 个子图', d.groups.length === 4, d.groups.map(g => g.id));
+  // 这一节**不钉节点数**：那是用户正在编辑的活图，他删两个节点就变成一条红灯，
+  // 而红灯说的不是解析器坏了。钉的是「这份真文件能被完整读进来」这件事本身。
+  // （2026-09-21 踩过：这张图被从 23 个节点改成 16 个，测试立刻红，查了半天才发现是文件变了。）
+  check('解析出节点（至少有内容）', d.nodes.length >= 2, d.nodes.length);
+  check('解析出子图（至少一个）', d.groups.length >= 1, d.groups.map(g => g.id));
+  check('解析这份真文件没有产生警告', d.warnings.length === 0, d.warnings);
+  check('每个节点都落在某个子图里或明确不属于任何组', d.nodes.every(n => n.group === null || d.groups.some(g => g.id === n.group)),
+    d.nodes.map(n => [n.id, n.group]).filter((x) => x[1] !== null));
   check('每个节点都摆了坐标', d.nodes.every(n => n.x !== null && n.y !== null));
   check('往返幂等（用户摆的布局不会漂）', eq(strip(d), strip(parseMermaid(serializeDoc(d)))));
 }

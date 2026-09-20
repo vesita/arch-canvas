@@ -1,0 +1,102 @@
+%% arch-canvas —— 由「架构画布」面板与 AI 共同维护（`%%!` 开头的是格式说明，不是图的内容）
+%%! @summary <一句话> 这张图讲的是什么 —— 会随每一步注入给 AI
+%%! @pos <节点id> <x> <y> 是画布坐标注释，@link <节点id> <图名> 是下钻到另一张图
+%%! @file <节点id> <路径> 是这个节点对应的源码文件（可带 #符号），一个节点可多条
+%%! 以上对 Mermaid 渲染都无任何影响，可忽略或手改
+%% @summary "ArchCanvas 挂在 DSH 插件框架上的样子：两半各挂哪些服务、两种装载形态怎么长出真身、数据落在哪、哪四条约束不能破"
+%% @file pkg "src/package/host.ts"
+%% @file pkg "src/package/client.ts"
+%% @file dyn "src/bootstrap/host.ts"
+%% @file dyn "src/bootstrap/client.ts"
+%% @file logic "tools/build.mjs#HOST_PARTS"
+%% @file ui "tools/build.mjs#UI_PARTS"
+%% @file mermaid "src/host/mermaid.ts"
+%% @file document "src/host/document.ts"
+%% @file sidecar "src/host/notes.ts"
+%% @file sidecar "src/host/drift.ts"
+%% @file history "src/host/history.ts"
+%% @file api "src/host/plugin.ts"
+%% @file studio "src/client/studio.ts"
+%% @file reg "src/client/register.ts"
+%% @file r1 "AGENTS.md#服务时序"
+%% @file r2 "AGENTS.md#写盘必须带会话"
+%% @file r3 "AGENTS.md#沙箱里没有的东西"
+%% @file r4 "AGENTS.md#提示词模板注入"
+flowchart TD
+  subgraph dshHost["DSH 宿主 · Cordis 容器"]
+    hSvc["服务注册与依赖解析<br/>原理：inject 齐了才 apply —— 用 ctx.get 取快照，服务晚一步就静默不注册"]
+    hFs["fs 服务<br/>原理：读不设围栏；每一次写入按调用给沙箱策略"]
+    hTools["tools 服务<br/>原理：AI 工具的注册口，工具 schema 原样发给模型"]
+    hPrompt["systemPrompt 服务<br/>原理：context 通道每步注入；这段文本会被当模板插值"]
+    hWeb["webServer<br/>原理：只在 web 形态存在，所以走 ctx.inject，不进 inject 声明"]
+    hOpt["sandboxPolicy · agents · timer<br/>原理：可选取用（ctx.get）；拿不到就降级，绝不伪造"]
+  end
+  subgraph dshClient["DSH 客户端"]
+    cSlots["slots 服务<br/>原理：conversation.view 是一个环，登记进来就是一页；槽位自带 sessionId 与标准 props"]
+    cTrig["inputTriggers<br/>原理：@ 触发源 = candidates + lexicon + codec 三件套"]
+  end
+  subgraph load["装载：同一份逻辑，两个壳"]
+    prof["profile 里的一行依赖（包）<br/>原理：装的是快照 —— 改仓库对运行态零影响，只有重启才换掉内存里的宿主"]
+    pkg[["装机形态<br/>lib/index.js 与 lib/client.js<br/>原理：宿主壳 inject 三件套并注册路由；客户端壳让浏览器读 lib/ui.js"]]
+    dyn[["动态 Package 形态<br/>code.host 与 code.client<br/>原理：两段薄引导层，从磁盘取 dist/host.js 与 dist/ui.js"]]
+    logic[("宿主逻辑真身<br/>lib/host-logic.js<br/>原理：一段 apply(ctx) 函数体拼出来的工厂 —— 两种形态共用")]
+    ui[("界面真身 lib/ui.js<br/>原理：一段自带 return 的脚本 —— 两种形态共用")]
+  end
+  subgraph acHost["AC 宿主半边 · src/host"]
+    mermaid["编解码器<br/>原理：纯函数；写盘前跑往返守恒检查 —— parse 回来必须等于模型"]
+    document["状态与 op · 图库扫描 · 锚点校验<br/>原理：persist 是唯一写口；normalizeModel 是逐字段白名单，漏一个字段就被静默清空"]
+    sidecar["旁路表 notes.json 与 anchors.json<br/>原理：共用 writeSidecarJson 的两道闸门 —— 路径一致 + 内容可辨认，否则拒写"]
+    history["检查点<br/>原理：内存环形缓冲；退回是重放，不是撤销"]
+    api["对外接口面<br/>原理：onRpc 与 onTool 与 onRoute 三个注册口，外加 promptText"]
+  end
+  subgraph acClient["AC 客户端半边 · src/client"]
+    studio["画布 · 检查器 · 源码页 · 导出 · 保鲜横幅<br/>原理：状态全来自宿主，界面不存真相"]
+    reg["注册面<br/>原理：登记主窗口子页与 @ 引用源；顺手把会话 cwd 透给画布"]
+  end
+  subgraph data["落点（AC 自己的层，不属于 DSH）"]
+    mmd[("项目图库里的图名.mmd<br/>原理：源文本是唯一真相，坐标与锚点寄生在注释行里")]
+    logs[("日志 ~/.dsh/arch-canvas/logs<br/>原理：故障一律留现场；按天分文件，只留三天")]
+  end
+  subgraph rules["与 DSH 打交道的四条硬约束"]
+    r1["服务时序<br/>原理：inject 齐了才 apply"]
+    r2["写盘带会话策略<br/>原理：不传就是 agentless call，会掉到部署默认可写根"]
+    r3["形态差异收在壳里<br/>原理：动态形态没有 require 与 process 与 setTimeout"]
+    r4["注入文本防模板插值<br/>原理：context 会把花括号变量当模板渲染，抛错就连会话都起不来"]
+  end
+  user(["用户"])
+  ai(["AI"])
+  user -->|"主窗口的一个子页（与对话、轨迹并列）"| studio
+  ai -->|"每步读到当前状态"| hPrompt
+  ai -->|"4 个工具"| hTools
+  prof -->|"装载插件"| hSvc
+  hSvc -->|"apply"| pkg
+  pkg -->|"ctx.tools.register"| hTools
+  pkg -->|"注册路由（先 ctx.inject 拿 webServer）"| hWeb
+  pkg -->|"systemPrompt.context（order 137）"| hPrompt
+  pkg -->|"require 工厂"| logic
+  dyn -->|"从磁盘求值"| logic
+  pkg -->|"浏览器加载"| ui
+  dyn -->|"浏览器加载"| ui
+  pkg -->|"ctx.get 取可选服务"| hOpt
+  logic -->|"导出三个注册口"| api
+  logic --> mermaid
+  logic --> document
+  logic --> sidecar
+  logic --> history
+  api -->|"读写文件"| hFs
+  document -->|"周期扫描（可选）"| hOpt
+  api -->|"故障留现场"| logs
+  document -->|"persist 唯一写口"| mmd
+  sidecar -->|"与图同目录"| mmd
+  mermaid -->|"文本与图模型互转"| document
+  ui --> studio
+  ui --> reg
+  cSlots -->|"登记一页：id arch-canvas，排在对话与轨迹之后"| reg
+  cTrig -->|"registerSource"| reg
+  reg -->|"透传会话 cwd 与输入框句柄"| studio
+  studio -->|"POST /arch-canvas/rpc"| hWeb
+  studio -->|"动态形态走 host.call"| dyn
+  r1 -.-> pkg
+  r2 -.-> hFs
+  r3 -.-> dyn
+  r4 -.-> hPrompt

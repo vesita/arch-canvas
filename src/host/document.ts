@@ -385,16 +385,39 @@ async function ensureDir(path, policy?) {
 async function inheritGlobalOnce(target, policy?) {
   if (!fs) return ''
   try {
-    var marker = await fs.resolve(GLOBAL_DIR + '/.inherited')
-    if (await fs.stat(marker)) return ''
+    // 护栏 1：目标图库里**已经有活着的图** → 什么都不做。
+    // 「已经继承过」和「本来就有图」在文件系统上长得一样，而后者恰恰是最不该被动的情况。
+    //
+    // 从前这里查的是**全局图库**里的 `.inherited` 标记 —— 那个标记与「目标是谁」无关：
+    // 第一个项目继承过之后，标记一落，别的项目就再也不继承了；而一个从没走到这一步的项目，
+    // 每建一张新图就把全局图库往它身上盖一遍。2026-09-21 实测事故：本仓库的
+    // `.arch-canvas/architecture.mmd`（23 节点）就是这样被全局兜底那张老图覆盖掉的 ——
+    // 覆盖发生在 arch_switch { create: true } 里，日志里一条都不留。
+    var existing = await listDiagrams(target.dir)
+    var liveExisting = 0
+    for (var e0 = 0; e0 < (existing || []).length; e0++) {
+      if (!existing[e0].deleted) liveExisting += 1
+    }
+    if (liveExisting > 0) return ''
+    // 护栏 2：逐张复制时**同名一律跳过**。就算护栏 1 因为并发或误判没拦住，
+    // 也绝不许把用户已经有的东西盖掉 —— 继承是「给你一个起点」，不是「替你决定」。
     var items = await listDiagrams(GLOBAL_DIR)
     var live = items.filter(function (x) { return !x.deleted })
+    var copied = 0
     for (var i = 0; i < live.length; i++) {
+      var dest = fileAt(target.dir, live[i].name)
+      var destAbs: any = null
+      try { destAbs = await fs.resolve(dest) } catch (e0) { continue }
+      var there = null
+      try { there = await fs.stat(destAbs) } catch (e1) { there = null }
+      if (there) continue
       var text = await fs.readText(await fs.resolve(GLOBAL_DIR + '/' + live[i].name + '.mmd'))
-      await fs.writeText(await fs.resolve(fileAt(target.dir, live[i].name)), text, undefined, undefined, policy)
+      await fs.writeText(destAbs, text, undefined, undefined, policy)
+      copied += 1
     }
-    await fs.writeText(marker, '首次进入项目图库时做过一次继承：' + new Date().toISOString() + '\n', undefined, undefined, policy)
-    return live.length > 0 ? '已把全局图库里的 ' + live.length + ' 张图复制到 ' + target.dir : ''
+    // 不再写任何标记文件：护栏 1 就是标记，而且它写在**目标图库自己的内容**里 ——
+    // 不需要往会话工作区之外写东西（旧实现那个全局标记文件正是被沙箱挡掉的那一步的产物）。
+    return copied > 0 ? '已把全局图库里的 ' + copied + ' 张图复制到 ' + target.dir : ''
   } catch (e) {
     doc.warnings.push('继承全局图库失败: ' + msgOf(e))
     return ''
