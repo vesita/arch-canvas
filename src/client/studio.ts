@@ -8,6 +8,22 @@ var TAB_ID = 'arch-canvas'
 // 当前画布的实时节点快照，供 register.ts 里的 @ 引用 trigger source 消费
 var studioLiveNodes = []
 
+/**
+ * 草稿里有没有这个节点的引用。**必须按词边界判**，不能用 `indexOf('@' + id)`：
+ * 草稿里有 `@c11` 时 `@c1` 会被误判成「已经在了」，于是 c1 的未办留言永远进不了输入框。
+ * 这一个口子同时管着自动补引用与写完留言时的去重。
+ */
+function draftHasRef(draft, id) {
+  var s = String(id == null ? '' : id)
+  if (!s) return false
+  var esc = s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  try {
+    return new RegExp('(^|[^\\w-])@' + esc + '(?![\\w-])').test(String(draft == null ? '' : draft))
+  } catch (e) {
+    return String(draft == null ? '' : draft).indexOf('@' + s) >= 0
+  }
+}
+
 function syncLiveNodes(m) {
   if (!m || !m.nodes || !Array.isArray(m.nodes)) {
     studioLiveNodes = []
@@ -504,7 +520,9 @@ function ArchStudio(props) {
     var cur = String(liveDraft == null ? '' : liveDraft)
     var add = []
     for (var j = 0; j < ids.length; j++) {
-      if (cur.indexOf('@' + ids[j]) < 0) add.push('@' + ids[j])
+      // 必须按**词边界**判，不能用 `indexOf('@' + id)`：草稿里有 `@c11` 时
+      // `@c1` 会被误判成「已经在里面了」，于是 c1 的未办留言永远进不了输入框（审计第 8 条）。
+      if (!draftHasRef(cur, ids[j])) add.push('@' + ids[j])
     }
     if (add.length === 0) return
     inputActions.setDraft(cur.trim() ? cur.replace(/\s+$/, '') + ' ' + add.join(' ') : add.join(' '))
@@ -642,8 +660,11 @@ function ArchStudio(props) {
     if (fitView(false)) fittedRef.current = true
   }, [model])
 
-  // 侧栏从折叠恢复（宽度从 0 变正常）时补一次适应窗口
+  // 侧栏从折叠恢复（宽度从 0 变正常）时补一次适应窗口。
+  // 依赖 tab：三个 tab 的根元素是同一个 div，React 复用 DOM 节点 —— 挂了 [] 就一辈子
+  // 盯着那个节点（切到源码页后它已经是 .ac-textwrap 了），只在画布页才该观测。
   React.useEffect(function () {
+    if (tab !== 'canvas') return
     var el = hostRef.current
     if (!el || typeof ResizeObserver !== 'function') return
     var ro = new ResizeObserver(function () {
@@ -652,7 +673,7 @@ function ArchStudio(props) {
     })
     ro.observe(el)
     return function () { ro.disconnect() }
-  }, [])
+  }, [tab])
 
   React.useEffect(function () {
     // **只在画布页挂滚轮缩放。** 这条 `if` 修的是一桩真 bug（用户报了两遍）：
@@ -1003,12 +1024,33 @@ function ArchStudio(props) {
     fittedRef.current = false
   }
 
+  /**
+   * 组 id 不能含空格：`scanNodeRef` 的 ID_RE 遇到空格就停，`subgraph AI 端["AI 端"]`
+   * 会被解析成 id=`AI` + 标签=`端["AI 端"]`，下次加载组结构就分裂、往返严重漂移。
+   * 宿主侧 `set_group` 会过一遍 `cleanId`，但**检查器这条路是客户端直接改模型** ——
+   * 从前这里没洗，用户在分组框里打一个空格就能把源文本写坏（审计第 3 条）。
+   */
+  function groupKeyOf(name) {
+    return String(name == null ? '' : name).replace(/\s+/g, '_').replace(/[\u005b\u005d{}()"#;|&<>]/g, '')
+  }
+
   function commitGroup() {
     var s = selRef.current
     var cur = modelRef.current
     if (!s || s.kind !== 'node' || !cur) return
     var next = cloneModel(cur)
-    var want = groupDraft.trim() || null
+    var raw = groupDraft.trim()
+    var want = null
+    if (raw) {
+      // 先按**现有组的 id 或标签**认领：用户打的是给人看的名字（"AI 端"），
+      // 而 id 早就被洗成 "AI端" 了。不认领就会凭空多出一个同名组、图被分成两半。
+      var pick = groupKeyOf(raw)
+      for (var g0 = 0; g0 < next.groups.length; g0++) {
+        var gg = next.groups[g0]
+        if (gg && (gg.id === pick || gg.label === raw || groupKeyOf(gg.label) === pick)) { want = gg.id; break }
+      }
+      if (!want) want = pick
+    }
     var prev = undefined
     var found = false
     for (var i = 0; i < next.nodes.length; i++) {
@@ -1022,7 +1064,8 @@ function ArchStudio(props) {
     if (want) {
       var exists = false
       for (var g = 0; g < next.groups.length; g++) if (next.groups[g].id === want) exists = true
-      if (!exists) next.groups.push({ id: want, label: want })
+      // label 保留用户打的原话（可以是 "AI 端"），id 用洗干净的那个
+      if (!exists) next.groups.push({ id: want, label: raw })
     }
     push(next, '用户改了分组')
     setStatus('已更新分组')
@@ -1506,7 +1549,11 @@ function ArchStudio(props) {
         var got = gend === 0 ? gb2 : ga2
         var gvert = Math.abs(got.y - gme.y) >= Math.abs(got.x - gme.x)
         var gside = gvert ? (got.y >= gme.y ? 'b' : 't') : (got.x >= gme.x ? 'r' : 'l')
-        var gkey = (gend === 0 ? ge.from : ge.to) + '|' + gside
+        // 端口按**可见单元**分组 —— 被折叠的组里，好几个成员节点连到外面时都挂在
+        // 同一个折叠块上，用原始节点 id 当 key 会把它们拆成 n=1 的小组，
+        // edgePortOffset 于是全部返回 0，箭头全叠在块边中心（审计第 5 条）。
+        var gunit = gend === 0 ? ge.from : ge.to
+        var gkey = (foldMap[gunit] || gunit) + '|' + gside
         if (!sideGroups[gkey]) sideGroups[gkey] = []
         sideGroups[gkey].push({ ei: gi, end: gend, at: gvert ? got.x : got.y })
       }

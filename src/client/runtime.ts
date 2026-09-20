@@ -441,7 +441,12 @@ function autoLayout(model) {
   var GAP = horiz ? 74 : 56
   var out = []
   for (var q = 0; q < nodes.length; q++) {
-    out.push({ id: nodes[q].id, label: nodes[q].label, shape: nodes[q].shape, group: nodes[q].group, x: nodes[q].x, y: nodes[q].y })
+    // **整份复制，只改坐标。** 从前这里是逐字段重建 `{id,label,shape,group,x,y}` ——
+    // 于是点一下「自动布局」（或加载一张没带坐标的图触发它），所有节点的 files / note /
+    // noteDone / link 全被丢掉，而且紧接着经 doc:set 落盘，**永久损坏**。
+    // （2026-09-20 客户端逻辑审计抓到的头号问题；`refRowCount(nodes[i].files)` 上面还在用
+    //   files 算尺寸，就更说明这些字段本该跟着走。）
+    out.push(Object.assign({}, nodes[q]))
   }
   var pos = {}
   for (var li = 0; li < buckets.length; li++) {
@@ -687,6 +692,17 @@ function edgeGeometry(a, b, obstacles, offset, ports, usedLanes) {
   var pA = ports && ports.a
   var pB = ports && ports.b
   var p0, p1
+  // 自环（`n1 --> n1`）：从右边绕出去一小圈再回来。不特判的话 dx=dy=0 会被判成"垂直"，
+  // 出点取底边中心、入点取顶边中心 —— 画出来是一条**从底边穿到顶边的直线**，正好捅穿方块。
+  if (a === b) {
+    var loopX = a.x + a.w / 2
+    var loopL = loopX + EDGE_LANE * 1.4
+    var loopT = a.y - a.h / 4
+    var loopB = a.y + a.h / 4
+    var loopPts = [{ x: loopX, y: loopT }, { x: loopL, y: loopT }, { x: loopL, y: loopB }, { x: loopX, y: loopB }]
+    var lc = edgeCleanPath(loopPts)
+    return { d: lc.d, mid: { x: loopL, y: a.y }, pts: lc.pts, lanes: edgePathLanes(lc.pts) }
+  }
   if (vertical) {
     var down = dy >= 0
     p0 = { x: a.x + edgePortOffset(a.w, pA), y: a.y + (down ? a.h / 2 : -a.h / 2) }
@@ -696,6 +712,32 @@ function edgeGeometry(a, b, obstacles, offset, ports, usedLanes) {
     p0 = { x: a.x + (right ? a.w / 2 : -a.w / 2), y: a.y + edgePortOffset(a.h, pA) }
     p1 = { x: b.x + (right ? -b.w / 2 : b.w / 2), y: b.y + edgePortOffset(b.h, pB) }
   }
+  // 端口倒挂：中心点说「b 在下」，可两个方块**纵向上是重叠的**（a.x 与 b.x 差得远、
+  // y 只差一点点，于是 |dy| >= |dx| 选中的是纵轴）—— 出点（a 的下边）反而落在入点
+  // （b 的上边）之下。折线一出发就在往回走，直接钻进 a 自己身体里。
+  // 这时换另一条轴：横着连过去不会倒挂。（2026-09-20 客户端逻辑审计第 7 条。）
+  var inverted = vertical ? (dy >= 0 ? p1.y < p0.y : p1.y > p0.y) : (dx >= 0 ? p1.x < p0.x : p1.x > p0.x)
+  if (inverted) {
+    vertical = !vertical
+    if (vertical) {
+      var down2 = dy >= 0
+      p0 = { x: a.x + edgePortOffset(a.w, pA), y: a.y + (down2 ? a.h / 2 : -a.h / 2) }
+      p1 = { x: b.x + edgePortOffset(b.w, pB), y: b.y + (down2 ? -b.h / 2 : b.h / 2) }
+    } else {
+      var right2 = dx >= 0
+      p0 = { x: a.x + (right2 ? a.w / 2 : -a.w / 2), y: a.y + edgePortOffset(a.h, pA) }
+      p1 = { x: b.x + (right2 ? -b.w / 2 : b.w / 2), y: b.y + edgePortOffset(b.h, pB) }
+    }
+  }
+
+  // a 和 b 自己**不**进障碍表（带 12px 余量的话会把贴着边框出发的端口段一起判成"命中"，
+  // 于是每条线都被拒），但要单独做一次**零余量**的自穿透检查：两个方块纵向上重叠时，
+  // 中位线候选会从出点往回钻、直接穿过方块自己。零余量 + 严格不等号正好能分开
+  // 「贴着边框出发」（不算命中）与「钻进边框内部」（算命中）。（审计第 6/7 条的地基。）
+  var guard = obs.concat([
+    { x1: a.x - a.w / 2, y1: a.y - a.h / 2, x2: a.x + a.w / 2, y2: a.y + a.h / 2 },
+    { x1: b.x - b.w / 2, y1: b.y - b.h / 2, x2: b.x + b.w / 2, y2: b.y + b.h / 2 },
+  ])
 
   // 一段跨越式：从出点直走 → 在某个「跨越线」上横过去 → 再直走进点。
   // 候选跨越线按「离正中越近越优先」排序；障碍的边线外侧也在候选里 —— 那让线能贴着障碍绕。
@@ -732,7 +774,7 @@ function edgeGeometry(a, b, obstacles, offset, ports, usedLanes) {
     var pts = vertical
       ? [{ x: p0.x, y: p0.y }, { x: p0.x, y: m }, { x: p1.x, y: m }, { x: p1.x, y: p1.y }]
       : [{ x: p0.x, y: p0.y }, { x: m, y: p0.y }, { x: m, y: p1.y }, { x: p1.x, y: p1.y }]
-    if (edgePathHits(pts, obs)) continue
+    if (edgePathHits(pts, guard)) continue
     if (!bestAny) bestAny = pts
     if (freeOfLane(pts)) { best = pts; break }
   }
@@ -751,17 +793,22 @@ function edgeGeometry(a, b, obstacles, offset, ports, usedLanes) {
     // 绕行折线的形状：先走一小段离开出点方块，横到外侧车道、沿车道走到另一端，再横回来进去。
     // 关键是那两条横线落在「刚离开方块」的位置，而不是落在正中 —— 落在正中时第一段
     // 就已经穿进障碍带了（这条是实测踩出来的，不是想出来的）。
-    var sy = (p1.y >= p0.y) ? 1 : -1
-    var sx = (p1.x >= p0.x) ? 1 : -1
+    // 出点落在方块哪半边，第一步就往哪边走；入点落在哪半边，最后一步就从那一侧绕进去。
+    // 从前这两个符号是按 p1 与 p0 的先后推的 —— 端口一旦倒挂（见上面那个 inverted）
+    // 就会推出反号，绕行折线的第一步直接**缩进方块自己身体里**。（审计第 7 条。）
+    var sy = (p0.y >= a.y) ? 1 : -1
+    var ey = (p1.y >= b.y) ? 1 : -1
+    var sx = (p0.x >= a.x) ? 1 : -1
+    var ex = (p1.x >= b.x) ? 1 : -1
     for (var s = 0; s < lanes.length && !best; s++) {
       // 车道本身要带上 shift，否则同一对节点之间的多条线会算出**逐字节相同**的绕行路径。
       var lane = lanes[s] + shift
       var detour = vertical
         ? [{ x: p0.x, y: p0.y }, { x: p0.x, y: p0.y + sy * EDGE_LANE }, { x: lane, y: p0.y + sy * EDGE_LANE },
-           { x: lane, y: p1.y - sy * EDGE_LANE }, { x: p1.x, y: p1.y - sy * EDGE_LANE }, { x: p1.x, y: p1.y }]
+           { x: lane, y: p1.y + ey * EDGE_LANE }, { x: p1.x, y: p1.y + ey * EDGE_LANE }, { x: p1.x, y: p1.y }]
         : [{ x: p0.x, y: p0.y }, { x: p0.x + sx * EDGE_LANE, y: p0.y }, { x: p0.x + sx * EDGE_LANE, y: lane },
-           { x: p1.x - sx * EDGE_LANE, y: lane }, { x: p1.x - sx * EDGE_LANE, y: p1.y }, { x: p1.x, y: p1.y }]
-      if (!edgePathHits(detour, obs)) best = detour
+           { x: p1.x + ex * EDGE_LANE, y: lane }, { x: p1.x + ex * EDGE_LANE, y: p1.y }, { x: p1.x, y: p1.y }]
+      if (!edgePathHits(detour, guard)) best = detour
     }
   }
   // 兜底二：还是不行就直接跨越。画布上一根线消失比画得难看严重得多，所以绝不返回 null。
@@ -821,7 +868,11 @@ var EXPORT_CSS = [
 // 必须自带 marker 定义的 <defs>，保证连线箭头独立自包含、不丢箭头。
 function buildExportSvg(worldNode, box) {
   var clone = worldNode.cloneNode(true)
-  var drop = ['.ac-handle', '.ac-link-preview', '.ac-pulse', '.ac-snapline']
+  // 导出的是**结构**，不是面板：交互手柄、吸附线、脉动环、以及三个角标
+  // （留言 ✎ / 锚点 ▤ / 下钻 ↗）全是界面装饰。它们从前既没被剔掉、EXPORT_CSS 里也没有
+  // 对应规则 —— 而导出的 SVG 是一份脱离主题的独立文档，circle/text 缺省就是纯黑，
+  // 于是节点角上会出现一坨黑斑。（2026-09-20 客户端逻辑审计第 4 条。）
+  var drop = ['.ac-handle', '.ac-link-preview', '.ac-pulse', '.ac-snapline', '.ac-note-badge', '.ac-file-badge', '.ac-jump']
   for (var i = 0; i < drop.length; i++) {
     var hits = clone.querySelectorAll(drop[i])
     for (var j = 0; j < hits.length; j++) hits[j].parentNode.removeChild(hits[j])

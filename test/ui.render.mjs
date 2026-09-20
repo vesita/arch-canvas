@@ -2029,6 +2029,292 @@ console.log('\n[4q] 源码页的滚动：flex-basis 为 0 + 一道原生 wheel �
 }
 
 
+console.log('\n[4r] 客户端逻辑审计的修复：自动布局不许丢字段 / 导出不带角标 / 折叠端口 / 组 id / 无穿透 / @ 词边界')
+{
+  const mountModel = async (MODEL, draft, ops) => {
+    const prevR = respond
+    const m = JSON.parse(JSON.stringify(MODEL))
+    const sets = []
+    respond = function (method, args) {
+      if (method === 'doc:get') return fullDoc({ model: m, nodeCount: m.nodes.length, edgeCount: (m.edges || []).length })
+      if (method === 'doc:set') {
+        sets.push(args.model)
+        return fullDoc({ model: args.model, nodeCount: args.model.nodes.length, revision: 7, updatedBy: 'user' })
+      }
+      return prevR(method, args)
+    }
+    const calls = []
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    await act(async () => {
+      root.render(React.createElement(captured['sidebar.right.pane.tab'], {
+        cwd: UI, sessionId: 's1', useSessions: () => UI,
+        inputActions: { setDraft: (t) => { calls.push(t) } },
+        useInput: (sel) => sel({ draft: draft == null ? '' : draft }),
+      }))
+    })
+    await flush()
+    if (ops) await ops({ host, root, calls, sets })
+    await act(async () => { root.unmount() })
+    host.remove()
+    respond = prevR
+    return { host, calls, sets }
+  }
+  const setNativeValue = (el, v, proto) => {
+    const d = Object.getOwnPropertyDescriptor(proto, 'value').set
+    d.call(el, v)
+    el.dispatchEvent(new dom.window.Event('input', { bubbles: true }))
+  }
+  const rectOf = (g) => {
+    const r = g.querySelector('rect:not(.ac-pulse)')
+    if (!r) return null
+    const x = Number(r.getAttribute('x')), y = Number(r.getAttribute('y'))
+    return { x1: x, y1: y, x2: x + Number(r.getAttribute('width')), y2: y + Number(r.getAttribute('height')) }
+  }
+
+  // ---- A. 自动布局（点按钮 / 加载没坐标的图）不许把 files / note / link 丢掉 ----
+  // 从前的 autoLayout 逐字段重建节点，只留 {id,label,shape,group,x,y} —— 点一下「自动布局」，
+  // 锚点、留言、已解决标记、下钻链接全没，而且紧接着落盘，永久损坏。
+  const AL_MODEL = {
+    // 故意不给坐标：needsLayout → applyServer 里就会走 autoLayout
+    nodes: [
+      { id: 'ay1', label: '甲', shape: 'rect', group: null, note: '别丢我', noteDone: false, files: ['src/client/studio.ts'], link: 'sub' },
+      { id: 'ay2', label: '乙', shape: 'rect', group: null },
+    ],
+    edges: [{ id: 'ae1', from: 'ay1', to: 'ay2', label: '', arrow: '-->' }],
+    groups: [], direction: 'TD', extras: [],
+  }
+  const alRes = await mountModel(AL_MODEL, '', async ({ host }) => {
+    const g = Array.from(host.querySelectorAll('g.ac-node')).find((el) => (el.textContent || '').indexOf('甲') >= 0)
+    ok('自动布局后节点还在（说明确实走了那条路）', !!g)
+    ok('自动布局后留言角标还在', !!g?.querySelector('.ac-note-badge'))
+    ok('自动布局后代码锚点角标还在', !!g?.querySelector('.ac-file-badge'))
+    ok('自动布局后下钻角标还在', !!g?.querySelector('.ac-jump'))
+  })
+  void alRes
+
+  // 再走一遍用户真正的那条路：点工具条「自动布局」，看回传宿主的模型里字段还在不在
+  const AL2_MODEL = JSON.parse(JSON.stringify(AL_MODEL))
+  AL2_MODEL.nodes[0].x = 0; AL2_MODEL.nodes[0].y = 0
+  AL2_MODEL.nodes[1].x = 200; AL2_MODEL.nodes[1].y = 0
+  await mountModel(AL2_MODEL, '', async ({ host, sets }) => {
+    await act(async () => {
+      Array.from(host.querySelectorAll('.ac-tools button')).find((b) => b.textContent.trim() === '自动布局').click()
+    })
+    await flush()
+    const sent = sets[sets.length - 1]
+    const n = sent && sent.nodes.find((x) => x.id === 'ay1')
+    ok('点「自动布局」→ doc:set 里的 files 还在', !!(n && n.files && n.files.length === 1), n)
+    eq('点「自动布局」→ note 还在', n && n.note, '别丢我')
+    eq('点「自动布局」→ noteDone 还在', n && n.noteDone, false)
+    eq('点「自动布局」→ link 还在', n && n.link, 'sub')
+  })
+
+  // ---- B. 导出的 SVG 不许带角标（脱离主题的独立文档里 circle/text 缺省是纯黑，会成一坨黑斑）----
+  const EXP_MODEL = {
+    nodes: [{ id: 'ex1', label: '导出的方块', shape: 'rect', group: null, x: 0, y: 0, note: '有留言', files: ['a.ts'], link: 'sub' }],
+    edges: [], groups: [], direction: 'TD', extras: [],
+  }
+  const realBlob = globalThis.Blob
+  const realCreate = globalThis.URL.createObjectURL
+  const realRevoke = globalThis.URL.revokeObjectURL
+  let exportedSvg = ''
+  await mountModel(EXP_MODEL, '', async ({ host }) => {
+    globalThis.Blob = function (parts) { exportedSvg = String(parts && parts[0]); return { __fake: true } }
+    globalThis.URL.createObjectURL = function () { return 'blob:fake' }
+    globalThis.URL.revokeObjectURL = function () {}
+    try {
+      await act(async () => {
+        Array.from(host.querySelectorAll('.ac-tools button')).find((b) => b.textContent.trim() === 'SVG').click()
+      })
+      await flush()
+    } finally {
+      globalThis.Blob = realBlob
+      globalThis.URL.createObjectURL = realCreate
+      globalThis.URL.revokeObjectURL = realRevoke
+    }
+    ok('导出确实产出了 SVG 文本（否则下面两条是空测试）', exportedSvg.length > 0, exportedSvg.length)
+    ok('导出里有方块本身', exportedSvg.indexOf('导出的方块') >= 0)
+    ok('导出里没有留言角标', exportedSvg.indexOf('ac-note-badge') < 0)
+    ok('导出里没有锚点角标', exportedSvg.indexOf('ac-file-badge') < 0)
+    ok('导出里没有下钻角标', exportedSvg.indexOf('ac-jump') < 0)
+  })
+
+  // ---- C. 折叠组的端口要沿块边展开，而不是全叠在块边中心 ----
+  const FOLD_MODEL = {
+    nodes: [
+      { id: 'f1', label: '组内一', shape: 'rect', group: 'fg', x: 0, y: 0 },
+      { id: 'f2', label: '组内二', shape: 'rect', group: 'fg', x: 220, y: 0 },
+      { id: 'f3', label: '外部', shape: 'rect', group: null, x: 110, y: 420 },
+    ],
+    edges: [
+      { id: 'fe1', from: 'f1', to: 'f3', label: '', arrow: '-->' },
+      { id: 'fe2', from: 'f2', to: 'f3', label: '', arrow: '-->' },
+    ],
+    groups: [{ id: 'fg', label: '折叠组' }], direction: 'TD', extras: [],
+  }
+  await mountModel(FOLD_MODEL, '', async ({ host }) => {
+    const foldBtn = host.querySelector('.ac-group-btn')
+    ok('找到组的收起按钮', !!foldBtn)
+    await act(async () => {
+      foldBtn.dispatchEvent(new dom.window.PointerEvent('pointerdown', { bubbles: true, button: 0 }))
+    })
+    await flush()
+    const ds = Array.from(host.querySelectorAll('path.ac-edge')).map((p) => p.getAttribute('d'))
+    eq('折叠后两根外部连线都画出来了', ds.length, 2)
+    const firstX = ds.map((d) => Number((/^M (-?[\d.]+)/.exec(d) || [])[1]))
+    // 两根线的起点都在折叠块的同一条边上；从前按**原始节点 id** 分组，每组只有 1 根线，
+    // 端口偏移恒为 0 —— 箭头全叠在块边中心（|Δ| = 0）。
+    ok('两根线在折叠块边上展开了（端口相距 ≥ 12）',
+      Math.abs(firstX[0] - firstX[1]) >= 12 || Math.abs(firstX[0] - firstX[1]) === 0,
+      firstX)
+    ok('负向对照：它们确实分开摆（不是都落在块边中心）', Math.abs(firstX[0] - firstX[1]) >= 12, firstX)
+  })
+
+  // ---- D. 组 id 必须洗掉空格，且能认领已有组（按标签）----
+  const GRP_MODEL = {
+    nodes: [
+      { id: 'g1', label: '甲', shape: 'rect', group: 'AI端', x: 0, y: 0 },
+      { id: 'g2', label: '乙', shape: 'rect', group: null, x: 220, y: 0 },
+    ],
+    edges: [], groups: [{ id: 'AI端', label: 'AI 端' }], direction: 'TD', extras: [],
+  }
+  const groupInput = (host) => {
+    const fields = Array.from(host.querySelectorAll('.ac-dock .ac-field'))
+    const f = fields.find((el) => (el.querySelector('label')?.textContent || '').indexOf('分组') === 0)
+    return f && f.querySelector('input')
+  }
+  await mountModel(GRP_MODEL, '', async ({ host, sets }) => {
+    // 选中第二个节点，把它的分组写成带空格的 "AI 端"
+    const g2 = Array.from(host.querySelectorAll('g.ac-node')).find((el) => (el.textContent || '').indexOf('乙') >= 0)
+    await act(async () => {
+      g2.dispatchEvent(new dom.window.PointerEvent('pointerdown', { bubbles: true, button: 0 }))
+    })
+    await flush()
+    const input = groupInput(host)
+    ok('检查器里有分组输入框', !!input)
+    // 用一个**全新的**名字：没有任何已有组能按标签认领，所以这里考的就是 id 清洗本身
+    // （第一版用 'AI 端'，而"按标签认领已有组"那条分支单独就能过 —— 考不到清洗，白测了）
+    await act(async () => { setNativeValue(input, '数据 层', dom.window.HTMLInputElement.prototype) })
+    await flush()
+    await act(async () => {
+      input.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    })
+    await flush()
+    const sent = sets[sets.length - 1]
+    const node = sent && sent.nodes.find((x) => x.id === 'g2')
+    ok('新组的 id 不含空格（含空格会把 subgraph 语法写坏）',
+      /^\S+$/.test(String((node && node.group) || '')), node && node.group)
+    eq('空格被洗成下划线', node && node.group, '数据_层')
+    ok('label 保留用户打的原话（给人看的名字不用洗）',
+      !!(sent && sent.groups.find((g) => g.id === '数据_层' && g.label === '数据 层')),
+      sent && sent.groups)
+    // 再走一遍"认领已有组"：把它写成已有的 'AI 端'，应当对上已有组的 id 'AI端'，不该凭空多一个
+    const g1 = Array.from(host.querySelectorAll('g.ac-node')).find((el) => (el.textContent || '').indexOf('甲') >= 0)
+    await act(async () => {
+      g1.dispatchEvent(new dom.window.PointerEvent('pointerdown', { bubbles: true, button: 0 }))
+    })
+    await flush()
+    const input2 = groupInput(host)
+    await act(async () => { setNativeValue(input2, 'AI 端', dom.window.HTMLInputElement.prototype) })
+    await flush()
+    await act(async () => {
+      input2.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    })
+    await flush()
+    const sent2 = sets[sets.length - 1]
+    const node1 = sent2 && sent2.nodes.find((x) => x.id === 'g1')
+    eq('按标签认领已有组：打 "AI 端" 对上 id "AI端"（不是凭空多一个）', node1 && node1.group, 'AI端')
+    eq('组总数不变（没有多出第二个 AI 组）', sent2 && sent2.groups.length, 2)
+  })
+
+  // ---- E. 无穿透：自环不许捅穿自己；两个方块几乎重叠时线也不许消失 ----
+  //
+  // 注意**不能**对任意几何断言「绝不穿透」：节点是可以被用户拖到互相重叠的，
+  // 那种几何下不存在任何不穿透的正交路径（实测：a(0,100) 与 b(4,120) 两个 104 宽的
+  // 方块横向就重叠了，任何端口出发的第一段都必然穿过对方）。代码里那条「兜底二」
+  // 就是为这种无解几何留的 —— 契约是「宁可画得难看，也不能让线消失」。
+  // 所以这里只断言两件能成立的事：自环不捅穿自己；无解几何下线仍然画出来。
+  const penCheck = (host, rectsArg) => {
+    const rects = rectsArg || Array.from(host.querySelectorAll('g.ac-node')).map(rectOf).filter(Boolean)
+    const segs = []
+    for (const p of Array.from(host.querySelectorAll('path.ac-edge'))) {
+      const d = p.getAttribute('d') || ''
+      const pts = []
+      const re = /([MLQA])((?: -?[\d.]+)+)/g
+      let m
+      while ((m = re.exec(d)) !== null) {
+        const ns = (m[2].match(/-?[\d.]+/g) || []).map(Number)
+        if (m[1] === 'Q') pts.push({ x: ns[2], y: ns[3] })
+        else if (m[1] === 'A') pts.push({ x: ns[5], y: ns[6] })
+        else pts.push({ x: ns[0], y: ns[1] })
+      }
+      for (let k = 0; k + 1 < pts.length; k++) segs.push([pts[k], pts[k + 1]])
+    }
+    let bad = 0
+    for (const [a, b] of segs) {
+      for (const r of rects) {
+        const R = { x1: r.x1 + 2, y1: r.y1 + 2, x2: r.x2 - 2, y2: r.y2 - 2 }
+        if (Math.abs(a.y - b.y) < 0.5) {
+          if (a.y > R.y1 && a.y < R.y2 && Math.max(a.x, b.x) > R.x1 && Math.min(a.x, b.x) < R.x2) bad++
+        } else if (Math.abs(a.x - b.x) < 0.5) {
+          if (a.x > R.x1 && a.x < R.x2 && Math.max(a.y, b.y) > R.y1 && Math.min(a.y, b.y) < R.y2) bad++
+        }
+      }
+    }
+    return { bad, rects, segs }
+  }
+
+  const SELF_MODEL = {
+    nodes: [{ id: 's1', label: '自环', shape: 'rect', group: null, x: 0, y: 0 }],
+    edges: [{ id: 'se', from: 's1', to: 's1', label: '', arrow: '-->' }],
+    groups: [], direction: 'TD', extras: [],
+  }
+  await mountModel(SELF_MODEL, '', async ({ host }) => {
+    const ds = Array.from(host.querySelectorAll('path.ac-edge')).map((p) => p.getAttribute('d'))
+    eq('自环仍然画出来（不许消失）', ds.length, 1)
+    const r = penCheck(host)
+    ok('自环没有一段钻进方块内部（从前是从底边穿到顶边的一条直线）', r.bad === 0, r.segs)
+    // 负向对照：它必须绕到方块**外面**去（x 超出方块右边界），而不是在方块里竖着走
+    const nums = (ds[0].match(/-?[\d.]+/g) || []).map(Number)
+    const maxX = Math.max.apply(null, nums.filter((_, i) => i % 2 === 0))
+    ok('自环绕到了方块右边界之外', maxX > 52, { maxX, d: ds[0] })
+    // 光靠"不穿透"考不出自环特判 —— 撤掉特判后，守卫 + 翻转轴会让它绕一大圈，也不穿透。
+    // 能分出来的是**环的尺度**：自环该是贴着方块的一个小圈（纵向不超过方块半高），
+    // 不是绕着整个方块兜一圈（那会跑到 y=±68）。
+    const ys = nums.filter((_, i) => i % 2 === 1).map(Math.abs)
+    ok('自环是贴着方块的小圈（纵向不超出方块半高）', Math.max.apply(null, ys) <= 22.5 + 0.01, { ys, d: ds[0] })
+  })
+
+  const OVERLAP_MODEL = {
+    nodes: [
+      { id: 'p1', label: '甲', shape: 'rect', group: null, x: 0, y: 100 },
+      { id: 'p2', label: '乙', shape: 'rect', group: null, x: 4, y: 120 },
+    ],
+    edges: [{ id: 'pe', from: 'p1', to: 'p2', label: '', arrow: '-->' }],
+    groups: [], direction: 'TD', extras: [],
+  }
+  await mountModel(OVERLAP_MODEL, '', async ({ host }) => {
+    const ds = Array.from(host.querySelectorAll('path.ac-edge')).map((p) => p.getAttribute('d'))
+    eq('两个方块几乎重叠（无解几何）时，连线仍然画出来', ds.length, 1)
+    ok('并且两端都真的落在方块边界上（没有跑去别处）',
+      /^M /.test(ds[0]) && ds[0].indexOf('L') >= 0, ds[0])
+  })
+
+  // ---- F. @ 引用按词边界匹配：草稿里有 @c11 不能把 @c1 吃掉 ----
+  const REF_MODEL = {
+    nodes: [{ id: 'c1', label: '节点丙一', shape: 'rect', group: null, x: 0, y: 0, note: '待办', noteDone: false }],
+    edges: [], groups: [], direction: 'TD', extras: [],
+  }
+  await mountModel(REF_MODEL, '@c11', async ({ calls }) => {
+    eq('草稿里的 @c11 不该把 @c1 吃掉 → 仍然补了一次', calls.length, 1)
+    ok('补进去的是带词边界的 @c1', calls[0] === '@c11 @c1', calls[0])
+  })
+
+  respond = respond
+}
+
 console.log('\n[7] 卸载不留尾')
 await act(async () => { root.unmount(); footRoot.unmount() })
 dispose()
