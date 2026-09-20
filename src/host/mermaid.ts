@@ -92,6 +92,24 @@ function q(label) {
 }
 
 /**
+ * 引号包住一个**元数据值**（现在只有 `%% @file <id> <路径>`）。
+ *
+ * 为什么不能直接用 `q()`：那条路上的 `#` 是**图里**的字符，Mermaid 会把它当实体转义的起点，
+ * 所以必须写成 `#35;`。而 `%% @file` 的值在一行注释里，Mermaid 根本不看 —— 于是
+ * `src/host/document.ts#35;applyOps` 这种写法只坑到**人**（源码页里看到的就是它），
+ * 明明该是 `#applyOps`。这条值只由我们自己的解析器读回，所以只转义引号与换行。
+ *
+ * 读回仍然走 `unquote()`（它把 `#35;` 还原成 `#`），所以老文件照旧解析 ——
+ * 只是下一次落盘时会被规整回 `#applyOps`。
+ */
+function qRef(value) {
+  var s = String(value == null ? '' : value);
+  s = s.split('"').join('#quot;');
+  s = s.replace(/\r?\n/g, '<br/>');
+  return '"' + s + '"';
+}
+
+/**
  * 在双引号之外找 needle。
  * 标签里可以出现 `]` `)` `|` 这些定界符（序列化时一律加引号），
  * 直接 indexOf 会截在标签中间：节点或连线整行掉进 extras，而且是静默的。
@@ -416,7 +434,7 @@ function serializeDoc(doc) {
   for (var ft = 0; ft < seq.length; ft++) {
     var frefs = seq[ft].files || [];
     for (var fr = 0; fr < frefs.length; fr++) {
-      if (frefs[fr]) out.push('%% @file ' + seq[ft].id + ' ' + q(frefs[fr]));
+      if (frefs[fr]) out.push('%% @file ' + seq[ft].id + ' ' + qRef(frefs[fr]));
     }
   }
   out.push('flowchart ' + (doc.direction || 'TD'));

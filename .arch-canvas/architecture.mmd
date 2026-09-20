@@ -4,6 +4,21 @@
 %%! @file <节点id> <路径> 是这个节点对应的源码文件（可带 #符号），一个节点可多条
 %%! 以上对 Mermaid 渲染都无任何影响，可忽略或手改
 %% @summary "ArchCanvas 的逻辑框架：源文本是唯一真相 —— 它渲染成画布给人、注入成上下文给 AI、用锚点连到代码"
+%% @pos n2 -145 -630
+%% @pos a2 90 -707
+%% @pos a3 -197 -756
+%% @pos u1 -447 -201
+%% @pos u2 -316 -282
+%% @pos u3 -106 -282
+%% @pos u4 -572 -392
+%% @pos u5 -316 -392
+%% @pos u6 -92 -466
+%% @pos n4 174 5
+%% @pos c1 370 169
+%% @pos c2 118 325
+%% @pos c3 -209 92
+%% @pos c4 -209 262
+%% @pos c5 -238 -64
 %% @pos n5 448 -568
 %% @pos p1 668 -707
 %% @pos p2 668 -556
@@ -11,34 +26,7 @@
 %% @pos p4 499 -382
 %% @pos p5 668 -235
 %% @pos p6 986 -382
-%% @pos n4 137 -27
-%% @pos c1 370 169
-%% @pos c2 118 325
-%% @pos c3 -209 92
-%% @pos c4 -209 262
-%% @pos c5 -238 -64
-%% @pos n2 -145 -630
-%% @pos a2 90 -707
-%% @pos a3 -197 -756
-%% @pos u1 -447 -201
-%% @pos u2 -316 -282
-%% @pos u3 -106 -282
-%% @pos u4 -526 -392
-%% @pos u5 -316 -392
-%% @pos u6 -92 -466
-%% @pos n3 33 -218
-%% @file p1 "src/host/mermaid.ts"
-%% @file p2 "src/host/document.ts#35;applyOps"
-%% @file p3 "src/host/history.ts"
-%% @file p4 "src/host/document.ts#35;scanProject"
-%% @file p5 "src/host/document.ts#35;verifyFileRefs"
-%% @file p6 "src/host/plugin.ts"
-%% @file c1 "src/client/studio.ts#35;onNodeDown"
-%% @file c2 "src/client/studio.ts"
-%% @file c3 "src/client/studio.ts"
-%% @file c3 "src/client/runtime.ts#35;tokenizeMermaidLine"
-%% @file c4 "src/client/runtime.ts#35;buildExportSvg"
-%% @file c5 "src/client/studio.ts"
+%% @pos n3 58 -216
 %% @file n2 "src/host/plugin.ts#35;promptText"
 %% @file a2 "src/host/plugin.ts#35;onTool"
 %% @file a3 "skills/arch-canvas/SKILL.md"
@@ -48,24 +36,19 @@
 %% @file u4 "src/host/document.ts"
 %% @file u5 "src/host/document.ts#35;verifyFileRefs"
 %% @file u6 "src/host/history.ts"
+%% @file c1 "src/client/studio.ts#35;onNodeDown"
+%% @file c2 "src/client/studio.ts"
+%% @file c3 "src/client/studio.ts"
+%% @file c3 "src/client/runtime.ts#35;tokenizeMermaidLine"
+%% @file c4 "src/client/runtime.ts#35;buildExportSvg"
+%% @file c5 "src/client/studio.ts"
+%% @file p1 "src/host/mermaid.ts"
+%% @file p2 "src/host/document.ts#35;applyOps"
+%% @file p3 "src/host/history.ts"
+%% @file p4 "src/host/document.ts#35;scanProject"
+%% @file p5 "src/host/document.ts#35;verifyFileRefs"
+%% @file p6 "src/host/plugin.ts"
 flowchart TD
-  subgraph 解析端["解析端"]
-    n5["源文本<br/>意图：人与 AI 共读同一份真相<br/>原理：坐标与锚点寄生在 %% 注释里，所以它到哪都仍是合法 Mermaid"]
-    p1("编解码器<br/>意图：让源文本既是给人看的图、又是可编辑的数据<br/>原理：往返必须幂等 —— 解析再序列化一次，模型一个字段都不许漂；漂了不报错，图会悄悄走样")
-    p2["状态与 op<br/>意图：AI 只发增量，用户摆好的布局不动<br/>原理：normalizeModel 逐字段重建，白名单漏一个字段就被静默清空"]
-    p3[("落盘与检查点<br/>意图：安全靠「退得回去」，不靠「拦得住」<br/>原理：每次写入留一份内存快照，真相永远是那个 .mmd 文件")]
-    p4("图库扫描<br/>意图：换项目就换图，不需要任何配置<br/>原理：只走目录 + 比指纹，指纹没变就不读文件、不解析")
-    p5("锚点校验<br/>意图：一条过期锚点比没有锚点更坏<br/>原理：文件会改名而注释不会自己更新，所以每次加载都重算：ok / missing / symbol-missing / unknown，判不了根就说 unknown")
-    p6{{"对外接口<br/>意图：人和 AI 走同一个状态源，不各存一份<br/>原理：RPC 与工具注册统一走 onRpc / onTool，现场记录挂在那一层"}}
-  end
-  subgraph 画布端["画布端"]
-    n4["画布<br/>意图：把源文本画成人能直接摆弄的样子<br/>原理：图形只是源文本的一种视图，任何改动最终都落回源文本"]
-    c1("拖拽与连线<br/>意图：摆位置靠手感，不绕道表单<br/>原理：拖拽只改内存、松手落一步历史；连线是正交折线 —— 平行线互相让开车道，十字交叉处后画的那条拱过去")
-    c2["检查器<br/>意图：改内容都在这一个地方<br/>原理：它下挂在「选中」上；留言可以在这里「发送这一轮」，填进聊天输入框"]
-    c3("源码页<br/>意图：图形表达不了的东西，允许直接改文本<br/>原理：两层叠放共用一套排版（底层 pre 上色、顶层 textarea 只留光标）；整页只有一个滚动口，滚轮不再被别处截走")
-    c4("导出<br/>意图：把图带出去（贴进文档、发给人）<br/>原理：导出用独立字面色板 —— 导出的 SVG 里没有主题上下文")
-    c5{{"图库选择器<br/>意图：不用记住路径也能换图<br/>原理：清单来自解析端的自动扫描，界面只负责列出来"}}
-  end
   subgraph AI端["AI 端"]
     n2["上下文注入<br/>意图：AI 不用问就知道当前状态<br/>原理：全量注入而不是增量 —— 图是慢变量，而增量一旦与真相分叉不会报错"]
     a2["四个工具<br/>意图：AI 只发增量 op，不动用户摆好的布局<br/>原理：arch_edit 是默认，arch_write 只用于初稿与结构性重画"]
@@ -78,6 +61,23 @@ flowchart TD
     u4["给 AI 留言<br/>意图：在具体的方块上提问、或交待背景，攒一轮一起说<br/>原理：留言挂在节点 id 上、存旁路表 notes.json，不写进源文本；未办的自动以 @id 进聊天输入框，已解决的不进"]
     u5["标锚点<br/>意图：把这个方块钉到具体源码上<br/>原理：一个方块可以钉多处（@file 是数组）；失效的角标变红，不许假装还活着"]
     u6[("退回<br/>意图：AI 或自己改坏了，能一步退回去<br/>原理：每次落盘留一份内存快照，并标明是谁改的")]
+  end
+  subgraph 画布端["画布端"]
+    n4["画布<br/>意图：把源文本画成人能直接摆弄的样子<br/>原理：图形只是源文本的一种视图，任何改动最终都落回源文本"]
+    c1("拖拽与连线<br/>意图：摆位置靠手感，不绕道表单<br/>原理：拖拽只改内存、松手落一步历史；连线是正交折线 —— 平行线互相让开车道，十字交叉处后画的那条拱过去")
+    c2["检查器<br/>意图：改内容都在这一个地方<br/>原理：它下挂在「选中」上；留言可以在这里「发送这一轮」，填进聊天输入框"]
+    c3("源码页<br/>意图：图形表达不了的东西，允许直接改文本<br/>原理：两层叠放共用一套排版（底层 pre 上色、顶层 textarea 只留光标）；整页只有一个滚动口，滚轮不再被别处截走")
+    c4("导出<br/>意图：把图带出去（贴进文档、发给人）<br/>原理：导出用独立字面色板 —— 导出的 SVG 里没有主题上下文")
+    c5{{"图库选择器<br/>意图：不用记住路径也能换图<br/>原理：清单来自解析端的自动扫描，界面只负责列出来"}}
+  end
+  subgraph 解析端["解析端"]
+    n5["源文本<br/>意图：人与 AI 共读同一份真相<br/>原理：坐标与锚点寄生在 %% 注释里，所以它到哪都仍是合法 Mermaid"]
+    p1("编解码器<br/>意图：让源文本既是给人看的图、又是可编辑的数据<br/>原理：往返必须幂等 —— 解析再序列化一次，模型一个字段都不许漂；漂了不报错，图会悄悄走样")
+    p2["状态与 op<br/>意图：AI 只发增量，用户摆好的布局不动<br/>原理：normalizeModel 逐字段重建，白名单漏一个字段就被静默清空"]
+    p3[("落盘与检查点<br/>意图：安全靠「退得回去」，不靠「拦得住」<br/>原理：每次写入留一份内存快照，真相永远是那个 .mmd 文件")]
+    p4("图库扫描<br/>意图：换项目就换图，不需要任何配置<br/>原理：只走目录 + 比指纹，指纹没变就不读文件、不解析")
+    p5("锚点校验<br/>意图：一条过期锚点比没有锚点更坏<br/>原理：文件会改名而注释不会自己更新，所以每次加载都重算：ok / missing / symbol-missing / unknown，判不了根就说 unknown")
+    p6{{"对外接口<br/>意图：人和 AI 走同一个状态源，不各存一份<br/>原理：RPC 与工具注册统一走 onRpc / onTool，现场记录挂在那一层"}}
   end
   n3["代码<br/>意图：图上的意图能落到具体的文件与符号<br/>原理：图不保证与代码一致 —— 锚点说的是「当时指的是这里」，不是「现在还是这里」"]
   n5 -->|"锚点"| n3

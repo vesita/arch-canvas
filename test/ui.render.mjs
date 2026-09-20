@@ -77,12 +77,15 @@ ok('ui.js 挂出了 __archCanvas.install', !!(globalThis.__archCanvas && typeof 
 // ---------- 注册：捕获槽位组件 ----------
 const captured = {}
 const capturedDef = {}
+// @ 引用源也捕获下来：它现在是**按会话**取快照的（见 studio.ts 的 studioSnapshots），
+// 这条规则只能在「两个会话各有一张图」的场景里验，所以必须拿到那个 source 对象本身。
+let capturedSource = null
 const slots = {
   inject: (_name, cb) => { cb(); return () => {} },
   register: (def, comp) => { captured[def.name] = comp; capturedDef[def.name] = def; return () => {} },
 }
 const ctx = {
-  get: (k) => ({ slots })[k],
+  get: (k) => ({ slots, inputTriggers: { registerSource: (src) => { capturedSource = src; return () => {} } } })[k],
   effect: (fn) => { const d = fn(); return typeof d === 'function' ? d : () => {} },
   inject: () => () => {},
   on: () => () => {},
@@ -96,6 +99,7 @@ ok('注册了主窗口子页标签体', typeof captured['conversation.view'] ===
 eq('子页 id 是 arch-canvas', capturedDef['conversation.view'].id, 'arch-canvas')
 eq('子页排在「对话」「轨迹」之后', capturedDef['conversation.view'].order, 30)
 eq('子页标题', capturedDef['conversation.view'].label, '架构画布')
+ok('注册了 @ 引用源（按会话取节点的那条）', !!capturedSource && capturedSource.trigger === '@' && capturedSource.name === 'arch-canvas')
 ok('样式里有起始页与选择器的样式', insertedCss.indexOf('.ac-start') >= 0 && insertedCss.indexOf('.ac-lib') >= 0)
 
 // ---------- 渲染标签体 ----------
@@ -2350,6 +2354,138 @@ console.log('\n[4r] 客户端逻辑审计的修复：自动布局不许丢字段
   })
 
   respond = respond
+}
+
+console.log('\n[4s] 跨页记忆（画布是主窗口子页，切走就卸载）与 @ 引用源的会话正确性')
+{
+  const MODEL_A = {
+    nodes: [
+      { id: 'a4', label: '甲', shape: 'rect', group: null, x: 0, y: 0 },
+      { id: 'b7', label: '乙', shape: 'rect', group: null, x: 240, y: 0 },
+    ],
+    edges: [], groups: [], direction: 'TD', extras: [],
+  }
+  const mountIn = async (opts) => {
+    const prevR = respond
+    const sets = []
+    const plain = () => JSON.parse(JSON.stringify(opts.model))
+    const docFor = (m, rev, by, lc) => fullDoc({
+      key: opts.key, diagram: opts.key, model: m, nodeCount: m.nodes.length,
+      revision: rev, updatedBy: by, lastChange: lc || null,
+    })
+    respond = function (method, args) {
+      if (method === 'doc:get') return docFor(plain(), opts.revision, opts.updatedBy || 'switch', opts.lastChange)
+      if (method === 'doc:set') { sets.push(args.model); return docFor(args.model, (opts.revision || 1) + 1, 'user', null) }
+      if (method === 'doc:rev') return { revision: opts.revision, updatedBy: opts.updatedBy || 'switch', diagram: opts.key, dir: UI + '/.arch-canvas', libraryRev: 1, external: null }
+      if (method === 'doc:history') return { ok: true, entries: [] }
+      if (method === 'doc:list') return { ok: true, dir: UI + '/.arch-canvas', scope: 'project', workspace: UI, current: opts.key, external: null, items: [], files: [], libraryRev: 1 }
+      return prevR(method, args)
+    }
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const croot = createRoot(host)
+    await act(async () => {
+      croot.render(React.createElement(captured['conversation.view'], {
+        cwd: UI, sessionId: opts.sessionId, useSessions: () => UI,
+      }))
+    })
+    await flush()
+    const api = { host, sets }
+    if (opts.ops) await opts.ops(api)
+    await act(async () => { croot.unmount() })
+    host.remove()
+    respond = prevR
+    return api
+  }
+  const world = (host) => host.querySelector('g.ac-world')?.getAttribute('transform')
+  const undoBtn = (host) => host.querySelector('button.ac-tab[title^="撤销"]')
+  const pulseCount = (host) => host.querySelectorAll('.ac-pulse').length
+  const nodeIn = (host, t) => Array.from(host.querySelectorAll('g.ac-node')).find((el) => (el.textContent || '').indexOf(t) >= 0)
+
+  // ---- 1. 离开再回来：视角与撤销栈要还回来；同一次 AI 改动不许重放 ----
+  const SESS = 's-memo'
+  const AI_LAST = { by: 'ai', rev: 9, nodes: ['a4'] }
+  let fittedView = '', zoomedView = ''
+  await mountIn({
+    sessionId: SESS, key: 'memo/architecture', model: MODEL_A,
+    revision: 9, updatedBy: 'ai', lastChange: AI_LAST,
+    ops: async ({ host }) => {
+      fittedView = world(host)
+      ok('第一次挂载：AI 的改动闪了一次（否则下面「不重放」那条是空断言）', pulseCount(host) > 0, pulseCount(host))
+      // 用户自己动视角：画布页滚轮缩放
+      await act(async () => {
+        host.querySelector('svg.ac-svg').dispatchEvent(new dom.window.WheelEvent('wheel', { deltaY: -120, clientX: 60, clientY: 60, bubbles: true, cancelable: true }))
+      })
+      await flush()
+      zoomedView = world(host)
+      ok('滚轮之后视角真的变了', !!zoomedView && zoomedView !== fittedView, [fittedView, zoomedView])
+      // 用户拖一个节点 → 撤销栈里有一条（这一步也顺手落了盘）
+      await act(async () => {
+        const el = nodeIn(host, '乙')
+        el.dispatchEvent(new dom.window.PointerEvent('pointerdown', { bubbles: true, button: 0, clientX: 300, clientY: 200 }))
+        host.querySelector('svg.ac-svg').dispatchEvent(new dom.window.PointerEvent('pointermove', { bubbles: true, clientX: 380, clientY: 260 }))
+        host.querySelector('svg.ac-svg').dispatchEvent(new dom.window.PointerEvent('pointerup', { bubbles: true, button: 0, clientX: 380, clientY: 260 }))
+      })
+      await flush()
+      ok('拖动之后撤销按钮可用（撤销栈里有一条）', !!undoBtn(host) && undoBtn(host).disabled === false)
+    },
+  })
+  // 同一个会话、同一张图：重新挂载 = 「切到对话又切回来」
+  let restoredSets = null
+  await mountIn({
+    sessionId: SESS, key: 'memo/architecture', model: MODEL_A,
+    revision: 9, updatedBy: 'ai', lastChange: AI_LAST,
+    ops: async ({ host, sets }) => {
+      restoredSets = sets
+      eq('回来时视角原样还回来（不是重新适应窗口）', world(host), zoomedView)
+      ok('回来时撤销栈还在（不是从头开始）', !!undoBtn(host) && undoBtn(host).disabled === false)
+      eq('同一次 AI 改动不再重放高亮', pulseCount(host), 0)
+      // 最强的一条：还回来的历史必须**能用** —— 点 ↶ 要真的退回拖动之前的坐标
+      await act(async () => { undoBtn(host).click() })
+      await flush()
+      const sent = sets[sets.length - 1]
+      ok('回来之后 ↶ 真的退回了一步（落了盘）', !!sent, sets.length)
+      eq('退回的是「拖动之前」那一份（乙 回到 x=240）', sent && sent.nodes.find((n) => n.id === 'b7').x, 240)
+    },
+  })
+  ok('负向对照：那次退回确实发生了（不是空跑）', !!restoredSets && restoredSets.length > 0)
+
+  // ---- 2. 负向对照：换一张图（不同 key）就必须按默认来 ----
+  await mountIn({
+    sessionId: SESS, key: 'memo/another', model: MODEL_A,
+    revision: 9, updatedBy: 'switch', lastChange: null,
+    ops: async ({ host }) => {
+      eq('另换一张图时不许继承上一张的视角（回到自动适应窗口）', world(host), fittedView)
+      ok('另换一张图时撤销栈是空的', !!undoBtn(host) && undoBtn(host).disabled === true)
+    },
+  })
+
+  // ---- 3. @ 引用源：按会话取快照，不许把别的会话（别的项目）的图摆出来 ----
+  ok('@ 引用源被注册了', !!capturedSource)
+  await mountIn({
+    sessionId: 's-at-a', key: 'at/a', model: MODEL_A, revision: 1, ops: async () => {},
+  })
+  eq('本会话：@ 候选取到 2 个节点', (await capturedSource.candidates({ sessionId: 's-at-a' }, { query: '' })).length, 2)
+  eq('lexicon 给出本会话的节点 id', capturedSource.lexicon({ sessionId: 's-at-a' }).join(','), 'a4,b7')
+  // 这就是修掉的那条：从前这里返回的是「上一次打开的那张图」的节点（跨会话、可能跨项目）
+  eq('别的会话没开过画布 → 一个候选都不给', (await capturedSource.candidates({ sessionId: 's-at-b' }, { query: '' })).length, 0)
+  eq('别的会话没开过画布 → lexicon 也是空', capturedSource.lexicon({ sessionId: 's-at-b' }).length, 0)
+
+  // 展开文本：活跃会话优先；两个会话同名节点、而活跃的那个没有 —— 宁可不展开
+  await mountIn({
+    sessionId: 's-at-c', key: 'at/c',
+    model: { nodes: [{ id: 'a4', label: '三号', shape: 'rect', group: null, x: 0, y: 0 }], edges: [], groups: [], direction: 'TD', extras: [] },
+    revision: 1, ops: async () => {},
+  })
+  capturedSource.lexicon({ sessionId: 's-at-c' })
+  ok('两个会话都有 a4 时：活跃会话的那个说了算', (await capturedSource.codec.serialize('a4')).indexOf('三号') >= 0,
+    await capturedSource.codec.serialize('a4'))
+  capturedSource.lexicon({ sessionId: 's-at-a' })
+  ok('切回另一个会话：展开的是它的那个 a4', (await capturedSource.codec.serialize('a4')).indexOf('节点 a4「甲」') >= 0,
+    await capturedSource.codec.serialize('a4'))
+  capturedSource.lexicon({ sessionId: 's-at-never' })
+  eq('分不清是哪个会话的 a4 时拒绝展开（不许把另一张图的话塞进 prompt）',
+    await capturedSource.codec.serialize('a4'), '[画布节点 a4（当前画布中已不存在该节点）]')
 }
 
 console.log('\n[7] 卸载不留尾')

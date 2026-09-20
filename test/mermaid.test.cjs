@@ -474,5 +474,31 @@ console.log('\n[19] 空组必须能写进文件（往返检查当场逮到的那
   check('往返检查安静', roundTripDiff(doc).length === 0, roundTripDiff(doc))
 }
 
+console.log('\n[20] 锚点路径里的 `#` 不再写成 `#35;`（人要在源码页里读这一行）')
+{
+  const doc = {
+    direction: 'TD', summary: '', edges: [], extras: [], groups: [],
+    nodes: [{ id: 'a', label: '甲', shape: 'rect', group: null, x: 0, y: 0, link: null, files: ['src/host/document.ts#applyOps'] }],
+  }
+  const text = serializeDoc(doc)
+  check('写出的是原样的 #applyOps',
+    text.indexOf('%% @file a "src/host/document.ts#applyOps"') >= 0, text.split('\n').filter((l) => l.indexOf('@file') === 0))
+  check('负向对照：文件里不再出现 #35; 这套实体转义', text.indexOf('#35;') < 0)
+  const back = parseMermaid(text)
+  check('读回来仍然是 #applyOps', back.nodes[0].files[0] === 'src/host/document.ts#applyOps', back.nodes[0].files)
+  check('往返检查安静', roundTripDiff(doc).length === 0, roundTripDiff(doc))
+
+  // 老文件（0.6.x 及以前写的是 #35;）必须照旧解析得出来 —— 否则这一改就是把老图读坏。
+  const legacy = parseMermaid([
+    'flowchart TD',
+    '  a["甲"]',
+    '%% @file a "src/host/document.ts#35;applyOps"',
+  ].join('\n'))
+  check('老文件的 #35;applyOps 仍然解析成 #applyOps',
+    legacy.nodes[0].files[0] === 'src/host/document.ts#applyOps', legacy.nodes[0].files)
+  check('读进来再写出去 = 规整（老写法只活到下一次落盘）',
+    serializeDoc(legacy).indexOf('"src/host/document.ts#applyOps"') >= 0)
+}
+
 console.log('\n结果: ' + pass + ' 通过 / ' + fail + ' 失败\n');
 process.exit(fail === 0 ? 0 : 1);

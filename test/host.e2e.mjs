@@ -1059,9 +1059,13 @@ ok('写锚点后 doc:set 成功', setRef && setRef.ok !== false)
 const refContent = files.get(refFile)
 ok('落盘文件里出现三条 %% @file r1',
   refContent.split('\n').filter((l) => l.indexOf('%% @file r1 ') === 0).length === 3, refContent)
-// `#`/`"` 走与注释同一套实体转义，所以文件里看到的是 #35; —— 读回来由 unquote 还原
-ok('锚点带引号写出（路径里有 # 也不怕）',
-  refContent.indexOf('%% @file r1 "src/host/mermaid.ts#35;parseMermaid"') >= 0, refContent)
+// `%% @file` 的值在一行注释里，Mermaid 根本不看 —— 所以它**不套**标签那套实体转义：
+// 从前这里写的是 `#35;parseMermaid`，只在源码页里坑人（人看到的就该是 `#parseMermaid`）。
+// 读回那条路没变（unquote 仍然认 #35;），所以老文件解析照旧，只是下一次落盘会被规整。
+ok('锚点按原样写出路径里的 #（不再写成 #35;）',
+  refContent.indexOf('%% @file r1 "src/host/mermaid.ts#parseMermaid"') >= 0, refContent)
+ok('负向对照：文件里确实没有 #35; 这种实体写法',
+  refContent.indexOf('#35;') < 0, refContent)
 
 const getRef = await call('doc:get', { where: dirRef })
 const refStatus = getRef.fileStatus.r1 || {}
@@ -1105,7 +1109,7 @@ ok('arch_write 成功', wRef && wRef.ok !== false)
 const getWRef = await call('doc:get', { where: dirRef })
 eq('arch_write 后同 id 节点继承了锚点',
   JSON.stringify(getWRef.model.nodes.find((n) => n.id === 'r1').files), JSON.stringify(['src/host/mermaid.ts#parseMermaid']))
-ok('继承的锚点也写回了文件', files.get(refFile).indexOf('%% @file r1 "src/host/mermaid.ts#35;parseMermaid"') >= 0)
+ok('继承的锚点也写回了文件（# 原样）', files.get(refFile).indexOf('%% @file r1 "src/host/mermaid.ts#parseMermaid"') >= 0)
 
 const aRef = await call('doc:applyText', { text: 'flowchart TD\n  r1["手改"] --> r3["新下游"]\n', where: dirRef })
 ok('doc:applyText 成功', aRef && aRef.ok !== false)

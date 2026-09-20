@@ -11,8 +11,100 @@ var TAB_ID = 'arch-canvas'
  */
 var DRAG_SLOP = 4
 
-// 当前画布的实时节点快照，供 register.ts 里的 @ 引用 trigger source 消费
-var studioLiveNodes = []
+// 当前画布的实时节点快照，供 register.ts 里的 @ 引用 trigger source 消费。
+// **按会话分开存**：画布现在住在主窗口子页里（`conversation.view`），切到「对话」页就是卸载，
+// 而快照是模块级的、卸载不会清。从前只有一个数组，于是在另一个会话（另一个项目）里打 @，
+// 列出来的是**上一次打开的那张图**的节点，插进草稿的展开文本也是旧的 —— 静默给错数据。
+// 快照归谁，就只给谁用；拿不到就是空，空比别人的图好。
+var studioSnapshots = {}
+var studioActiveSession = ''   // 最近一次被 @ 引用源问到的会话（candidates / lexicon）
+var STUDIO_SNAP_MAX = 8
+
+function syncLiveNodes(m, sessionId) {
+  var sid = String(sessionId == null ? '' : sessionId)
+  if (!sid) return
+  studioSnapshots[sid] = {
+    nodes: (m && m.nodes && Array.isArray(m.nodes)) ? m.nodes.slice() : [],
+    at: Date.now(),
+  }
+  studioActiveSession = sid
+  var keys = Object.keys(studioSnapshots)
+  if (keys.length > STUDIO_SNAP_MAX) {
+    var oldest = '', touched = Infinity
+    for (var i = 0; i < keys.length; i++) {
+      var t = studioSnapshots[keys[i]].at || 0
+      if (t < touched) { touched = t; oldest = keys[i] }
+    }
+    if (oldest && oldest !== sid) delete studioSnapshots[oldest]
+  }
+}
+
+/**
+ * 某个会话当前那份快照的节点。`lexicon` 与 `candidates` 都只有会话 id（见 register.ts），
+ * 拿不到就是空列表 —— 契约要求 lexicon **同步、无副作用**，所以这里不做任何补取。
+ */
+function liveNodesOf(sessionId) {
+  var sid = String(sessionId == null ? '' : sessionId)
+  if (sid) studioActiveSession = sid
+  var e = sid ? studioSnapshots[sid] : null
+  return (e && e.nodes) ? e.nodes : []
+}
+
+/**
+ * `codec.serialize(ref, signal)` 的解析。契约里它**拿不到会话**，所以按「最近一次被问到的
+ * 会话」优先；两个会话都有同名节点、而活跃的那个没有时，宁可不展开也不许把另一张图的话
+ * 塞进 prompt —— 这条路上错一次，AI 就会拿着别人图上的描述去改代码。
+ */
+function resolveLiveNode(ref) {
+  var hit = null, hits = 0
+  var keys = Object.keys(studioSnapshots)
+  for (var i = 0; i < keys.length; i++) {
+    var nodes = studioSnapshots[keys[i]].nodes || []
+    for (var j = 0; j < nodes.length; j++) {
+      if (nodes[j] && nodes[j].id === ref) {
+        hits++
+        if (keys[i] === studioActiveSession) return nodes[j]
+        if (hit === null) hit = nodes[j]
+        break
+      }
+    }
+  }
+  return hits <= 1 ? hit : null
+}
+
+/**
+ * 「你摆到哪儿了」的跨页记忆。画布是主窗口的一个子页，而那个槽**一次只渲染一个**：
+ * 切到「对话」等于卸载整个 ArchStudio，组件里的一切随之归零 —— 缩放/平移、当前子页、
+ * 甚至内存里那 60 步撤销历史。于是「看一眼 AI 说了什么 → 回画布接着摆」这个来回，
+ * 每一趟都要重新适应窗口、撤销历史从头开始。
+ *
+ * 这里只记**视图状态**，不记图内容 —— 内容永远以宿主那份（doc:get）为准，
+ * 多存一份内容就又多了一份会各自漂移的真相。只在内存里，按 `<会话>|<图>` 分开。
+ */
+var studioMemo = {}
+var STUDIO_MEMO_MAX = 6
+
+function studioMemoKey(sessionId, diagKey) {
+  return String(sessionId == null ? '' : sessionId) + '|' + String(diagKey == null ? '' : diagKey)
+}
+
+function studioMemoFor(key, create) {
+  var m = studioMemo[key]
+  if (!m && create) {
+    var keys = Object.keys(studioMemo)
+    if (keys.length >= STUDIO_MEMO_MAX) {
+      var oldest = keys[0], at = Infinity
+      for (var i = 0; i < keys.length; i++) {
+        var t = studioMemo[keys[i]].at || 0
+        if (t < at) { at = t; oldest = keys[i] }
+      }
+      delete studioMemo[oldest]
+    }
+    m = studioMemo[key] = { at: Date.now() }
+  }
+  if (m) m.at = Date.now()
+  return m
+}
 
 /**
  * 草稿里有没有这个节点的引用。**必须按词边界判**，不能用 `indexOf('@' + id)`：
@@ -27,14 +119,6 @@ function draftHasRef(draft, id) {
     return new RegExp('(^|[^\\w-])@' + esc + '(?![\\w-])').test(String(draft == null ? '' : draft))
   } catch (e) {
     return String(draft == null ? '' : draft).indexOf('@' + s) >= 0
-  }
-}
-
-function syncLiveNodes(m) {
-  if (!m || !m.nodes || !Array.isArray(m.nodes)) {
-    studioLiveNodes = []
-  } else {
-    studioLiveNodes = m.nodes.slice()
   }
 }
 
@@ -251,6 +335,17 @@ function ArchStudio(props) {
   var histState = React.useState(0)
   var setHistTick = histState[1]
 
+  // 跨页记忆的两个 Key（见 studioMemo）：当前这一份图的身份、以及它对应的记忆条目。
+  // 身份取「图库 key / 图名 / 文件绝对路径」三者之一 —— 外部文件只有 file 这条路认得出来。
+  var memoKeyRef = React.useRef('')
+  var diagKeyRef = React.useRef('')
+  // 用户**自己动过视角**没有（滚轮缩放 / 平移 / 点「适应窗口」/ 从清单定位）。
+  // 只有动过才值得记进跨页记忆：自动适应窗口算出来的那个视角，下次挂载一样能算出来。
+  var userViewRef = React.useRef(false)
+  // 注意：选中与详情面板**不进记忆**。详情里那一堆输入框（标题/描述/留言/锚点草稿）
+  // 是「正在改的东西」，只把「面板开着」还回来而草稿是空的，等于把上一次的正文摆在
+  // 回车就生效的输入框里 —— 那是数据损坏的路，不是便利。
+
   viewRef.current = view
   selRef.current = sel
   tabRef.current = tab
@@ -355,7 +450,7 @@ function ArchStudio(props) {
 
   function setLocal(next) {
     modelRef.current = next
-    syncLiveNodes(next)
+    syncLiveNodes(next, sidRef.current)
     setModel(next)
   }
 
@@ -441,22 +536,44 @@ function ArchStudio(props) {
     var m = r.model
     if (needsLayout(m)) m = autoLayout(m)
     var prev = committedRef.current
-    var diagKey = String(r.key || r.diagram || '')
+    // 这一份文档的身份。图库里的图有 key/diagram，**外部文件只有 file** 认得出来 ——
+    // 记忆里带着撤销栈，把 A 的历史还到 B 头上就是拿 A 的内容覆盖 B，所以身份必须认准。
+    var diagKey = String(r.key || r.diagram || r.file || '')
     var diagChanged = currentDiagramRef.current !== '' && diagKey !== '' && currentDiagramRef.current !== diagKey
     var isSwitch = (r.lastChange && r.lastChange.by === 'switch') || diagChanged
 
     if (prev === null || isSwitch) {
-      histRef.current.past.length = 0
-      histRef.current.future.length = 0
+      // 刚挂载（prev 为空）时先问一句：是不是「从这个会话的这一页离开、又回来了」？
+      // 是的话把视角 / 撤销栈还回去。**内容不吃记忆** —— 上面那份 m 才是真相。
+      // 判据只看「会话 + 这一份文档」对不对得上：`lastChange.by` 在没改过图的会话里
+      // 会一直停在 'switch'，拿它当「换了图」会把这辈子都挡掉。
+      //
+      // 记忆里**只有用户自己动过的东西**（他缩放过、他编辑过），所以「什么都没动过」
+      // 的那次挂载与从前完全一样：撤销栈是空的、视角按默认自动适应窗口。
+      var memoKey = studioMemoKey(sidRef.current, diagKey)
+      var memo = (diagKey && !isSwitch) ? studioMemo[memoKey] : null
+      memoKeyRef.current = memoKey
+      // 撤销栈还回去，但**不还 committedRef**：它必须等于刚从宿主拿回来的这一份，
+      // 否则回来后的第一次编辑会把「离开之前的旧状态」记成历史（一撤销就吃掉期间 AI 的改动）。
+      if (memo && memo.hist) histRef.current = memo.hist
+      if (memo && memo.view) {
+        viewRef.current = memo.view
+        setView(memo.view)
+        // 还回来的视角本来就是「适应过窗口」的，别再自动 fit 一次把它冲掉。
+        fittedRef.current = true
+      } else {
+        histRef.current.past.length = 0
+        histRef.current.future.length = 0
+        setSel(null)
+        setDockOpen(false)
+      }
       setHistTick(function (n) { return n + 1 })
-      setSel(null)
-      setDockOpen(false)
     } else if (origin === 'ai' || origin === 'local') {
       // AI 改图、从源码重建，同样进历史：Ctrl+Z 能把 AI 的改动退回去
       remember(cloneModel(prev))
     }
-    if (diagKey) currentDiagramRef.current = diagKey
-    syncLiveNodes(m)
+    if (diagKey) { currentDiagramRef.current = diagKey; diagKeyRef.current = diagKey }
+    syncLiveNodes(m, sidRef.current)
     setLocal(m)
     committedRef.current = cloneModel(m)
     revRef.current = r.revision
@@ -476,8 +593,16 @@ function ArchStudio(props) {
     setDraft(r.mermaid)
     var lc = r.lastChange
     if (lc && lc.by === 'ai' && lc.nodes && lc.nodes.length > 0) {
-      flash(lc.nodes)
-      setStatus('AI 改动了 ' + lc.nodes.length + ' 个节点（已高亮）')
+      // 同一次 AI 改动只闪一次。`lastChange` 是宿主侧的模块状态：之后没人改图的话，
+      // `doc:get` 每次都原样带回来 —— 于是**重新挂载**（切页回来、刷新页面）会把同一次
+      // 改动再脉动 5.2 秒、顶栏再喊一遍「AI 刚更新了这张图」。那是旧消息，不是新消息。
+      var hlKey = String(r.revision == null ? '' : r.revision)
+      var memoForHl = studioMemoFor(memoKeyRef.current || studioMemoKey(sidRef.current, diagKeyRef.current), true)
+      if (memoForHl.hlKey !== hlKey) {
+        memoForHl.hlKey = hlKey
+        flash(lc.nodes)
+        setStatus('AI 改动了 ' + lc.nodes.length + ' 个节点（已高亮）')
+      }
     }
   }, [])
 
@@ -553,6 +678,27 @@ function ArchStudio(props) {
     }
   }, [])
 
+  // 离开这一页时把「你摆到哪儿了」记下来（见 studioMemo）。**只记用户自己动过的**：
+  // 他缩放过/平移过，才记视角；撤销栈里有东西，才记撤销栈。什么都没动过就不留记忆 ——
+  // 这样「第一次打开这张图」与从前一模一样（撤销栈空、视角自动适应窗口）。
+  // 图内容一个字都不记 —— 那是宿主的真相。
+  //
+  // 只在卸载时写：这个 effect 依赖为空，闭包里读到的是 state 的初始值，
+  // 所以一律从 ref 里拿（viewRef / histRef 每次渲染都同步，见上面几行）。
+  React.useEffect(function () {
+    return function () {
+      var key = memoKeyRef.current
+      if (!key) return
+      var view = userViewRef.current ? viewRef.current : null
+      var hist = histRef.current.past.length > 0 ? histRef.current : null
+      if (!view && !hist) return
+      var memo = studioMemoFor(key, true)
+      memo.diagKey = diagKeyRef.current
+      if (view) memo.view = view
+      if (hist) memo.hist = hist
+    }
+  }, [])
+
   /** 拉检查点清单。cwd 是必须的：历史按文件存，宿主得先落到同一个图库上。 */
   function loadHistory() {
     patchHist({ busy: true })
@@ -583,7 +729,7 @@ function ArchStudio(props) {
     fittedRef.current = false
     rpc('doc:get', { where: cwd, session: sessionId }).then(function (r) {
       if (!alive || !r || !r.ok) { if (alive) setStatus('加载失败'); return }
-      if (r.model) syncLiveNodes(r.model)
+      if (r.model) syncLiveNodes(r.model, sidRef.current)
       applyServer(r, 'init')
       setStatus(needsLayout(r.model) ? '已按依赖关系自动布局' : '已就绪')
       // 起始页要列出项目里已有的图，所以清单不等用户点「图库」就先读一次
@@ -666,7 +812,7 @@ function ArchStudio(props) {
     var nv = { k: k, x: rect.width / 2 - ((minX + maxX) / 2) * k, y: rect.height / 2 - ((minY + maxY) / 2) * k }
     viewRef.current = nv
     setView(nv)
-    if (force) setStatus('已适应窗口')
+    if (force) { userViewRef.current = true; setStatus('已适应窗口') }
     return true
   }
 
@@ -708,6 +854,7 @@ function ArchStudio(props) {
       var k2 = Math.min(2.6, Math.max(0.1, v.k * (e.deltaY < 0 ? 1.12 : 1 / 1.12)))
       var nv = { k: k2, x: sx - (sx - v.x) * (k2 / v.k), y: sy - (sy - v.y) * (k2 / v.k) }
       viewRef.current = nv
+      userViewRef.current = true
       setView(nv)
     }
     el.addEventListener('wheel', onWheel, { passive: false })
@@ -820,6 +967,7 @@ function ArchStudio(props) {
     if (d.kind === 'pan') {
       var nv = { k: viewRef.current.k, x: e.clientX - d.ox, y: e.clientY - d.oy }
       viewRef.current = nv
+      userViewRef.current = true
       setView(nv)
       return
     }
@@ -1209,6 +1357,7 @@ function ArchStudio(props) {
       var v = viewRef.current
       var nv = { k: v.k, x: box.width / 2 - g.x * v.k, y: box.height / 2 - g.y * v.k }
       viewRef.current = nv
+      userViewRef.current = true
       setView(nv)
     }
     setStatus('已定位到节点 ' + id)

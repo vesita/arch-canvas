@@ -44,7 +44,9 @@ function registerArchInputTrigger(ctx, disposers) {
     showGroupTitle: true,
     candidates: function (session, req) {
       var query = String(req && req.query != null ? req.query : '').trim().toLowerCase()
-      var nodes = Array.isArray(studioLiveNodes) ? studioLiveNodes : []
+      // **按会话取**：这里的 `session` 就是投影（`{ sessionId }`，见 ui-input-trigger）。
+      // 拿不到这个会话的快照就返回空 —— 空比「别的项目那张图的节点」好得多。
+      var nodes = liveNodesOf(session && session.sessionId)
       var results = []
       for (var i = 0; i < nodes.length; i++) {
         var n = nodes[i]
@@ -84,9 +86,12 @@ function registerArchInputTrigger(ctx, disposers) {
     // dsh-client-ui-conversation/lib/client.js:12192「Scan the draft for plain-text reference
     // tokens against the hot lexicons」+ :12300 的 registerTextRefDecoration。
     // 有它，往发送区送留言就不必伪造 span 去插 chip —— 那条路要 draftRev 的 CAS，外部够不着。
-    // 契约要求这个钩子**同步、无副作用**（渲染路径），模块级的 studioLiveNodes 快照正合适。
-    lexicon: function () {
-      var nodes = Array.isArray(studioLiveNodes) ? studioLiveNodes : []
+    // 契约要求这个钩子**同步、无副作用**（渲染路径），所以它只读这个会话已经攒下的快照。
+    //
+    // 它同时也是**展开的闸门**：这个会话没有这个 id，token 就不会被装饰成上下文块，
+    // 于是 codec.serialize 也不会被叫到它头上（见下面那条注释）。
+    lexicon: function (session) {
+      var nodes = liveNodesOf(session && session.sessionId)
       var ids = []
       for (var i = 0; i < nodes.length; i++) {
         if (nodes[i] && nodes[i].id) ids.push(nodes[i].id)
@@ -98,11 +103,10 @@ function registerArchInputTrigger(ctx, disposers) {
         return '@' + ref
       },
       serialize: function (ref, signal) {
-        var nodes = Array.isArray(studioLiveNodes) ? studioLiveNodes : []
-        var target = null
-        for (var i = 0; i < nodes.length; i++) {
-          if (nodes[i].id === ref) { target = nodes[i]; break }
-        }
+        // 契约里这条**拿不到会话**（`serialize(ref, signal)`，见 ui-input-trigger 的
+        // serializeReference）。所以解析交给 resolveLiveNode：优先「最近一次被问到的
+        // 那个会话」，同名节点分不清就宁可不展开 —— 绝不把另一张图的话塞进 prompt。
+        var target = resolveLiveNode(ref)
         if (!target) {
           return Promise.resolve('[画布节点 ' + ref + '（当前画布中已不存在该节点）]')
         }
