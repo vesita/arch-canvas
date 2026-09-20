@@ -214,6 +214,10 @@ function ArchStudio(props) {
   // 两层必须字体、行高、padding、border 逐项一致，差一点光标与文字就错位。
   var hlRef = React.useRef(null)
   var taRef = React.useRef(null)
+  // 源码页整页只有一个滚动口，就是它（见 runtime.ts 的 .ac-textwrap）。
+  var textWrapRef = React.useRef(null)
+  // 已经自动放进输入框的那一批待办留言（按 id 拼成的签名），防止删掉又被加回来。
+  var autoFilledRef = React.useRef('')
   var histState = React.useState(0)
   var setHistTick = histState[1]
 
@@ -446,6 +450,61 @@ function ArchStudio(props) {
     }
   }, [])
 
+  // ==================== 源码页：滚轮兜底 ====================
+  // 真凶已经在上面的滚轮缩放 effect 里修掉了（那条监听器泄漏到这个节点上、无条件
+  // preventDefault）。这里再挂一道**原生** wheel 兜底：自己把 deltaY 加到 scrollTop 上，
+  // 滚动了就 preventDefault，保证**只滚一次** —— 只要还有第二个想吃掉滚轮的东西，
+  // 源码页就还能滑。将来真要删，先确认 [4q] 那两条探针还在守着。
+  //
+  // 必须用 addEventListener({ passive: false }) —— React 的 onWheel 在根上是 passive 的，
+  // 里面调 preventDefault() 无效，会和浏览器自己的滚动叠加成双倍速。
+  React.useEffect(function () {
+    if (tab !== 'text') return
+    var el = textWrapRef.current
+    if (!el || typeof el.addEventListener !== 'function') return
+    var onWheel = function (ev) {
+      var dy = (typeof ev.deltaY === 'number' && isFinite(ev.deltaY)) ? ev.deltaY : 0
+      // deltaMode：0=像素，1=行（Firefox），2=页。不换算的话行模式下每格只挪 3px，像没动。
+      if (ev.deltaMode === 1) dy *= 16
+      else if (ev.deltaMode === 2) dy *= Math.max(1, el.clientHeight)
+      var before = el.scrollTop
+      el.scrollTop = before + dy
+      // 只有真的滚动了才拦：已经到底时再拦会把滚轮整个吞掉，页面看起来是"卡住"
+      if (el.scrollTop !== before) {
+        if (typeof ev.preventDefault === 'function') ev.preventDefault()
+      }
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return function () { el.removeEventListener('wheel', onWheel) }
+  }, [tab])
+
+  // ==================== 未办留言自动进输入框 ====================
+  // 用户要的：不再有「放入输入框」那个按钮，**所有未办留言自动**以 `@id` 的形式进草稿。
+  // 只追加缺的那些 —— 既不顶掉正在打的字，也不重复加。
+  //
+  // 触发条件是「待办集合变了」，不是「草稿变了」：后者会在用户手动删掉一个引用之后
+  // 立刻又给他加回来，那不是自动，那是按键精灵。已解决的**不进** —— 它们不该再注入给 AI。
+  React.useEffect(function () {
+    if (!inputActions || typeof inputActions.setDraft !== 'function') return
+    if (!model || !model.nodes) return
+    var ids = []
+    for (var i = 0; i < model.nodes.length; i++) {
+      var n = model.nodes[i]
+      if (n && n.note && !n.noteDone) ids.push(n.id)
+    }
+    if (ids.length === 0) return
+    var sig = ids.join(',')
+    if (autoFilledRef.current === sig) return
+    autoFilledRef.current = sig
+    var cur = String(liveDraft == null ? '' : liveDraft)
+    var add = []
+    for (var j = 0; j < ids.length; j++) {
+      if (cur.indexOf('@' + ids[j]) < 0) add.push('@' + ids[j])
+    }
+    if (add.length === 0) return
+    inputActions.setDraft(cur.trim() ? cur.replace(/\s+$/, '') + ' ' + add.join(' ') : add.join(' '))
+  }, [model, liveDraft])
+
   // 卸载与清理：组件卸载时取消待执行的高亮定时器
   React.useEffect(function () {
     return function () {
@@ -591,6 +650,12 @@ function ArchStudio(props) {
   }, [])
 
   React.useEffect(function () {
+    // **只在画布页挂滚轮缩放。** 这条 `if` 修的是一桩真 bug（用户报了两遍）：
+    // 三个 tab 的根元素都是同一个 `div`，React 复用 DOM 节点，于是画布页挂上去的监听器
+    // 切到源码页之后**还挂在那个节点上**（它现在的类名已经变成 .ac-textwrap 了），
+    // 每次滚轮都无条件 preventDefault() —— 源码页的滚动被整条掐掉，
+    // 表现就是「进了源码页，滚轮怎么滚都不动」。找了两轮 CSS 都没找到，因为它根本不在 CSS 里。
+    if (tab !== 'canvas') return
     var el = hostRef.current
     if (!el) return
     function onWheel(e) {
@@ -606,7 +671,7 @@ function ArchStudio(props) {
     }
     el.addEventListener('wheel', onWheel, { passive: false })
     return function () { el.removeEventListener('wheel', onWheel) }
-  }, [])
+  }, [tab])
 
   function toModelPt(e) {
     var el = hostRef.current
@@ -989,17 +1054,8 @@ function ArchStudio(props) {
       : (reopened
         ? '留言已改动，自动重新打开（会随每一步进入 AI 的上下文）'
         : (done ? '留言已保存（已解决，不再注入给 AI）' : '留言已保存，会随每一步进入 AI 的上下文')))
-    // 写完留言就**自动**把它作为一个上下文块放进输入框：只追加 `@id`、不加任何文字，
-    // 所以打字区一个字符都不占（占用的是 chip，不是文字）。已经有过同一个 `@id` 就不重复加。
-    // 分隔符用**空格**不是换行：这些 `@id` 在草稿里是行内文本节点，
-    // 各占一行就得占掉好几行高度（用户报的「多个留言引用会自己换行」）。
-    if (text !== '' && inputActions && typeof inputActions.setDraft === 'function' &&
-        String(liveDraft || '').indexOf('@' + s.id) < 0) {
-      var addChip = '@' + s.id
-      inputActions.setDraft(String(liveDraft || '').trim()
-        ? String(liveDraft).replace(/\s+$/, '') + ' ' + addChip
-        : addChip)
-    }
+    // 「自动进输入框」不在这里做：那条 effect 盯着**待办集合**，写完留言它会自己补上。
+    // 两处都写就会互相打架（一个用签名去重、一个用 `@id` 去重，删了又被另一个加回来）。
   }
 
   /**
@@ -1458,30 +1514,74 @@ function ArchStudio(props) {
         portSlots[sArr[si2].ei + ':' + sArr[si2].end] = { n: sArr.length, i: si2 }
       }
     }
+    // 连线分三趟画，因为「平行间隔」和「交叉处弯折」都是**线与线之间**的关系，
+    // 一条线画的时候还不知道后面那条会落在哪：
+    //   第一趟 布线：逐条算出尖角折线，并把它占掉的车道记进 usedLanes —— 后来的线自己让开；
+    //   第二趟 找交叉：两两求正交交点，**后画的线**在交点上拱一下（用户要的「十字交叉弯折一下」）；
+    //   第三趟 出 d：把拱桥交给 edgeCleanPath 一起画。
+    var usedLanes = []
     var pairSeen = {}
+    var routed = []
     for (var ei = 0; ei < model.edges.length; ei++) {
-      var ed = model.edges[ei]
+      var red = model.edges[ei]
       // 两端落在同一个折叠组里 → 那是组内的内部关系，收起来就该一起收掉。
       // 留一条穿进块里的线会把「有东西被藏起来了」变成误导。
-      if (foldMap[ed.from] && foldMap[ed.from] === foldMap[ed.to]) continue
-      var ek = ed.from < ed.to ? ed.from + '|' + ed.to : ed.to + '|' + ed.from
-      var en = pairCount[ek] || 1
-      var eidx = pairSeen[ek] || 0
-      pairSeen[ek] = eidx + 1
-      var geo = edgeGeometry(visGeom(ed.from), visGeom(ed.to), visList,
-        en > 1 ? (eidx - (en - 1) / 2) * 10 : 0,
-        { a: portSlots[ei + ':0'], b: portSlots[ei + ':1'] })
-      if (!geo) continue
-      var dashed = ed.arrow === '-.->'
-      var isEdgeSel = sel && sel.kind === 'edge' && sel.from === ed.from && sel.to === ed.to
+      if (foldMap[red.from] && foldMap[red.from] === foldMap[red.to]) continue
+      var rek = red.from < red.to ? red.from + '|' + red.to : red.to + '|' + red.from
+      var ren = pairCount[rek] || 1
+      var reidx = pairSeen[rek] || 0
+      pairSeen[rek] = reidx + 1
+      var rgeo = edgeGeometry(visGeom(red.from), visGeom(red.to), visList,
+        ren > 1 ? (reidx - (ren - 1) / 2) * 10 : 0,
+        { a: portSlots[ei + ':0'], b: portSlots[ei + ':1'] }, usedLanes)
+      if (!rgeo) continue
+      var rlanes = rgeo.lanes || []
+      for (var rl = 0; rl < rlanes.length; rl++) usedLanes.push(rlanes[rl])
+      routed.push({ ei: ei, ed: red, geo: rgeo, hops: [] })
+    }
+    // 交叉检测：一根横线 × 一根竖线，交点必须落在**两段各自的内部**（端点贴边不算交叉）。
+    // 后来的线拱过去，先画的直走 —— 规则固定，所以同一张图每次画出来都一样。
+    for (var ca = 0; ca < routed.length; ca++) {
+      var pa = routed[ca].geo.pts
+      for (var cb = ca + 1; cb < routed.length; cb++) {
+        var pb = routed[cb].geo.pts
+        for (var sa = 0; sa + 1 < pa.length; sa++) {
+          var a1 = pa[sa], a2 = pa[sa + 1]
+          var aVert = Math.abs(a1.x - a2.x) < 0.5
+          if (Math.abs(a1.x - a2.x) > 0.5 && Math.abs(a1.y - a2.y) > 0.5) continue
+          for (var sb = 0; sb + 1 < pb.length; sb++) {
+            var b1 = pb[sb], b2 = pb[sb + 1]
+            var bVert = Math.abs(b1.x - b2.x) < 0.5
+            if (aVert === bVert) continue
+            if (Math.abs(b1.x - b2.x) > 0.5 && Math.abs(b1.y - b2.y) > 0.5) continue
+            var hor = aVert ? { p: b1, q: b2 } : { p: a1, q: a2 }
+            var ver = aVert ? { p: a1, q: a2 } : { p: b1, q: b2 }
+            var hx1 = Math.min(hor.p.x, hor.q.x), hx2 = Math.max(hor.p.x, hor.q.x)
+            var hy1 = Math.min(ver.p.y, ver.q.y), hy2 = Math.max(ver.p.y, ver.q.y)
+            var hy = hor.p.y, vx = ver.p.x
+            if (vx > hx1 + 3 && vx < hx2 - 3 && hy > hy1 + 3 && hy < hy2 - 3) {
+              routed[cb].hops.push({ x: vx, y: hy })
+            }
+          }
+        }
+      }
+    }
+    for (var ri = 0; ri < routed.length; ri++) {
+      var rt = routed[ri]
+      var red2 = rt.ed
+      var rpath = rt.hops.length
+        ? edgeCleanPath(rt.geo.pts, rt.hops)
+        : { d: rt.geo.d, pts: rt.geo.pts }
+      var dashed = red2.arrow === '-.->'
+      var isEdgeSel = sel && sel.kind === 'edge' && sel.from === red2.from && sel.to === red2.to
       var cls = 'ac-edge' + (dashed ? ' dashed' : '') + (isEdgeSel ? ' sel' : '')
-      var mk = arrowMarkerRef(ed.arrow)
-      inner.push(React.createElement('g', { key: 'e' + ed.from + '-' + ed.to + '-' + ei },
-        React.createElement('path', { className: 'ac-edge-hit', d: geo.d, onPointerDown: (function (efrom, eto) { return function (ev) { onEdgeDown(ev, efrom, eto) } })(ed.from, ed.to) }),
-        React.createElement('path', { className: cls, d: geo.d, markerEnd: mk || undefined }),
-        ed.label ? React.createElement('g', { key: 'el' },
-          React.createElement('rect', { className: 'ac-elbl-bg', x: geo.mid.x - Math.max(12, visualLen(ed.label) * 3.3), y: geo.mid.y - 9, width: Math.max(24, visualLen(ed.label) * 6.6), height: 17, rx: 5 }),
-          React.createElement('text', { className: 'ac-elbl', x: geo.mid.x, y: geo.mid.y }, ed.label),
+      var mk = arrowMarkerRef(red2.arrow)
+      inner.push(React.createElement('g', { key: 'e' + red2.from + '-' + red2.to + '-' + rt.ei },
+        React.createElement('path', { className: 'ac-edge-hit', d: rpath.d, onPointerDown: (function (efrom, eto) { return function (ev) { onEdgeDown(ev, efrom, eto) } })(red2.from, red2.to) }),
+        React.createElement('path', { className: cls, d: rpath.d, markerEnd: mk || undefined }),
+        red2.label ? React.createElement('g', { key: 'el' },
+          React.createElement('rect', { className: 'ac-elbl-bg', x: rt.geo.mid.x - Math.max(12, visualLen(red2.label) * 3.3), y: rt.geo.mid.y - 9, width: Math.max(24, visualLen(red2.label) * 6.6), height: 17, rx: 5 }),
+          React.createElement('text', { className: 'ac-elbl', x: rt.geo.mid.x, y: rt.geo.mid.y }, red2.label),
         ) : null,
       ))
     }
@@ -1686,7 +1786,7 @@ function ArchStudio(props) {
     return React.createElement('div', { key: 'L' + li }, kids.length ? kids : '\u00a0')
   })
 
-  var textPane = React.createElement('div', { className: 'ac-textwrap' },
+  var textPane = React.createElement('div', { className: 'ac-textwrap', ref: textWrapRef },
     React.createElement('div', { className: 'ac-hint' }, '这段 Mermaid 就是 AI 看到的全部内容。可以直接改，然后点「应用回画布」。%% @pos 行是坐标注释，删掉只会让节点重新自动布局。'),
     renderError ? React.createElement('div', { className: 'ac-err' }, '源码解析报错：\n' + renderError) : null,
     warnBox,

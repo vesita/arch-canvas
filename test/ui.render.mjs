@@ -1480,76 +1480,15 @@ console.log('\n[4j] 连线布线：正交折线 + 避让中间的方块')
   respond = prevRespondRoute
 }
 
-console.log('\n[4k] 发送区上方的留言横条：追加草稿，不顶掉用户打的字')
+console.log('\n[4k] 用户要求移除「放入输入框」的横条：不再占用 conversation.input.dock')
 {
-  const Dock = captured['conversation.input.dock']
-  ok('注册到了 conversation.input.dock 槽位', typeof Dock === 'function')
-  if (typeof Dock === 'function') {
-    // 横条读的是模块级 studioLiveNodes 快照，所以要先把面板渲染一次把快照喂上。
-    const DOCK_MODEL = {
-      nodes: [
-        { id: 'd1', label: '节点甲', shape: 'rect', group: null, x: 0, y: 0, note: '这里为什么不用队列？', noteDone: false },
-        { id: 'd2', label: '节点乙', shape: 'rect', group: null, x: 200, y: 0, note: '已确认', noteDone: true },
-        { id: 'd3', label: '节点丙', shape: 'rect', group: null, x: 400, y: 0, note: '这里需要限流', noteDone: false },
-      ],
-      edges: [], groups: [], direction: 'TD', extras: [],
-    }
-    const prevRespondDock = respond
-    const dockModel = JSON.parse(JSON.stringify(DOCK_MODEL))
-    respond = function (method, args) {
-      if (method === 'doc:get') {
-        return fullDoc({ model: dockModel, nodeCount: dockModel.nodes.length })
-      }
-      return prevRespondDock(method, args)
-    }
-    const seedHost = document.createElement('div')
-    document.body.appendChild(seedHost)
-    const seedRoot = createRoot(seedHost)
-    await act(async () => {
-      seedRoot.render(React.createElement(captured['sidebar.right.pane.tab'], {
-        cwd: UI, sessionId: 's1', useSessions: () => UI,
-      }))
-    })
-    await flush()
-
-    const drafted = []
-    const dockActions = { setDraft: (t) => drafted.push(t), submit: () => {} }
-    const USER_DRAFT = '我本来打了一半的话'
-    const dockHost = document.createElement('div')
-    document.body.appendChild(dockHost)
-    const dockRoot = createRoot(dockHost)
-    await act(async () => {
-      dockRoot.render(React.createElement(Dock, {
-        inputActions: dockActions,
-        useInput: (sel) => sel({ draft: USER_DRAFT }),
-      }))
-    })
-    await flush()
-
-    const dockText = dockHost.textContent || ''
-    ok('横条只在有未办留言时出现，并报出条数', dockText.indexOf('留言 2 条待发') >= 0, dockText)
-    ok('草稿非空时会说明是追加', dockText.indexOf('追加') >= 0, dockText)
-    const dockBtn = dockHost.querySelector('button')
-    ok('横条上有一个「放入输入框」按钮', !!dockBtn, dockText)
-    if (dockBtn) {
-      await act(async () => { dockBtn.click() })
-    }
-    eq('点一下确实调用了 setDraft', drafted.length, 1)
-    const sentDraft = drafted[0] || ''
-    // 这条是核心：**追加**而不是替换。换成替换式的 setDraft，用户打的字就没了。
-    ok('用户原本打的字没有被顶掉（追加而非替换）', sentDraft.indexOf(USER_DRAFT) === 0, sentDraft)
-    ok('两条未办留言都以 @节点id 的形式进了草稿', sentDraft.indexOf('@d1') >= 0 && sentDraft.indexOf('@d3') >= 0, sentDraft)
-    ok('已办的那条不进草稿', sentDraft.indexOf('@d2') < 0, sentDraft)
-    // 「多个留言引用会自己换行」：这几条引用必须是**同一行**里的行内文本，
-    // 而不是一行一个。批量放进输入框是这个功能的默认路径，一排竖着的引用块很难看。
-    eq('两条引用挤在同一行（引用之间不换行）',
-      sentDraft.split('\n').filter((ln) => ln.indexOf('@') >= 0).length, 1)
-
-    await act(async () => { dockRoot.unmount(); seedRoot.unmount() })
-    respond = prevRespondDock
-  }
+  // 用户原话：「这个放入输入框的功能有 bug，所有留言自动链接进入输入框吧，这个放入对话框的
+  // UI 直接移除吧」。所以这里**反向锁住**：那个横条不能悄悄回来 —— 它既提供一个不再需要的
+  // 按钮，又要在发送区上方常年占一行。自动补引用的 effect 在 studio.ts 里（见 [4n]）。
+  ok('不再注册 conversation.input.dock 槽位', captured['conversation.input.dock'] === undefined,
+    Object.keys(captured))
+  ok('横条的样式也一并去掉', insertedCss.indexOf('.ac-pending') < 0)
 }
-
 console.log('\n[4l] 写完留言自动把上下文块放进输入框（无需点按钮）')
 {
   const AUTO_MODEL = {
@@ -1686,64 +1625,80 @@ console.log('\n[4m] 端口的硬约束：绝不许越过方块边界（悬空连
   respond = prevRespondShort
 }
 
-console.log('\n[4n] 留言横条的查重：已经在草稿里的不再重复加')
+console.log('\n[4n] 未办留言自动进输入框：一次补全、不重复、删了不追着加、已解决的不进')
 {
-  const DUP_MODEL = {
+  // 这批断言盯的是 studio.ts 里那条「待办集合变了就自动补引用」的 effect。
+  // 用户要的是：不再有按钮，未办留言**自己**就是输入框里的上下文块。
+  const AUTO_NOTE_MODEL = {
     nodes: [
-      { id: 'x1', label: '甲', shape: 'rect', group: null, x: 0, y: 0, note: '第一条', noteDone: false },
-      { id: 'x2', label: '乙', shape: 'rect', group: null, x: 200, y: 0, note: '第二条', noteDone: false },
+      { id: 'x1', label: '甲', shape: 'rect', group: null, x: 0, y: 0, note: '未办一', noteDone: false },
+      { id: 'x2', label: '乙', shape: 'rect', group: null, x: 160, y: 0, note: '已办的', noteDone: true },
+      { id: 'x3', label: '丙', shape: 'rect', group: null, x: 320, y: 0, note: '未办二', noteDone: false },
     ],
     edges: [], groups: [], direction: 'TD', extras: [],
   }
-  const prevRespondDup = respond
-  const dupModel = JSON.parse(JSON.stringify(DUP_MODEL))
+  const prevRespondAutoNote = respond
+  const autoNoteModel = JSON.parse(JSON.stringify(AUTO_NOTE_MODEL))
   respond = function (method, args) {
-    if (method === 'doc:get') return fullDoc({ model: dupModel, nodeCount: dupModel.nodes.length })
-    return prevRespondDup(method, args)
+    if (method === 'doc:get') return fullDoc({ model: autoNoteModel, nodeCount: autoNoteModel.nodes.length })
+    return prevRespondAutoNote(method, args)
   }
-  // 横条读的是 studioLiveNodes 快照，先渲染一次面板喂上
-  const seedHost2 = document.createElement('div')
-  document.body.appendChild(seedHost2)
-  const seedRoot2 = createRoot(seedHost2)
-  await act(async () => {
-    seedRoot2.render(React.createElement(captured['sidebar.right.pane.tab'], {
-      cwd: UI, sessionId: 's1', useSessions: () => UI,
-    }))
-  })
-  await flush()
 
-  const DockC = captured['conversation.input.dock']
-  const renderDock = async (draftText) => {
-    const h = document.createElement('div')
-    document.body.appendChild(h)
-    const r = createRoot(h)
+  const USER_TYPED = '我本来打了一半的话'
+  const mount = async (draftSeed) => {
     const calls = []
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
     await act(async () => {
-      r.render(React.createElement(DockC, {
-        inputActions: { setDraft: (t) => calls.push(t) },
-        useInput: (sel) => sel({ draft: draftText }),
+      root.render(React.createElement(captured['sidebar.right.pane.tab'], {
+        cwd: UI, sessionId: 's1', useSessions: () => UI,
+        inputActions: { setDraft: (t) => { calls.push(t) } },
+        useInput: (sel) => sel({ draft: draftSeed }),
       }))
     })
     await flush()
-    return { h, r, calls }
+    return { host, root, calls }
   }
 
-  // (a) 两条都已在草稿里 → 整条横条消失（不再占着输入框上方那一行）
-  const dupA = await renderDock('@x1 @x2')
-  ok('全都在草稿里时整条横条消失',
-    (dupA.h.textContent || '').trim() === '' && !dupA.h.querySelector('button'), dupA.h.textContent)
+  // a. 挂载即自动补：两条未办一次性补进去，已解决的不进
+  const first = await mount(USER_TYPED)
+  eq('挂载就把未办留言补进草稿（一次调用）', first.calls.length, 1)
+  const filled = first.calls[0] || ''
+  ok('用户原本打的字原样留在最前面', filled.indexOf(USER_TYPED) === 0, filled)
+  ok('两条未办都补进来了', filled.indexOf('@x1') >= 0 && filled.indexOf('@x3') >= 0, filled)
+  ok('已解决的那条不进草稿', filled.indexOf('@x2') < 0, filled)
+  eq('引用之间是空格，不换行（同一行里排开）',
+    filled.split('\n').filter((ln) => ln.indexOf('@') >= 0).length, 1)
+  await act(async () => { first.root.unmount() })
+  first.host.remove()
 
-  // (b) 部分去重：只有 x1 在草稿里 → 只补 x2，且不再重复加 x1
-  const dupB = await renderDock('@x1')
-  const dupBBtn = dupB.h.querySelector('button')
-  ok('只差一条时按钮可用', !!dupBBtn && dupBBtn.disabled === false, dupBBtn && dupBBtn.disabled)
-  if (dupBBtn) await act(async () => { dupBBtn.click() })
-  eq('只补了还没进来的那一条', dupB.calls[0], '@x1\n@x2')
+  // b. 负向对照：草稿里**已经**有这两条时，一个字符都不动 —— 否则每次重挂都会追加一遍
+  const already = await mount(USER_TYPED + ' @x1 @x3')
+  eq('全都在草稿里时不再调用 setDraft', already.calls.length, 0)
+  await act(async () => { already.root.unmount() })
+  already.host.remove()
 
-  await act(async () => { dupA.r.unmount(); dupB.r.unmount(); seedRoot2.unmount() })
-  respond = prevRespondDup
+  // c. 负向对照：用户手动删掉一个引用后，同一批待办**不会**被追着加回来。
+  //    否则「删掉」这个动作在界面上等于没发生 —— 那不是自动，那是按键精灵。
+  //    做法：先让 effect 按「x1 单独一条」这一批跑过一次，再让这一批的两条都出现。
+  const SIG_MODEL = JSON.parse(JSON.stringify(AUTO_NOTE_MODEL))
+  SIG_MODEL.nodes[2].note = ''      // 先把 x3 的留言摘掉 → 这一批只有 x1
+  autoNoteModel.nodes = SIG_MODEL.nodes
+  const partial = await mount('我打的字')
+  eq('第一批（只有 x1）补了一次', partial.calls.length, 1)
+  await act(async () => { partial.root.unmount() })
+  partial.host.remove()
+  // 再把 x3 的留言放回来，但草稿里已经被用户删得只剩 x1
+  autoNoteModel.nodes[2].note = '未办二'
+  const afterDelete = await mount('我打的字 @x1')
+  eq('换了一批之后只补缺的那一条（@x3）', afterDelete.calls.length, 1)
+  eq('补的是缺的那一条，不重复 @x1', afterDelete.calls[0], '我打的字 @x1 @x3')
+  await act(async () => { afterDelete.root.unmount() })
+  afterDelete.host.remove()
+
+  respond = prevRespondAutoNote
 }
-
 console.log('\n[4o] Esc 两段式：第一下只拿焦点，第二下才关编辑页')
 {
   const ESC_MODEL = {
@@ -1803,6 +1758,210 @@ console.log('\n[4o] Esc 两段式：第一下只拿焦点，第二下才关编�
   await act(async () => { eRoot.unmount() })
   respond = prevRespondEsc
 }
+
+console.log('\n[4p] 连线之间的两件事：平行间隔（不叠在一起）+ 十字交叉处拱一下')
+{
+  // 用户报的：「平行间隔算法没有做…十字交叉时应该有一条线弯折一下」。
+  // 实测他的画布：48 处平行重叠，线距 0.0px（两条线画在同一条线上，最长重叠 129px）；
+  // 另有 5 处十字交叉是硬生生穿过去的。
+  const renderEdges = async (MODEL) => {
+    const prevR = respond
+    const m = JSON.parse(JSON.stringify(MODEL))
+    respond = function (method, args) {
+      if (method === 'doc:get') return fullDoc({ model: m, nodeCount: m.nodes.length, edgeCount: m.edges.length })
+      return prevR(method, args)
+    }
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    await act(async () => {
+      root.render(React.createElement(captured['sidebar.right.pane.tab'], {
+        cwd: UI, sessionId: 's1', useSessions: () => UI,
+      }))
+    })
+    await flush()
+    const out = Array.from(host.querySelectorAll('path.ac-edge')).map((p) => p.getAttribute('d'))
+    await act(async () => { root.unmount() })
+    host.remove()
+    respond = prevR
+    return out
+  }
+  // 从 d 里取路径经过的点（M / L 的终点、Q 的终点、A 的终点）
+  const ptsOf = (d) => {
+    const out = []
+    const re = /([MLQA])((?: -?[\d.]+)+)/g
+    let m
+    while ((m = re.exec(d)) !== null) {
+      const ns = (m[2].match(/-?[\d.]+/g) || []).map(Number)
+      if (m[1] === 'Q') out.push({ x: ns[2], y: ns[3] })
+      else if (m[1] === 'A') out.push({ x: ns[5], y: ns[6] })
+      else out.push({ x: ns[0], y: ns[1] })
+    }
+    return out
+  }
+  // 车道 = 整条路径里**最长的那条水平线段**的 y（拐角抹圆不会改它的 y）
+  const laneY = (d) => {
+    const p = ptsOf(d)
+    let best = null, len = -1
+    for (let i = 0; i + 1 < p.length; i++) {
+      if (Math.abs(p[i].y - p[i + 1].y) > 0.5) continue
+      const L = Math.abs(p[i + 1].x - p[i].x)
+      if (L > len) { len = L; best = p[i].y }
+    }
+    return best
+  }
+
+  // —— 甲：平行间隔 ——
+  // 两条都是「往右下」的竖线，中位线**算出来是同一个 y**（下面两条负向对照会证明这点），
+  // 横向跨度 [0,200] 与 [100,300] 相交。没有间隔算法时它们会画成同一条线。
+  const PARALLEL_MODEL = {
+    nodes: [
+      { id: 'pa', label: '甲', shape: 'rect', group: null, x: 0, y: 0 },
+      { id: 'pb', label: '乙', shape: 'rect', group: null, x: 200, y: 400 },
+      { id: 'pc', label: '丙', shape: 'rect', group: null, x: 300, y: 0 },
+      { id: 'pd', label: '丁', shape: 'rect', group: null, x: 100, y: 400 },
+    ],
+    edges: [
+      { id: 'pe1', from: 'pa', to: 'pb', label: '', arrow: '-->' },
+      { id: 'pe2', from: 'pc', to: 'pd', label: '', arrow: '-->' },
+    ],
+    groups: [], direction: 'TD', extras: [],
+  }
+  const pds = await renderEdges(PARALLEL_MODEL)
+  eq('两条平行线都画出来了', pds.length, 2)
+  const lane1 = laneY(pds[0]), lane2 = laneY(pds[1])
+  const mid0Of = (d) => {
+    const p = ptsOf(d)
+    return (p[0].y + p[p.length - 1].y) / 2
+  }
+  // 负向对照：两条线的**中位线**本来就是同一个 —— 说明「相隔 ≥10px」不是算出来的巧合，
+  // 而是间隔算法真的把它们推开了。
+  ok('负向对照：两条线本来会落在同一条中位线上（|Δ| < 1）',
+    Math.abs(mid0Of(pds[0]) - mid0Of(pds[1])) < 1,
+    { a: mid0Of(pds[0]), b: mid0Of(pds[1]) })
+  ok('平行间隔成立：两条线的车道相距 ≥ 10px', Math.abs(lane1 - lane2) >= 10, { lane1, lane2 })
+  ok('两条车道都还在（不是把一条挪没了）', lane1 !== null && lane2 !== null, { lane1, lane2 })
+
+  // —— 乙：十字交叉 ——
+  // 一条竖线（x=0，y 22.5→277.5）与一条横线（y=150，x -248→248）在 (0,150) 正交相交。
+  const CROSS_MODEL = {
+    nodes: [
+      { id: 'xa', label: '甲', shape: 'rect', group: null, x: 0, y: 0 },
+      { id: 'xb', label: '乙', shape: 'rect', group: null, x: 0, y: 300 },
+      { id: 'xc', label: '丙', shape: 'rect', group: null, x: -300, y: 150 },
+      { id: 'xd', label: '丁', shape: 'rect', group: null, x: 300, y: 150 },
+    ],
+    edges: [
+      { id: 'xe1', from: 'xa', to: 'xb', label: '', arrow: '-->' },
+      { id: 'xe2', from: 'xc', to: 'xd', label: '', arrow: '-->' },
+    ],
+    groups: [], direction: 'TD', extras: [],
+  }
+  const xds = await renderEdges(CROSS_MODEL)
+  eq('交叉用例的两条线都画出来了', xds.length, 2)
+  const vp = ptsOf(xds[0]), hplane = ptsOf(xds[1])
+  // 负向对照：这两条线**真的**相交（竖线经过 y=150，横线经过 x=0），不是我们凭空拱了一下
+  ok('负向对照：竖线确实经过 y=150', vp[0].x === vp[vp.length - 1].x && vp[0].y < 150 && vp[vp.length - 1].y > 150, vp)
+  ok('负向对照：横线确实经过 x=0', hplane[0].y === hplane[hplane.length - 1].y && hplane[0].x < 0 && hplane[hplane.length - 1].x > 0, hplane)
+  ok('先画的那条直着走（没有拱）', xds[0].indexOf('A ') < 0, xds[0])
+  ok('后画的那条在交叉处拱了一下（路径里有圆弧）', xds[1].indexOf('A 5 5 0 0 1') >= 0, xds[1])
+  // 拱的位置必须正好在交点上：从 (0-5,150) 拱到 (0+5,150)，sweep=1 表示鼓在前进方向的左侧（上面）
+  const arcM = /A 5 5 0 0 1 (-?[\d.]+) (-?[\d.]+)/.exec(xds[1])
+  ok('拱的落点就是交点 (5,150)', !!arcM && Math.abs(Number(arcM[1]) - 5) < 0.01 && Math.abs(Number(arcM[2]) - 150) < 0.01, arcM && arcM[0])
+  const hp = ptsOf(xds[1])
+  ok('拱的起点是 (0-5,150)：整段拱正好骑在交点两侧',
+    hp.some((p) => Math.abs(p.x - (-5)) < 0.01 && Math.abs(p.y - 150) < 0.01), hp)
+}
+
+console.log('\n[4q] 源码页的滚动：flex-basis 为 0 + 一道原生 wheel 兜底')
+{
+  const cssRule = (sel) => {
+    const i = insertedCss.indexOf(sel + '{')
+    return i < 0 ? '' : insertedCss.slice(i + sel.length + 1, insertedCss.indexOf('}', i))
+  }
+  // flex-basis 必须是 0：用 auto 时基准尺寸取内容高度，外层高度链一旦不定，这个盒子就跟着
+  // 内容一起长高、永远「没有溢出」，滚轮怎么滚都没反应（用户报了两遍的就是这个）。
+  const wrap = cssRule('.ac-textwrap')
+  ok('.ac-textwrap 的 flex 是 1 1 0（不是 1 1 auto）', wrap.indexOf('flex:1 1 0') >= 0, wrap)
+  ok('.ac-textwrap 仍然是 overflow:auto（唯一滚动口）', wrap.indexOf('overflow:auto') >= 0, wrap)
+
+  const HL_MERMAID2 = ['%%! 说明行', 'flowchart TD', ...Array.from({ length: 80 }, (_, i) => '  n' + i + '["第 ' + i + ' 个"]')].join('\n')
+  const prevR2 = respond
+  respond = function (method, args) {
+    if (method === 'doc:get') {
+      return fullDoc({ model: { nodes: [], edges: [], groups: [], direction: 'TD', extras: [] }, mermaid: HL_MERMAID2 })
+    }
+    return prevR2(method, args)
+  }
+  const wHost = document.createElement('div')
+  document.body.appendChild(wHost)
+  const wRoot = createRoot(wHost)
+  await act(async () => {
+    wRoot.render(React.createElement(captured['sidebar.right.pane.tab'], {
+      cwd: UI, sessionId: 's1', useSessions: () => UI,
+    }))
+  })
+  await flush()
+  await act(async () => {
+    Array.from(wHost.querySelectorAll('.ac-tabs button')).find((b) => b.textContent.trim() === '源码').click()
+  })
+  await flush()
+
+  const tw = wHost.querySelector('.ac-textwrap')
+  ok('源码页的滚动口就是 .ac-textwrap', !!tw)
+  // jsdom 不做排版，scrollHeight/clientHeight 都是 0；把这两个量打桩成「内容 1000、可视 100」，
+  // 才能真的观察 scrollTop 有没有被那道原生 wheel 推动。
+  if (tw) {
+    // jsdom 不做排版：scrollHeight/clientHeight 都是 0，scrollTop 也不会像真浏览器那样
+    // 按「内容高 - 可视高」夹住。所以这里把这三样打桩成一个能滚、上限 900 的元素 ——
+    // 「贴底时值不再变化」正是真浏览器会有的行为，兜底逻辑判的就是这个。
+    let st = 0
+    Object.defineProperty(tw, 'scrollHeight', { value: 1000, configurable: true })
+    Object.defineProperty(tw, 'clientHeight', { value: 100, configurable: true })
+    Object.defineProperty(tw, 'scrollTop', {
+      configurable: true,
+      get: () => st,
+      set: (v) => { st = Math.max(0, Math.min(900, v)) },
+    })
+    let ev = new dom.window.WheelEvent('wheel', { deltaY: 60, bubbles: true, cancelable: true })
+    await act(async () => { tw.dispatchEvent(ev) })
+    eq('滚轮往下 → scrollTop 前进 60（原生兜底真的在推它）', tw.scrollTop, 60)
+    ok('这次滚动把浏览器自己的滚动拦掉了（否则会滚两倍）', ev.defaultPrevented)
+    // 负向对照：已经贴底时不再拦事件 —— 否则一个到底的滚轮会把事件吞掉，页面看起来"卡住"
+    st = 900
+    let ev2 = new dom.window.WheelEvent('wheel', { deltaY: 60, bubbles: true, cancelable: true })
+    await act(async () => { tw.dispatchEvent(ev2) })
+    eq('贴底时 scrollTop 停在底（900）', tw.scrollTop, 900)
+    // 这条不只是"顺手加个负向对照"——它锁的是一桩真 bug 的回归：
+    // 画布页的滚轮缩放监听器从前 deps 是 []、挂在 hostRef 上，而三个 tab 的根元素是同一个
+    // div（React 复用 DOM 节点），于是切到源码页后它**还挂在那个节点上**（类名已改成
+    // .ac-textwrap），每次都无条件 preventDefault() —— 源码页的滚动被整条掐掉。
+    // 「贴底时不该被拦」正好是这个泄漏的探针：泄漏还在时，这一下必然被拦。
+    ok('负向对照：贴底这一下没有 preventDefault（画布那条滚轮缩放监听器没有泄漏到源码页）',
+      !ev2.defaultPrevented)
+    // 正面控制：切回画布页，滚轮仍然是**缩放**（别为了修上面那条把画布的功能一起关掉）
+    await act(async () => {
+      Array.from(wHost.querySelectorAll('.ac-tabs button')).find((b) => b.textContent.trim() === '画布').click()
+    })
+    await flush()
+    const worldEl = wHost.querySelector('.ac-world')
+    ok('切回画布页后有 .ac-world', !!worldEl)
+    if (worldEl) {
+      const scaleOf = (t) => Number((/scale\((-?[\d.]+)/.exec(t || '') || [])[1])
+      const before = scaleOf(worldEl.getAttribute('transform'))
+      const stageEl = wHost.querySelector('.ac-stage')
+      let evz = new dom.window.WheelEvent('wheel', { deltaY: -100, clientX: 50, clientY: 40, bubbles: true, cancelable: true })
+      await act(async () => { stageEl.dispatchEvent(evz) })
+      const after = scaleOf(worldEl.getAttribute('transform'))
+      ok('画布页滚轮仍然是缩放（scale 变大）', after > before, { before, after })
+      ok('画布页的滚轮确实被拦（缩放而不是滚动页面）', evz.defaultPrevented)
+    }
+  }
+  await act(async () => { wRoot.unmount() })
+  wHost.remove()
+  respond = prevR2
+}
+
 
 console.log('\n[7] 卸载不留尾')
 await act(async () => { root.unmount(); footRoot.unmount() })

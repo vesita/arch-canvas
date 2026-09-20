@@ -157,69 +157,10 @@ function registerArchInputTrigger(ctx, disposers) {
 // 这里不再直接 `return { inject, apply }`：本文件现在是**从磁盘热加载**的普通脚本
 // （由 host 从 <项目>/dist/ui.js 递给浏览器），Package 里留的是 src/bootstrap/client.js
 // 那个薄引导层。所以界面代码的全部生命周期都收敛在这个返回值上。
-// ==================== 发送区上方的「留言待发」横条 ====================
-// 用户要的是：留言出现在发送区、能一键发，但**不占用输入框**（不能顶掉正在打的字）。
-// 走 conversation.input.dock —— 契约原文 "Full-width entries above the composer card"
-// （dsh-client-ui-conversation/.../slots.d.ts:207），位置就是为这件事留的。
 //
-// 为什么是「放入输入框」而不是「直接发送」：留言以 `@节点id` 的形式进草稿后，会被
-// registerArchInputTrigger 的 lexicon 装饰成**上下文块**（上下文块 = 可见、可编辑、
-// 发送时才由 codec.serialize 展开）。直接 submit 等于替用户把话发出去，不给反悔余地。
-function PendingNotesDock(props) {
-  var inputActions = props && props.inputActions
-  var useInput = props && props.useInput
-  var seed = React.useState(0)
-  var bump = seed[1]
-  // studioLiveNodes 是普通模块级快照（不是响应式的），所以靠一个低频心跳重算清单。
-  // 1 秒只是扫一遍几十个节点的 note 字段；而且界面里的定时器必须走 ctxInterval ——
-  // 动态形态下裸 setInterval 会被沙箱 trap 掉（见 AGENTS.md）。
-  React.useEffect(function () {
-    var stop = ctxInterval(function () { bump(function (n) { return n + 1 }) }, 1000)
-    return typeof stop === 'function' ? stop : undefined
-  }, [])
-  // 草稿必须读出来：setDraft 是**整段替换**，不知道现有内容就会把用户打的字顶掉。
-  var draft = ''
-  if (typeof useInput === 'function') {
-    var d = useInput(function (s) { return (s && typeof s.draft === 'string') ? s.draft : '' })
-    if (typeof d === 'string') draft = d
-  }
-  var pending = []
-  var nodes = Array.isArray(studioLiveNodes) ? studioLiveNodes : []
-  for (var i = 0; i < nodes.length; i++) {
-    if (nodes[i] && nodes[i].id && nodes[i].note && !nodes[i].noteDone) pending.push(nodes[i].id)
-  }
-  if (pending.length === 0) return null
-  // 查重：已经在草稿里的不再重复加。否则点两下就会把同一批留言塞进去两遍 ——
-  // 用户报的就是这个（"加过后这个加入功能还在"）。草稿一变 useInput 就会推着我们重渲染，
-  // 所以加完这一下按钮自己就会变成"已在输入框中"。
-  var missing = []
-  for (var k = 0; k < pending.length; k++) {
-    if (String(draft || '').indexOf('@' + pending[k]) < 0) missing.push(pending[k])
-  }
-  var allIn = missing.length === 0
-  // 全部都已经在草稿里 → 整条消失。留一条"已在输入框中"的灰条只是噪音：
-  // 它不再提供任何动作，却一直占着输入框上方那一行。
-  if (allIn) return null
-  var canPut = !!(inputActions && typeof inputActions.setDraft === 'function')
-  var put = function () {
-    if (!canPut) return
-    var add = missing.map(function (id) { return '@' + id }).join(' ')
-    inputActions.setDraft(draft.trim() ? draft.replace(/\s+$/, '') + '\n' + add : add)
-  }
-  return React.createElement('div', { className: 'ac-pending' },
-    React.createElement('span', { className: 'ac-pending-n' },
-      '留言 ' + pending.length + ' 条待发' +
-      (missing.length < pending.length ? '（只补还没放进来的 ' + missing.length + ' 条）'
-        : (draft.trim() ? '（追加在你已写的后面）' : ''))),
-    React.createElement('button', {
-      className: 'ac-pending-btn', onClick: put, disabled: !canPut,
-    }, payloadLabel(missing.length)),
-  )
-}
-
-function payloadLabel(n) {
-  return n > 1 ? '放入输入框（一次说清）' : '放入输入框'
-}
+// 发送区上方那条「留言待发」横条（曾经挂在 conversation.input.dock 上）**已经移除**：
+// 用户要的是「所有未办留言自动进输入框」，那条横条既提供一个已经不需要的按钮，
+// 又要在发送区上方常年占一行。自动补引用的 effect 在 studio.ts 里（盯着待办集合）。
 
 function registerAll(ctx) {
   PLUGIN_CTX = ctx
@@ -234,11 +175,6 @@ function registerAll(ctx) {
     }))
     disposers.push(slots.inject('sidebar.right.pane.tab', function () {
       return slots.register({ name: 'sidebar.right.pane.tab', key: TAB_ID }, ArchTab)
-    }))
-    // 发送区上方的留言横条。**单独** inject 这一个 slot：conversation 插件不在时
-    // 它不会回调，但侧栏、AI 工具与提示词上下文照常可用（同 webServer 那条道理）。
-    disposers.push(slots.inject('conversation.input.dock', function () {
-      return slots.register({ name: 'conversation.input.dock', id: TAB_ID + '-pending', order: 40 }, PendingNotesDock)
     }))
   }
 

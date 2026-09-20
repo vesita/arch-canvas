@@ -93,9 +93,11 @@ var STUDIO_CSS = [
   '.ac-hl-a{color:#ff9e64}',
   '.ac-hl-p{color:#8b949e}',
   '.ac-hl-i{color:#e8eaed}',
-  // 源码页整个是一个滚动口：子项一律不压缩（flex:0 0 auto），否则列向 flex 会把它们挤扁，
-  // 内容永远超不出容器 —— 表现就是「滚轮怎么滚都没反应」。
-  '.ac-textwrap{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;padding:8px;gap:7px;overflow:auto}',
+  // 源码页整个是一个滚动口。flex-basis 用 0（`flex:1 1 0`）而不是 auto：用 auto 时基准尺寸
+  // 取的是内容高度，外层高度链一旦有哪一处不定，这个盒子就跟着内容一起长高、永远「没有溢出」。
+  // （源码页滚轮不动的**真凶**不在这里 —— 是画布页的滚轮缩放监听器泄漏到了这个节点上，
+  //  见 studio.ts 里那条 `if (tab !== 'canvas') return`。这里只是把它做成一个规矩的滚动口。）
+  '.ac-textwrap{flex:1 1 0;min-height:0;display:flex;flex-direction:column;padding:8px;gap:7px;overflow:auto}',
   '.ac-textwrap > *{flex:0 0 auto}',
   // 解析警告区：宿主一直在发 warnings，界面从前一条都不显示。折叠不成，直接列出来。
   '.ac-warn{flex:0 0 auto;max-height:32%;overflow:auto;padding:7px 9px;border:1px solid #e8a33d;border-radius:8px;background:rgba(232,163,61,.07)}',
@@ -152,11 +154,6 @@ var STUDIO_CSS = [
   '.ac-hist .ac-hist-item.on{font-weight:600;color:var(--dsw-alias-label-primary,#e8eaed)}',
   '.ac-hist .ac-hist-cur{flex:0 0 auto;font-size:11px;color:var(--dsw-alias-label-secondary,#9aa3af)}',
   '.ac-note-actions{display:flex;gap:6px;margin-top:6px}',
-  // 发送区上方的「留言待发」横条（挂 conversation.input.dock）—— 不占用输入框本身
-  '.ac-pending{display:flex;align-items:center;gap:8px;margin:0 0 6px;padding:5px 9px;border:1px solid var(--dsw-alias-border-l1,#2a2e35);border-radius:8px;background:var(--dsw-alias-bg-layer-1,#1b1e23);font-size:12px}',
-  '.ac-pending-n{color:var(--dsw-alias-text-2,#9aa3ad)}',
-  '.ac-pending-btn{margin-left:auto;padding:2px 10px;border:1px solid #4c8dff;border-radius:6px;background:transparent;color:#4c8dff;font-size:12px;cursor:pointer}',
-  '.ac-pending-btn:disabled{opacity:.45;cursor:default}',
   // 节点上的代码锚点角标与检查器中的引用校验状态
   '.ac-file-badge circle{fill:var(--dsw-alias-brand-primary,#4c8dff);stroke:var(--dsw-alias-bg-base,#14161a);stroke-width:1.5}',
   '.ac-file-badge.broken circle{fill:#e5534b}',
@@ -487,6 +484,9 @@ var EDGE_LANE = 16      // 绕行时走到障碍外侧的额外距离
 var EDGE_PORT_INSET = 8 // 端口离方块两角的边距，别让线从角上出去
 var EDGE_PORT_MIN_GAP = 12 // 同一侧两个端口的最小间距 ≈ 箭头宽度，否则箭头会叠在一起
 var EDGE_CORNER = 8     // 拐角的圆角半径：折线不是画成直角，而是「稍微转个弯」（用户要的观感）
+var EDGE_HOP = 5        // 交叉处的半圆拱桥半径：十字交叉时有一条线从上面跨过去
+var EDGE_LANE_STEP = 12 // 中位线被占时，往两侧让的步长（并行线之间要有肉眼可见的间隔）
+var EDGE_LANE_GAP = 10  // 两条平行线窄于这个距离就算「画在一起了」，必须错开
 
 /** 轴对齐线段是否真的穿过矩形。用严格不等号，所以线可以**贴着**障碍边界走。 */
 function edgeSegHitsRect(x1, y1, x2, y2, r) {
@@ -510,8 +510,9 @@ function edgePathHits(pts, obs) {
   return false
 }
 
-/** 把折点整理成一条干净的路径：去掉零长段与共线的多余拐点。 */
-function edgeCleanPath(pts) {
+/** 把折点整理成一条干净的路径：去掉零长段与共线的多余拐点。`hops` 是交叉处的拱桥（可省）。 */
+function edgeCleanPath(pts, hops?: any) {
+  var hp = (hops && hops.length) ? hops : []
   var out = []
   for (var i = 0; i < pts.length; i++) {
     var last = out[out.length - 1]
@@ -526,29 +527,98 @@ function edgeCleanPath(pts) {
     if (!col) res.push(c)
   }
   if (out.length > 1) res.push(out[out.length - 1])
-  // 拐角抹圆：折线在拐点处画一个 EDGE_CORNER 的圆角，读起来是「转个弯」而不是折成直角。
+  // 出 d 要同时照顾两件事，所以按**段**走一遍，而不是按顶点：
+  //   1) 拐角抹圆（EDGE_CORNER）：折线不是折成硬直角，而是「稍微转个弯」；
+  //   2) 交叉处的拱桥（EDGE_HOP）：和别的连线十字相交时，在交点上画一段半圆从上面跨过去。
+  //      用户的原话是「十字交叉时应该有一条线弯折一下」—— 要的就是这个，不是把直角抹圆。
   //
-  // 只抹**中间**的拐点 —— 两端的点必须原样落在方块边界上，抹了箭头就会离开边框。
-  // 半径按相邻两段各一半收敛，短段自动退化成尖角：圆角永远吃不掉一整条线段，
-  // 也就不会把两个拐点抹到交叉或反向（那会让 `d` 里的控制点跑到路径之外）。
-  // 注意 `pts` 返回的仍是**尖角折线**：避让判定与标签中点都按它算，只是画出来带圆角。
+  // 两处的让位半径都收敛到「相邻线段的一半以内」，短段自动退化成尖角：
+  // 圆角/拱桥永远吃不掉一整条线段，也就不会把路径抹穿或反向。
+  // 注意返回的 `pts` 仍是**尖角折线**：避让判定、交叉检测与标签中点都按它算，只是画出来带修饰。
   var d = 'M ' + res[0].x + ' ' + res[0].y
-  for (var m = 1; m < res.length; m++) {
-    if (m + 1 < res.length) {
-      var pv = res[m - 1], cu = res[m], nx = res[m + 1]
-      var l1 = Math.abs(cu.x - pv.x) + Math.abs(cu.y - pv.y)
-      var l2 = Math.abs(nx.x - cu.x) + Math.abs(nx.y - cu.y)
-      var r = Math.min(EDGE_CORNER, l1 / 2, l2 / 2)
-      if (r > 0.6 && l1 > 0 && l2 > 0) {
-        var c1 = { x: cu.x + (pv.x - cu.x) * (r / l1), y: cu.y + (pv.y - cu.y) * (r / l1) }
-        var c2 = { x: cu.x + (nx.x - cu.x) * (r / l2), y: cu.y + (nx.y - cu.y) * (r / l2) }
-        d += ' L ' + c1.x + ' ' + c1.y + ' Q ' + cu.x + ' ' + cu.y + ' ' + c2.x + ' ' + c2.y
-        continue
-      }
+  var lx = res[0].x, ly = res[0].y
+  function lineTo(x, y) {
+    if (Math.abs(x - lx) < 0.01 && Math.abs(y - ly) < 0.01) return
+    d += ' L ' + x + ' ' + y
+    lx = x; ly = y
+  }
+  var np = res.length
+  // 每个顶点让给拐角多少（两端不让：那是方块边界，抹了箭头就离开边框）
+  var trim = []
+  for (var v = 0; v < np; v++) {
+    var rv = 0
+    if (v > 0 && v < np - 1) {
+      var rl1 = edgeSegLen(res[v - 1], res[v])
+      var rl2 = edgeSegLen(res[v], res[v + 1])
+      rv = Math.min(EDGE_CORNER, rl1 / 2, rl2 / 2)
+      if (!(rv > 0.6) || !(rl1 > 0) || !(rl2 > 0)) rv = 0
     }
-    d += ' L ' + res[m].x + ' ' + res[m].y
+    trim.push(rv)
+  }
+  for (var k = 0; k + 1 < np; k++) {
+    var A = res[k], B = res[k + 1]
+    var L = edgeSegLen(A, B)
+    if (L <= 0) continue
+    var ux = (B.x - A.x) / L, uy = (B.y - A.y) / L
+    var t0 = trim[k]
+    var t1 = L - trim[k + 1]
+    // 本段上的拱桥：把 hop 点投影到本段参数上，只收真的落在这条线上的
+    var hs = []
+    for (var h2 = 0; h2 < hp.length; h2++) {
+      var hx = hp[h2].x - A.x, hy = hp[h2].y - A.y
+      var dt = hx * ux + hy * uy
+      var off = Math.abs(-hx * uy + hy * ux)
+      if (off < 1.0) hs.push(dt)
+    }
+    hs.sort(function (q1, q2) { return q1 - q2 })
+    lineTo(A.x + ux * t0, A.y + uy * t0)
+    var cur = t0
+    for (var h3 = 0; h3 < hs.length; h3++) {
+      var hb = hs[h3] - EDGE_HOP, he = hs[h3] + EDGE_HOP
+      // 与已画出来的圆角/拱桥打架就放弃这条 —— 少一个拱只是不好看，叠在一起是烂的
+      if (hb < cur + 0.5 || he > t1 - 0.5) continue
+      lineTo(A.x + ux * hb, A.y + uy * hb)
+      var aex = A.x + ux * he, aey = A.y + uy * he
+      // sweep 固定为 1：拱一律鼓在前进方向的**左侧**（屏幕上从左往右的线就往上鼓）
+      d += ' A ' + EDGE_HOP + ' ' + EDGE_HOP + ' 0 0 1 ' + aex + ' ' + aey
+      lx = aex; ly = aey
+      cur = he
+    }
+    lineTo(A.x + ux * t1, A.y + uy * t1)
+    if (trim[k + 1] > 0) {
+      var C = res[k + 1], N = res[k + 2]
+      var l3 = edgeSegLen(C, N)
+      var ex = C.x + (N.x - C.x) * (trim[k + 1] / l3), ey = C.y + (N.y - C.y) * (trim[k + 1] / l3)
+      d += ' Q ' + C.x + ' ' + C.y + ' ' + ex + ' ' + ey
+      lx = ex; ly = ey
+    }
   }
   return { d: d, pts: res }
+}
+
+/** 轴对齐折线一段的长度。 */
+function edgeSegLen(a, b) {
+  return Math.abs(b.x - a.x) + Math.abs(b.y - a.y)
+}
+
+/** 两条同向平行线段是否「贴在一起」：线距小于 gap 且投影相交。 */
+function edgeLaneConflict(vert, c, lo, hi, u) {
+  if (!u || u.vert !== vert) return false
+  if (Math.abs(u.c - c) >= EDGE_LANE_GAP) return false
+  return Math.min(hi, u.hi) - Math.max(lo, u.lo) > 0
+}
+
+/** 取出折线里所有**内部**线段，作为「这条线占掉的车道」记下来。 */
+function edgePathLanes(pts) {
+  var out = []
+  for (var i = 1; i + 1 < pts.length; i++) {
+    var a = pts[i], b = pts[i + 1]
+    var vert = Math.abs(a.x - b.x) < 0.5
+    out.push(vert
+      ? { vert: true, c: a.x, lo: Math.min(a.y, b.y), hi: Math.max(a.y, b.y) }
+      : { vert: false, c: a.y, lo: Math.min(a.x, b.x), hi: Math.max(a.x, b.x) })
+  }
+  return out
 }
 
 /** 标签落点：取整条路径**按弧长**的一半处 —— 折线不再是直线，两端中点会偏。 */
@@ -592,9 +662,11 @@ function edgePortOffset(span, p) {
 /**
  * 一条连线的路径。`obstacles` 是画布上**其它可见方块**的几何（被折叠收起的方块不该挡路），
  * `offset` 用于把同一对节点之间的多条线错开（由调用方按序号算），
- * `ports` 是两端的端口位次 `{ a: {n,i}, b: {n,i} }`。
+ * `ports` 是两端的端口位次 `{ a: {n,i}, b: {n,i} }`，
+ * `usedLanes` 是**前面几条线已经占掉的车道** —— 有了它，两条不同连线的中位线撞上时
+ * 后来者会自己往旁边让（用户要的「平行间隔」）。由调用方逐条累积。
  */
-function edgeGeometry(a, b, obstacles, offset, ports) {
+function edgeGeometry(a, b, obstacles, offset, ports, usedLanes) {
   if (!a || !b) return null
   var shift = (typeof offset === 'number' && isFinite(offset)) ? offset : 0
   var obs = []
@@ -627,8 +699,12 @@ function edgeGeometry(a, b, obstacles, offset, ports) {
 
   // 一段跨越式：从出点直走 → 在某个「跨越线」上横过去 → 再直走进点。
   // 候选跨越线按「离正中越近越优先」排序；障碍的边线外侧也在候选里 —— 那让线能贴着障碍绕。
+  //
+  // 中位线两侧先按 EDGE_LANE_STEP 铺开若干条：这是**平行间隔**的来源。从前中位线被别的线
+  // 占了也照样画上去，两条线就逐像素叠在一起（实测画布上 48 处、线距 0px）。
   var mid0 = vertical ? (p0.y + p1.y) / 2 : (p0.x + p1.x) / 2
   var cands = [mid0]
+  for (var q = 1; q <= 3; q++) { cands.push(mid0 - q * EDGE_LANE_STEP); cands.push(mid0 + q * EDGE_LANE_STEP) }
   for (var j = 0; j < obs.length; j++) {
     if (vertical) { cands.push(obs[j].y1 - 2); cands.push(obs[j].y2 + 2) }
     else { cands.push(obs[j].x1 - 2); cands.push(obs[j].x2 + 2) }
@@ -637,14 +713,30 @@ function edgeGeometry(a, b, obstacles, offset, ports) {
   else cands.push(Math.min(p0.x, p1.x) - EDGE_LANE, Math.max(p0.x, p1.x) + EDGE_LANE)
   cands.sort(function (m, n) { return Math.abs(m - mid0) - Math.abs(n - mid0) })
 
+  // 挑选顺序：**既不撞障碍、也不压别的线** > 只不撞障碍 > 兜底。
+  // 车道冲突只在「两条线的这一段平行且投影相交」时才算 —— 隔得远的并行线互不相干。
+  var used = usedLanes || []
+  var freeOfLane = function (pts) {
+    var lanes = edgePathLanes(pts)
+    for (var li = 0; li < lanes.length; li++) {
+      for (var ui = 0; ui < used.length; ui++) {
+        if (edgeLaneConflict(lanes[li].vert, lanes[li].c, lanes[li].lo, lanes[li].hi, used[ui])) return false
+      }
+    }
+    return true
+  }
   var best = null
-  for (var c = 0; c < cands.length && !best; c++) {
+  var bestAny = null
+  for (var c = 0; c < cands.length; c++) {
     var m = cands[c] + shift
     var pts = vertical
       ? [{ x: p0.x, y: p0.y }, { x: p0.x, y: m }, { x: p1.x, y: m }, { x: p1.x, y: p1.y }]
       : [{ x: p0.x, y: p0.y }, { x: m, y: p0.y }, { x: m, y: p1.y }, { x: p1.x, y: p1.y }]
-    if (!edgePathHits(pts, obs)) best = pts
+    if (edgePathHits(pts, obs)) continue
+    if (!bestAny) bestAny = pts
+    if (freeOfLane(pts)) { best = pts; break }
   }
+  if (!best) best = bestAny
   // 兜底一：两段跨越式，从整片障碍的外侧绕过去（中间那条直路被完全堵死时走这条）。
   if (!best) {
     var bx1 = Math.min(a.x - a.w / 2, b.x - b.w / 2)
@@ -680,7 +772,8 @@ function edgeGeometry(a, b, obstacles, offset, ports) {
       : [{ x: p0.x, y: p0.y }, { x: mf, y: p0.y }, { x: mf, y: p1.y }, { x: p1.x, y: p1.y }]
   }
   var clean = edgeCleanPath(best)
-  return { d: clean.d, mid: edgeMidOfPath(clean.pts) }
+  // pts 交给调用方：交叉检测（拱桥）与「这条线占掉哪些车道」都要按尖角折线算。
+  return { d: clean.d, mid: edgeMidOfPath(clean.pts), pts: clean.pts, lanes: edgePathLanes(clean.pts) }
 }
 
 function cloneModel(m) {
