@@ -112,6 +112,19 @@ function registerArchInputTrigger(ctx, disposers) {
         }
       }
     },
+    // 让草稿里的 `@u4` 这种**纯文本**被自动渲染成引用块（上下文块）。契约原文见
+    // dsh-client-ui-conversation/lib/client.js:12192「Scan the draft for plain-text reference
+    // tokens against the hot lexicons」+ :12300 的 registerTextRefDecoration。
+    // 有它，往发送区送留言就不必伪造 span 去插 chip —— 那条路要 draftRev 的 CAS，外部够不着。
+    // 契约要求这个钩子**同步、无副作用**（渲染路径），模块级的 studioLiveNodes 快照正合适。
+    lexicon: function () {
+      var nodes = Array.isArray(studioLiveNodes) ? studioLiveNodes : []
+      var ids = []
+      for (var i = 0; i < nodes.length; i++) {
+        if (nodes[i] && nodes[i].id) ids.push(nodes[i].id)
+      }
+      return ids
+    },
     codec: {
       clipboardText: function (ref) {
         return '@' + ref
