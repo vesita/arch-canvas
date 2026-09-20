@@ -126,9 +126,21 @@ function harvestNoteStore(file: string, nodes: any[]) {
     if (diagramNotes[k] && diagramNotes[k].done === true) doneKeys.push(k)
   }
   if (doneKeys.length > NOTE_HISTORY_MAX) {
+    // 老记录没有 `at`（上限是后加的），它们的 at 一律是 0 —— 靠 `sort` 的**稳定性**兜底：
+    // doneKeys 是按插入顺序收集的，而插入顺序 ≈ 时间顺序，相等时保留原序，丢的仍是最早那几条。
+    //（ES2019 起 sort 保证稳定；实测第一次封顶丢掉的正是最早写进去的两条。）
     doneKeys.sort(function (a, b) { return (diagramNotes[a].at || 0) - (diagramNotes[b].at || 0) })
     var drop = doneKeys.length - NOTE_HISTORY_MAX
-    for (var d = 0; d < drop; d++) delete diagramNotes[doneKeys[d]]
+    for (var d = 0; d < drop; d++) {
+      var goneId = doneKeys[d]
+      delete diagramNotes[goneId]
+      // **内存里也要跟着清。** 只删表、不清内存的话，界面还会列着一条盘上已经不存在的历史，
+      // 而刷新之后它自己就没了 —— 那是界面在说谎（用户会以为「刚才那条怎么不见了」）。
+      // 实测踩到过：盘上 6 条、内存 8 条，`resolvedNoteCount` 与 notes.json 对不上。
+      for (var ni = 0; ni < nodes.length; ni++) {
+        if (nodes[ni] && nodes[ni].id === goneId) { nodes[ni].note = ''; nodes[ni].noteDone = false }
+      }
+    }
   }
 }
 

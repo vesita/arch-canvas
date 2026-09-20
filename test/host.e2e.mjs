@@ -1052,6 +1052,10 @@ console.log('【留言历史封顶 6 条】')
     [3, 4, 5, 6, 7, 8].every((i) => capDone.indexOf('cap' + i) >= 0), capDone)
   ok('更早的那批被丢掉（负向对照：不然「封顶」等于没做）',
     capDone.filter((k) => ['cap0', 'cap1', 'cap2'].indexOf(k) >= 0).length === 0, capDone)
+  // 内存里也要跟着裁 —— 否则界面还列着一条盘上已经不存在的历史，刷新后它自己消失。
+  // 实测踩到过：盘上 6 条、内存 8 条。
+  const capDoc = await call('doc:get', { where: dirNote })
+  eq('内存里的历史条数与盘上一致（都是 6）', capDoc.resolvedNoteCount, capDone.length)
 }
 eq('删节点后 resolvedNoteCount 为 0', getAfterDel.resolvedNoteCount, 0)
 // 把 warnings 的内容带出来：这条断言从前只说"多了几条"，多出来的是什么看不到
