@@ -133,6 +133,8 @@ function seedDoc() {
 var reportedSandboxMissingReasons = {}
 // 落盘时没有沙箱策略的入口（按 site 去重）。见 persist() 里的说明：缺策略的写入从前是匿名的。
 var reportedNoPolicySites = {}
+// 往返检查那条告警的前缀（置顶只留一条用）
+var RT_WARN_PREFIX = '往返检查：写出去再读回来对不上'
 
 /**
  * 获取会话对应的沙箱执行策略。
@@ -223,6 +225,26 @@ async function persist(policy?, site?) {
       await ensureDir(targetDir, policy)
     }
     var body = serializeDoc(doc)
+    // **写盘前的运行时不变式**（见 mermaid.ts 的 roundTripDetail）：`parse(serialize(doc))`
+    // 必须与 doc 在所有会被持久化的字段上一致。它**只报告、不改行为** —— 拒绝保存比丢字段更糟：
+    // 用户当下的编辑一个字都存不下去，而字段在文本里表达不出来就是表达不出来
+    // （检查点回滚也救不了，快照存的就是同一份文本）。所以照旧写盘，但把现场喊出来。
+    try {
+      var rt = roundTripDetail(doc)
+      if (rt) {
+        logEvent('error', 'serialize.not-idempotent', {
+          site: site || '', file: doc.file, fields: rt.fields, detail: rt.detail,
+        })
+        var rtWhere = rt.detail ? Object.keys(rt.detail).map(function (k) { return k + '[' + rt.detail[k].join(' ') + ']' }).join(' ') : ''
+        var rtMsg = RT_WARN_PREFIX + '（' + rt.fields.join('、') + '）'
+          + (rtWhere ? ' ' + rtWhere : '') + ' —— 详见日志 serialize.not-idempotent'
+        // 只留一条：这条说的是「当前状态写不出去」，不是历史流水；每保存一次追加一条会刷屏
+        doc.warnings = doc.warnings.filter(function (w) { return String(w).indexOf(RT_WARN_PREFIX) !== 0 })
+        doc.warnings.push(rtMsg)
+      }
+    } catch (e) {
+      logEvent('error', 'serialize.check.fail', { site: site || '', file: doc.file, error: msgOf(e) })
+    }
     // 软删除过的图再落盘时要把墓碑保住，否则一次无关的写就把「已删除」抹掉了
     if (doc.tombstoned) body = TOMBSTONE + '\n' + body
     await fs.writeText(await fs.resolve(doc.file), body, undefined, undefined, policy)
@@ -857,7 +879,10 @@ function normalizeModel(model) {
     }
     nodes.push({
       id: id,
-      label: typeof n.label === 'string' ? n.label : id,
+      // 空标签在**回读**时会变成节点 id（解析器对 `n1[""]` 就是这么归的）。两边必须一致，
+      // 否则写盘前那条往返检查每次保存都会报警 —— 而它报的其实是真话：这份模型写出去再读回来
+      // 就变样了。所以在模型边界上就归一到「没有标题 = 用 id」。
+      label: typeof n.label === 'string' && n.label ? n.label : id,
       shape: SHAPE_WRAP[n.shape] ? n.shape : 'rect',
       group: typeof n.group === 'string' && n.group ? cleanId(n.group) : null,
       x: typeof n.x === 'number' && isFinite(n.x) ? n.x : null,

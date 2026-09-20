@@ -960,7 +960,8 @@ ok('对不存在的节点 mark_note 被拒', mnGhost.problems && mnGhost.problem
 const mnAfter2 = await call('doc:get', { where: dirNote })
 eq('被拒的两次都没有改动已办计数', mnAfter2.resolvedNoteCount, mnRe.resolvedNoteCount)
 eq('删节点后 resolvedNoteCount 为 0', getAfterDel.resolvedNoteCount, 0)
-eq('删节点后 warnings 为空（不报错）', getAfterDel.warnings.length, 0)
+// 把 warnings 的内容带出来：这条断言从前只说"多了几条"，多出来的是什么看不到
+ok('删节点后 warnings 为空（不报错）', getAfterDel.warnings.length === 0, getAfterDel.warnings)
 
 // 6. notes.json 写入两道闸保险与加载日志测试
 console.log('【notes.json 写入保险与 load 日志】')
@@ -1511,6 +1512,20 @@ eq('落盘失败后修订号没有被推进', afterFail.revision, revWas)
 eq('落盘失败后作者没有被改写', afterFail.updatedBy, byWas)
 ok('落盘失败后标签也没变（内存已回滚）', afterFail.model.nodes[0].label !== '这次不该生效',
   afterFail.model.nodes[0].label)
+
+console.log('【写盘前的往返守恒检查：整套测试跑下来一次都不该报】')
+// 这条检查会跟着**每一次落盘**跑（上面几百次保存全经历过）。它一旦报，
+// 说明「写出去再读回来对不上」—— 也就是有一类字段写不进文件（用户下次打开就少东西，
+// 而且不报错）。这条断言的价值在于：它是**反向**的 —— 检查本身万一误报，
+// 这里会立刻红灯，而不是等它在真实使用里刷屏。
+await new Promise((r) => setTimeout(r, 60))
+const rtLines = (logStorage.get(todayLogKey) || '').trim().split('\n').map((l) => {
+  try { return JSON.parse(l) } catch (e) { return null }
+}).filter(Boolean)
+const rtBad = rtLines.filter((row) => row.ev === 'serialize.not-idempotent' || row.ev === 'serialize.check.fail')
+ok('整套测试（几百次落盘）里往返检查一次都没报', rtBad.length === 0, rtBad.slice(0, 3))
+ok('负向对照：这条日志确实会被写出来（否则上面那条是空测试）',
+  rtLines.length > 0 && rtLines.some((row) => row.ev === 'doc.load'), rtLines.length)
 
 console.log('【提示词模板注入防护】')
 {

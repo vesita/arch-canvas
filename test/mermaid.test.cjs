@@ -8,9 +8,10 @@ if (!fs.existsSync(PARSER)) {
   process.exit(1);
 }
 const src = fs.readFileSync(PARSER, 'utf8');
-const api = new Function(src + '\n;return { parseMermaid: parseMermaid, serializeDoc: serializeDoc };')();
+const api = new Function(src + '\n;return { parseMermaid: parseMermaid, serializeDoc: serializeDoc, roundTripDiff: roundTripDiff, roundTripDetail: roundTripDetail };')();
 const parseMermaid = api.parseMermaid;
 const serializeDoc = api.serializeDoc;
+const roundTripDiff = api.roundTripDiff;
 
 let pass = 0, fail = 0;
 function check(name, cond, extra) {
@@ -424,6 +425,53 @@ console.log('\n[17] 文件头的格式说明行不算数据（%%!）');
     '%% @note a 真注释',
   ].join('\n'));
   check('%%! 说明行与真注释共存', mixed.legacyNotes && mixed.legacyNotes['a'] && mixed.legacyNotes['a'].text === '真注释' && mixed.warnings.length === 0, mixed);
+}
+
+// ==================== 写盘前的往返守恒检查 ====================
+// 这条检查是「往返幂等」的运行时版本：`parse(serialize(doc))` 必须与 doc 在所有**会被持久化
+// 的**字段上一致。它抓的不是解析器，而是「某个字段写不出去」——2026-09 我们连续踩了三次
+// 同一类坑（拖拽丢字段、自动布局丢 4 个字段、add_node 丢组名），每次都**不报错**。
+console.log('\n[18] 往返守恒检查：安静时真安静，出问题时真会喊')
+{
+  const good = {
+    direction: 'TD', summary: '', edges: [], extras: [],
+    nodes: [{ id: 'a', label: '甲', shape: 'rect', group: null, x: 10.4, y: -3.6, link: null, files: ['src/a.ts'] }],
+    groups: [],
+  }
+  check('正常文档：检查安静（坐标写盘时取整，不算差异）', roundTripDiff(good).length === 0, roundTripDiff(good))
+
+  // 负向对照：手工做一个"解析器会把这一行吃进模型里"的 extras —— 它确实不是定点。
+  // 有它才能证明上面那条"安静"不是空转（撤掉检查也一样通过的那种假绿）。
+  const broken = {
+    direction: 'TD', summary: '', nodes: [], edges: [], groups: [],
+    extras: ['  x["原样"] --> y'],
+  }
+  const bad = roundTripDiff(broken)
+  check('负向对照：真的不对称时报得出来', bad.length > 0, bad)
+  check('并且指明差在哪个字段', bad.indexOf('extras') >= 0, bad)
+
+  // 留言**不由这份文本承载**（在旁路表 notes.json 里），必须排除 —— 否则每张有留言的图都误报
+  const withNote = {
+    direction: 'TD', summary: '', edges: [], extras: [], groups: [],
+    nodes: [{ id: 'a', label: '甲', shape: 'rect', group: null, x: 0, y: 0, link: null, files: [], note: '这里是留言', noteDone: true }],
+  }
+  check('留言在旁路表里：不算这份文本的差异', roundTripDiff(withNote).length === 0, roundTripDiff(withNote))
+}
+
+console.log('\n[19] 空组必须能写进文件（往返检查当场逮到的那条）')
+{
+  const doc = {
+    direction: 'TD', summary: '', edges: [], extras: [],
+    nodes: [{ id: 'a', label: '甲', shape: 'rect', group: null, x: 0, y: 0, link: null, files: [] }],
+    groups: [{ id: 'g1', label: '孤组' }],
+  }
+  const text = serializeDoc(doc)
+  // 从前这里是 if (members.length > 0)：删掉一个组的最后一个成员之后，那个组写不进文件，
+  // 下次读回来就静默消失了（组名、标签全没）。解析器本来就认空组，是序列化器单方面不写。
+  check('空组也写出了 subgraph', text.indexOf('subgraph g1') >= 0, text.split('\n').filter((l) => l.indexOf('subgraph') >= 0))
+  const back = parseMermaid(text)
+  check('读回来那个组还在', back.groups.length === 1 && back.groups[0].id === 'g1', back.groups)
+  check('往返检查安静', roundTripDiff(doc).length === 0, roundTripDiff(doc))
 }
 
 console.log('\n结果: ' + pass + ' 通过 / ' + fail + ' 失败\n');
