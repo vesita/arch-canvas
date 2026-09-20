@@ -28,7 +28,6 @@ const act = ReactModule.act
 const { createRoot } = await import('react-dom/client')
 
 const UI = '/tmp/uiproj'
-const ARCHIVE = { id: 't1', kind: 'arch' }
 
 // ---------- 打桩的 RPC：形状照着宿主真实的回执 ----------
 const rpcCalls = []
@@ -77,20 +76,13 @@ ok('ui.js 挂出了 __archCanvas.install', !!(globalThis.__archCanvas && typeof 
 
 // ---------- 注册：捕获槽位组件 ----------
 const captured = {}
+const capturedDef = {}
 const slots = {
   inject: (_name, cb) => { cb(); return () => {} },
-  register: (def, comp) => { captured[def.name] = comp; return () => {} },
-}
-const sidebarRight = {
-  expanded: false, activeTab: null, log: [],
-  openTab(kind) { this.log.push('openTab(' + kind + ')'); this.expanded = true; this.activeTab = { id: ARCHIVE.id, kind } },
-  close(id) { this.log.push('close(' + id + ')'); if (this.activeTab && this.activeTab.id === id) this.activeTab = null },
-  isExpanded() { return this.expanded },
-  active() { return this.activeTab },
-  toggleExpanded() { this.log.push('toggleExpanded()'); this.expanded = !this.expanded },
+  register: (def, comp) => { captured[def.name] = comp; capturedDef[def.name] = def; return () => {} },
 }
 const ctx = {
-  get: (k) => ({ slots, sidebarRightTabs: { register: () => () => {} }, sidebarRight })[k],
+  get: (k) => ({ slots })[k],
   effect: (fn) => { const d = fn(); return typeof d === 'function' ? d : () => {} },
   inject: () => () => {},
   on: () => () => {},
@@ -100,8 +92,10 @@ const ctx = {
 
 console.log('\n[1] 注册面')
 const dispose = globalThis.__archCanvas.install(ctx)
-ok('注册了侧栏底部入口', typeof captured['sidebar.footer.action'] === 'function')
-ok('注册了右键栏标签体', typeof captured['sidebar.right.pane.tab'] === 'function')
+ok('注册了主窗口子页标签体', typeof captured['conversation.view'] === 'function')
+eq('子页 id 是 arch-canvas', capturedDef['conversation.view'].id, 'arch-canvas')
+eq('子页排在「对话」「轨迹」之后', capturedDef['conversation.view'].order, 30)
+eq('子页标题', capturedDef['conversation.view'].label, '架构画布')
 ok('样式里有起始页与选择器的样式', insertedCss.indexOf('.ac-start') >= 0 && insertedCss.indexOf('.ac-lib') >= 0)
 
 // ---------- 渲染标签体 ----------
@@ -109,9 +103,18 @@ const container = document.getElementById('app')
 const root = createRoot(container)
 async function flush() { await act(async () => { await Promise.resolve() }) }
 
+// 「点选一个元素」= 按下与抬手之间**没有位移**。底部详情（.ac-dock）只在抬手那一刻展开：
+// 它是一块最多吃掉 46% 高度的下挂面板，拖动途中弹出会把画布挤矮、把节点挤出视野。
+// 所以只派发 pointerdown 已经不算「点选」了，测试必须把整点击补全 —— 否则测的是旧契约。
+function clickEl(el, x, y) {
+  const opts = { bubbles: true, button: 0, clientX: x == null ? 0 : x, clientY: y == null ? 0 : y }
+  el.dispatchEvent(new dom.window.PointerEvent('pointerdown', opts))
+  el.dispatchEvent(new dom.window.PointerEvent('pointerup', opts))
+}
+
 console.log('\n[2] 首次渲染：工具条与空画布都得有出路')
 await act(async () => {
-  root.render(React.createElement(captured['sidebar.right.pane.tab'], {
+  root.render(React.createElement(captured['conversation.view'], {
     cwd: UI, sessionId: 's1', useSessions: () => UI,
   }))
 })
@@ -237,7 +240,7 @@ console.log('\n[4c] 元素注释：带注释渲染、角标、清单已解决切
   document.body.appendChild(noteHost)
   const noteRoot = createRoot(noteHost)
   await act(async () => {
-    noteRoot.render(React.createElement(captured['sidebar.right.pane.tab'], {
+    noteRoot.render(React.createElement(captured['conversation.view'], {
       cwd: UI, sessionId: 's1', useSessions: () => UI, inputActions: mockInputActions,
     }))
   })
@@ -318,7 +321,7 @@ console.log('\n[4c] 元素注释：带注释渲染、角标、清单已解决切
   // 5. 选中节点乙（未解决）
   const n2El = findNodeEl('节点乙')
   await act(async () => {
-    n2El.dispatchEvent(new dom.window.PointerEvent('pointerdown', { bubbles: true, button: 0 }))
+    clickEl(n2El)
   })
   await flush()
 
@@ -377,7 +380,7 @@ console.log('\n[4c] 元素注释：带注释渲染、角标、清单已解决切
   //    不改的话，用户改过的话仍然躺在「已解决」里、不进 AI 的上下文 —— 界面看不出任何异常。
   const n3ElSel = findNodeEl('节点丙')
   await act(async () => {
-    n3ElSel.dispatchEvent(new dom.window.PointerEvent('pointerdown', { bubbles: true, button: 0 }))
+    clickEl(n3ElSel)
   })
   await flush()
   eq('选中本来就是「已解决」的节点丙，检查器按钮为「重新打开」', markBtn()?.textContent.trim(), '重新打开')
@@ -467,7 +470,7 @@ console.log('\n[4d] 代码锚点与一句话总结：角标 / 失效可见 / 锚
   document.body.appendChild(refHost)
   const refRoot = createRoot(refHost)
   await act(async () => {
-    refRoot.render(React.createElement(captured['sidebar.right.pane.tab'], {
+    refRoot.render(React.createElement(captured['conversation.view'], {
       cwd: UI, sessionId: 's1', useSessions: () => UI,
     }))
   })
@@ -487,7 +490,7 @@ console.log('\n[4d] 代码锚点与一句话总结：角标 / 失效可见 / 锚
   // 2. 检查器里的锚点输入框与逐条校验状态
   const selectRefNode = async (lbl) => {
     await act(async () => {
-      findRefNode(lbl).dispatchEvent(new dom.window.PointerEvent('pointerdown', { bubbles: true, button: 0 }))
+      clickEl(findRefNode(lbl))
     })
     await flush()
   }
@@ -544,7 +547,7 @@ console.log('\n[4d] 代码锚点与一句话总结：角标 / 失效可见 / 锚
   document.body.appendChild(startHost)
   const startRoot = createRoot(startHost)
   await act(async () => {
-    startRoot.render(React.createElement(captured['sidebar.right.pane.tab'], {
+    startRoot.render(React.createElement(captured['conversation.view'], {
       cwd: UI, sessionId: 's2', useSessions: () => UI,
     }))
   })
@@ -611,7 +614,7 @@ console.log('\n[4e] 检查点清单：谁改的、点「退回」真发 RPC')
   document.body.appendChild(histHost)
   const histRoot = createRoot(histHost)
   await act(async () => {
-    histRoot.render(React.createElement(captured['sidebar.right.pane.tab'], {
+    histRoot.render(React.createElement(captured['conversation.view'], {
       cwd: UI, sessionId: 's1', useSessions: () => UI,
     }))
   })
@@ -707,7 +710,7 @@ console.log('\n[4f] 节点卡片分段与源码页解析警告')
   document.body.appendChild(cardHost)
   const cardRoot = createRoot(cardHost)
   await act(async () => {
-    cardRoot.render(React.createElement(captured['sidebar.right.pane.tab'], {
+    cardRoot.render(React.createElement(captured['conversation.view'], {
       cwd: UI, sessionId: 's1', useSessions: () => UI,
     }))
   })
@@ -731,7 +734,7 @@ console.log('\n[4f] 节点卡片分段与源码页解析警告')
 
   // a3. 点一下节点 = 选中 = 展开：描述与引用行这时才出现。
   await act(async () => {
-    c1El.dispatchEvent(new dom.window.PointerEvent('pointerdown', { bubbles: true, button: 0 }))
+    clickEl(c1El)
   })
   await flush()
   // a3. 选中**不再展开**（2026-09 用户要求取消就地展开，具体信息一律去检查器里看）。
@@ -757,7 +760,7 @@ console.log('\n[4f] 节点卡片分段与源码页解析警告')
   // e. 负向对照：不带 files 的节点**即使展开**也没有 .ac-ref。
   //    必须展开后再断言 —— 不展开的话"没有 .ac-ref"是必然的，断言会恒真、抓不到任何回归。
   await act(async () => {
-    c0El.dispatchEvent(new dom.window.PointerEvent('pointerdown', { bubbles: true, button: 0 }))
+    clickEl(c0El)
   })
   await flush()
   const c0Open = findCardNode('单行无锚点')
@@ -792,7 +795,7 @@ console.log('\n[4f] 节点卡片分段与源码页解析警告')
   document.body.appendChild(cleanHost)
   const cleanRoot = createRoot(cleanHost)
   await act(async () => {
-    cleanRoot.render(React.createElement(captured['sidebar.right.pane.tab'], {
+    cleanRoot.render(React.createElement(captured['conversation.view'], {
       cwd: UI, sessionId: 's1', useSessions: () => UI,
     }))
   })
@@ -834,7 +837,7 @@ console.log('\n[4g] 源码页语法高亮')
   document.body.appendChild(hlHost)
   const hlRoot = createRoot(hlHost)
   await act(async () => {
-    hlRoot.render(React.createElement(captured['sidebar.right.pane.tab'], {
+    hlRoot.render(React.createElement(captured['conversation.view'], {
       cwd: UI, sessionId: 's1', useSessions: () => UI,
     }))
   })
@@ -966,7 +969,7 @@ console.log('\n[4h] 组折叠')
   document.body.appendChild(foldHost)
   const foldRoot = createRoot(foldHost)
   await act(async () => {
-    foldRoot.render(React.createElement(captured['sidebar.right.pane.tab'], {
+    foldRoot.render(React.createElement(captured['conversation.view'], {
       cwd: UI, sessionId: 's1', useSessions: () => UI,
     }))
   })
@@ -993,7 +996,7 @@ console.log('\n[4h] 组折叠')
   //     这是刻意的：组块长得像个节点，点它多半是想选中或拖它，顺手把它弹开是最烦的误触。
   const clickGroup = async (el) => {
     await act(async () => {
-      el.dispatchEvent(new dom.window.PointerEvent('pointerdown', { bubbles: true, button: 0 }))
+      clickEl(el)
     })
     await flush()
   }
@@ -1062,7 +1065,7 @@ console.log('\n[4h] 组折叠')
   document.body.appendChild(intraHost)
   const intraRoot = createRoot(intraHost)
   await act(async () => {
-    intraRoot.render(React.createElement(captured['sidebar.right.pane.tab'], {
+    intraRoot.render(React.createElement(captured['conversation.view'], {
       cwd: UI, sessionId: 's1', useSessions: () => UI,
     }))
   })
@@ -1127,7 +1130,7 @@ console.log('\n[4i] 组拖动与拖拽不丢字段')
   document.body.appendChild(dragHost)
   const dragRoot = createRoot(dragHost)
   await act(async () => {
-    dragRoot.render(React.createElement(captured['sidebar.right.pane.tab'], {
+    dragRoot.render(React.createElement(captured['conversation.view'], {
       cwd: UI, sessionId: 's1', useSessions: () => UI,
     }))
   })
@@ -1202,23 +1205,10 @@ console.log('\n[4i] 组拖动与拖拽不丢字段')
   respond = prevRespond
 }
 
-console.log('\n[5] 左下角入口：点一下打开、再点一下连画布一起收回')
-const footHost = document.createElement('div')
-document.body.appendChild(footHost)
-const footRoot = createRoot(footHost)
-await act(async () => { footRoot.render(React.createElement(captured['sidebar.footer.action'], { wide: true })) })
-const footBtn = footHost.querySelector('button')
-ok('底部入口渲染成按钮', !!footBtn, footHost.innerHTML.slice(0, 120))
-sidebarRight.log.length = 0
-await act(async () => { footBtn.click() })
-eq('第一次点击 → openTab(arch)', sidebarRight.log.join(' → '), 'openTab(arch)')
-await act(async () => { footBtn.click() })
-eq('第二次点击 → 关标签 + 收侧栏', sidebarRight.log.join(' → '), 'openTab(arch) → close(t1) → toggleExpanded()')
-
 console.log('\n[6] 装机形态：ctx 没 inject timer（直接读属性会抛）也不能崩')
 // 复刻真插件形态的 Cordis 上下文：**未 inject 的服务直接读属性是抛错**，而不是给 undefined。
 // 这正是「打开画布一片空白」的根因：`typeof ctx.interval === 'function'` 那一读就抛。
-const strictGet = (k) => ({ slots, sidebarRightTabs: { register: () => () => {} }, sidebarRight })[k]
+const strictGet = (k) => ({ slots })[k]
 const strictCtx = {
   get: (k) => (k === 'timer' ? undefined : strictGet(k)),
   effect: (fn) => { const d = fn(); return typeof d === 'function' ? d : () => {} },
@@ -1240,7 +1230,7 @@ globalThis.setInterval = function () { nativeInterval++; return realSetInterval.
 let crash = null
 try {
   await act(async () => {
-    strictRoot.render(React.createElement(captured['sidebar.right.pane.tab'], { cwd: UI, sessionId: 's1', useSessions: () => UI }))
+    strictRoot.render(React.createElement(captured['conversation.view'], { cwd: UI, sessionId: 's1', useSessions: () => UI }))
   })
   await flush()
 } catch (e) {
@@ -1281,7 +1271,7 @@ console.log('\n[4j] 连线布线：正交折线 + 避让中间的方块')
   document.body.appendChild(rHost)
   const rRoot = createRoot(rHost)
   await act(async () => {
-    rRoot.render(React.createElement(captured['sidebar.right.pane.tab'], {
+    rRoot.render(React.createElement(captured['conversation.view'], {
       cwd: UI, sessionId: 's1', useSessions: () => UI,
     }))
   })
@@ -1419,7 +1409,7 @@ console.log('\n[4j] 连线布线：正交折线 + 避让中间的方块')
   document.body.appendChild(pHost)
   const pRoot = createRoot(pHost)
   await act(async () => {
-    pRoot.render(React.createElement(captured['sidebar.right.pane.tab'], {
+    pRoot.render(React.createElement(captured['conversation.view'], {
       cwd: UI, sessionId: 's1', useSessions: () => UI,
     }))
   })
@@ -1457,7 +1447,7 @@ console.log('\n[4j] 连线布线：正交折线 + 避让中间的方块')
   document.body.appendChild(fHost)
   const fRoot = createRoot(fHost)
   await act(async () => {
-    fRoot.render(React.createElement(captured['sidebar.right.pane.tab'], {
+    fRoot.render(React.createElement(captured['conversation.view'], {
       cwd: UI, sessionId: 's1', useSessions: () => UI,
     }))
   })
@@ -1510,7 +1500,7 @@ console.log('\n[4l] 写完留言自动把上下文块放进输入框（无需点
   document.body.appendChild(aHost)
   const aRoot = createRoot(aHost)
   await act(async () => {
-    aRoot.render(React.createElement(captured['sidebar.right.pane.tab'], {
+    aRoot.render(React.createElement(captured['conversation.view'], {
       cwd: UI, sessionId: 's1', useSessions: () => UI,
       inputActions: { setDraft: (t) => { autoDraft = t } },
       // 草稿里已经有用户打的字 —— 自动追加必须**保住**它们
@@ -1523,7 +1513,7 @@ console.log('\n[4l] 写完留言自动把上下文块放进输入框（无需点
     .find((g) => (g.textContent || '').indexOf('节点甲') >= 0)
   ok('画布上找得到那个节点', !!aNodeEl)
   await act(async () => {
-    aNodeEl.dispatchEvent(new dom.window.PointerEvent('pointerdown', { bubbles: true, button: 0 }))
+    clickEl(aNodeEl)
   })
   await flush()
 
@@ -1589,7 +1579,7 @@ console.log('\n[4m] 端口的硬约束：绝不许越过方块边界（悬空连
   document.body.appendChild(sHost)
   const sRoot = createRoot(sHost)
   await act(async () => {
-    sRoot.render(React.createElement(captured['sidebar.right.pane.tab'], {
+    sRoot.render(React.createElement(captured['conversation.view'], {
       cwd: UI, sessionId: 's1', useSessions: () => UI,
     }))
   })
@@ -1651,7 +1641,7 @@ console.log('\n[4n] 未办留言自动进输入框：一次补全、不重复、
     document.body.appendChild(host)
     const root = createRoot(host)
     await act(async () => {
-      root.render(React.createElement(captured['sidebar.right.pane.tab'], {
+      root.render(React.createElement(captured['conversation.view'], {
         cwd: UI, sessionId: 's1', useSessions: () => UI,
         inputActions: { setDraft: (t) => { calls.push(t) } },
         useInput: (sel) => sel({ draft: draftSeed }),
@@ -1718,7 +1708,7 @@ console.log('\n[4n] 未办留言自动进输入框：一次补全、不重复、
   document.body.appendChild(cycHost)
   const cycRoot = createRoot(cycHost)
   await act(async () => {
-    cycRoot.render(React.createElement(captured['sidebar.right.pane.tab'], {
+    cycRoot.render(React.createElement(captured['conversation.view'], {
       cwd: UI, sessionId: 's1', useSessions: () => UI,
       inputActions: { setDraft: (t) => { cycCalls.push(t) } },
       useInput: (sel) => sel({ draft: '我打的字' }),
@@ -1730,7 +1720,7 @@ console.log('\n[4n] 未办留言自动进输入框：一次补全、不重复、
   const cycNodeEl = Array.from(cycHost.querySelectorAll('g.ac-node'))
     .find((g) => (g.textContent || '').indexOf('节点子') >= 0)
   await act(async () => {
-    cycNodeEl.dispatchEvent(new dom.window.PointerEvent('pointerdown', { bubbles: true, button: 0 }))
+    clickEl(cycNodeEl)
   })
   await flush()
   const cycArea = () => cycHost.querySelector('.ac-dock textarea[placeholder*="这里为什么不用队列"]')
@@ -1783,14 +1773,14 @@ console.log('\n[4o] Esc 两段式：第一下只拿焦点，第二下才关编�
   document.body.appendChild(eHost)
   const eRoot = createRoot(eHost)
   await act(async () => {
-    eRoot.render(React.createElement(captured['sidebar.right.pane.tab'], {
+    eRoot.render(React.createElement(captured['conversation.view'], {
       cwd: UI, sessionId: 's1', useSessions: () => UI,
     }))
   })
   await flush()
   const eNodeEl = eHost.querySelector('g.ac-node')
   await act(async () => {
-    eNodeEl.dispatchEvent(new dom.window.PointerEvent('pointerdown', { bubbles: true, button: 0 }))
+    clickEl(eNodeEl)
   })
   await flush()
   const inspectorOpen = () => !!eHost.querySelector('textarea[placeholder*="这里为什么不用队列"]')
@@ -1841,7 +1831,7 @@ console.log('\n[4p] 连线之间的两件事：平行间隔（不叠在一起）
     document.body.appendChild(host)
     const root = createRoot(host)
     await act(async () => {
-      root.render(React.createElement(captured['sidebar.right.pane.tab'], {
+      root.render(React.createElement(captured['conversation.view'], {
         cwd: UI, sessionId: 's1', useSessions: () => UI,
       }))
     })
@@ -1963,7 +1953,7 @@ console.log('\n[4q] 源码页的滚动：flex-basis 为 0 + 一道原生 wheel �
   document.body.appendChild(wHost)
   const wRoot = createRoot(wHost)
   await act(async () => {
-    wRoot.render(React.createElement(captured['sidebar.right.pane.tab'], {
+    wRoot.render(React.createElement(captured['conversation.view'], {
       cwd: UI, sessionId: 's1', useSessions: () => UI,
     }))
   })
@@ -2029,7 +2019,7 @@ console.log('\n[4q] 源码页的滚动：flex-basis 为 0 + 一道原生 wheel �
 }
 
 
-console.log('\n[4r] 客户端逻辑审计的修复：自动布局不许丢字段 / 导出不带角标 / 折叠端口 / 组 id / 无穿透 / @ 词边界')
+console.log('\n[4r] 客户端逻辑审计的修复：自动布局不许丢字段 / 导出不带角标 / 折叠端口 / 组 id / 无穿透 / @ 词边界 / 点选才展开详情')
 {
   const mountModel = async (MODEL, draft, ops) => {
     const prevR = respond
@@ -2048,7 +2038,7 @@ console.log('\n[4r] 客户端逻辑审计的修复：自动布局不许丢字段
     document.body.appendChild(host)
     const root = createRoot(host)
     await act(async () => {
-      root.render(React.createElement(captured['sidebar.right.pane.tab'], {
+      root.render(React.createElement(captured['conversation.view'], {
         cwd: UI, sessionId: 's1', useSessions: () => UI,
         inputActions: { setDraft: (t) => { calls.push(t) } },
         useInput: (sel) => sel({ draft: draft == null ? '' : draft }),
@@ -2189,7 +2179,7 @@ console.log('\n[4r] 客户端逻辑审计的修复：自动布局不许丢字段
     // 选中第二个节点，把它的分组写成带空格的 "AI 端"
     const g2 = Array.from(host.querySelectorAll('g.ac-node')).find((el) => (el.textContent || '').indexOf('乙') >= 0)
     await act(async () => {
-      g2.dispatchEvent(new dom.window.PointerEvent('pointerdown', { bubbles: true, button: 0 }))
+      clickEl(g2)
     })
     await flush()
     const input = groupInput(host)
@@ -2213,7 +2203,7 @@ console.log('\n[4r] 客户端逻辑审计的修复：自动布局不许丢字段
     // 再走一遍"认领已有组"：把它写成已有的 'AI 端'，应当对上已有组的 id 'AI端'，不该凭空多一个
     const g1 = Array.from(host.querySelectorAll('g.ac-node')).find((el) => (el.textContent || '').indexOf('甲') >= 0)
     await act(async () => {
-      g1.dispatchEvent(new dom.window.PointerEvent('pointerdown', { bubbles: true, button: 0 }))
+      clickEl(g1)
     })
     await flush()
     const input2 = groupInput(host)
@@ -2312,11 +2302,58 @@ console.log('\n[4r] 客户端逻辑审计的修复：自动布局不许丢字段
     ok('补进去的是带词边界的 @c1', calls[0] === '@c11 @c1', calls[0])
   })
 
+  // ---- G. 详情面板在「点选」抬手时才展开；拖动（含手抖）不该把它顶出来 ----
+  // 用户提的规则：详情是一块最多吃掉 46% 高度的下挂面板，拖动途中弹出会把画布挤矮、
+  // 把节点挤出视野。所以「展开」必须挂在**没有位移的那一次抬手**上，而不是按下。
+  const DOCK_MODEL = {
+    nodes: [
+      { id: 'dk1', label: '甲', shape: 'rect', group: null, x: 0, y: 0, note: '留言甲', noteDone: false },
+      { id: 'dk2', label: '乙', shape: 'rect', group: null, x: 240, y: 0 },
+    ],
+    edges: [], groups: [], direction: 'TD', extras: [],
+  }
+  await mountModel(DOCK_MODEL, '', async ({ host, sets }) => {
+    const svgEl = host.querySelector('svg.ac-svg')
+    const dockEl = () => host.querySelector('.ac-dock')
+    const nodeEl = (t) => Array.from(host.querySelectorAll('g.ac-node')).find((el) => (el.textContent || '').indexOf(t) >= 0)
+    const down = (el, x, y) => el.dispatchEvent(new dom.window.PointerEvent('pointerdown', { bubbles: true, button: 0, clientX: x, clientY: y }))
+    const up = (el, x, y) => el.dispatchEvent(new dom.window.PointerEvent('pointerup', { bubbles: true, button: 0, clientX: x, clientY: y }))
+    const move = (x, y) => svgEl.dispatchEvent(new dom.window.PointerEvent('pointermove', { bubbles: true, clientX: x, clientY: y }))
+
+    // 1) 只按下：不展开。这是整条规则的意义 —— 每一次拖动都是从「按下」开始的。
+    await act(async () => { down(nodeEl('甲'), 100, 100) })
+    await flush()
+    ok('负向对照：只按下、不抬手，详情面板不展开', !dockEl())
+
+    // 2) 按下 → 拖动 → 抬手：不展开，而且这一拖是真的（落了盘，否则上一条是空断言）
+    const setsBefore = sets.length
+    await act(async () => { move(180, 160); up(svgEl, 180, 160) })
+    await flush()
+    ok('拖过之后仍然不展开详情', !dockEl())
+    ok('拖动确实落了盘（不是空拖）', sets.length > setsBefore, sets.length - setsBefore)
+
+    // 3) 点选：按下 → 抬手（无位移）→ 展开
+    await act(async () => { down(nodeEl('乙'), 300, 200); up(nodeEl('乙'), 300, 200) })
+    await flush()
+    ok('点选（按下 + 抬手无位移）展开详情',
+      !!dockEl() && dockEl().textContent.indexOf('节点 dk2') >= 0, dockEl() && dockEl().textContent)
+
+    // 4) 手抖 3px 仍然算点选：节点不动、详情照开（触控板点一下很少一动不动）
+    const before = rectOf(nodeEl('甲'))
+    const setsBeforeJitter = sets.length
+    await act(async () => { down(nodeEl('甲'), 400, 300); move(402, 301); up(svgEl, 402, 301) })
+    await flush()
+    eq('手抖 3px 在门槛内 → 节点坐标一模一样', JSON.stringify(rectOf(nodeEl('甲'))), JSON.stringify(before))
+    eq('手抖也不多记一次落盘', sets.length, setsBeforeJitter)
+    ok('手抖仍然算点选 → 详情展开',
+      !!dockEl() && dockEl().textContent.indexOf('节点 dk1') >= 0, dockEl() && dockEl().textContent)
+  })
+
   respond = respond
 }
 
 console.log('\n[7] 卸载不留尾')
-await act(async () => { root.unmount(); footRoot.unmount() })
+await act(async () => { root.unmount() })
 dispose()
 ok('卸载没抛错', true)
 

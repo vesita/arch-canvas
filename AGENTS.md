@@ -244,7 +244,7 @@ await fs.writeText(target, body, undefined, undefined, policy)
    —— 那是**放大权限**，不是修复。让归属方去算。守门人是 `test/host.e2e.mjs` 里那条
    断言 `resolve` 入参 `mode === undefined`。
 2. **会话从哪来**：AI 工具走 `exec.agent.session`；面板的 RPC 走客户端传上来的 `sessionId`
-   → `ctx.get('agents').get(id).session`。客户端本来就拿得到它（`sidebar.right.pane.tab`
+   → `ctx.get('agents').get(id).session`。客户端本来就拿得到它（`conversation.view`
    是 `scope: session` 的槽位，`sessionId` 是标准 props）。
 3. **两个服务都走 `ctx.get`**（`sandboxPolicy` / `agents` 都是可选的，不进 `inject`）；
    拿不到会话就**不伪造策略**（退回 `undefined` = 旧行为）并落一行 `sandbox.policy.missing`
@@ -377,7 +377,7 @@ module.exports = { name, inject: ['fs', 'tools', 'systemPrompt'], apply }
 （`get` / `effect` / `on` / `inject`），加一个就要同步补 host.e2e、host-loader、plugin-mount、
 tools.schema 四个文件里的桩 —— 2026-09 加定时器时整整踩了三处，`npm run check` 才把它们逐个点出来。
 
-客户端的 `exports.inject` 同理：只列 `slots / sidebarRightTabs / layout`，
+客户端的 `exports.inject` 同理：只列 `slots`（注册主窗口子页），
 **不列 `timer`** —— 没有它界面靠 `ctxTimeout/ctxInterval` 回退到原生定时器
 （`src/client/runtime.ts`），列了而部署里没有就永远 park。
 
@@ -385,7 +385,7 @@ tools.schema 四个文件里的桩 —— 2026-09 加定时器时整整踩了三
 （`cannot get property "timer" without inject`），**不是**给 `undefined` —— 所以
 `typeof ctx.interval === 'function'` 这种「探测一下有没有」的写法会当场炸，兜底分支根本没机会跑。
 客户端那个「没有 timer 就退回原生定时器」的兜底就是这么坏掉的：真插件形态的客户端只 inject
-`slots / sidebarRightTabs / layout`，于是**装机形态一渲染就崩、面板一片空白**（动态形态 inject 了
+`slots`，于是**装机形态一渲染就崩、面板一片空白**（动态形态 inject 了
 `timer`，作者自测时看不见）。规则：**硬依赖走 `inject`，可选取用走 `ctx.get`，拿不到就降级。**
 守门人是 `test/ui.render.mjs` 的第 6 节 —— 它专门用一个「直接读属性就抛」的 strict ctx 渲染面板。
 
@@ -439,7 +439,7 @@ tools.schema 四个文件里的桩 —— 2026-09 加定时器时整整踩了三
 ## 客户端界面：没有浏览器怎么看
 
 `test/ui.render.mjs` 拿 jsdom + React 把 `lib/ui.js` **真渲染出来点一遍**：工具条按钮、起始页、
-选择器、按路径打开、左下角开关。两条必须照做的规矩：
+选择器、按路径打开、子页登记。两条必须照做的规矩：
 
 1. **DOM 必须在 `import('react-dom/client')` 之前就位。** react-dom 在**模块求值期**就用
    `window` / `document` 探测能力；晚一步它就会认为环境不支持 input 事件，改走 IE 时代的

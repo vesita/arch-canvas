@@ -2,12 +2,12 @@
 
 人与 AI 共用**同一张 Mermaid 架构图**的 DSH 插件。
 
-用户在右侧栏的画布上直接拖节点、拉连线、改属性；AI 读到的是同一张图的 Mermaid 文本。
+用户在主窗口「架构画布」子页上直接拖节点、拉连线、改属性；AI 读到的是同一张图的 Mermaid 文本。
 用户在图上动一下，AI 下一步就能看见；AI 改一处，用户那边立刻跟着动，**而且能看到它改的是哪几个节点**。
 
 ```
         ┌────────── 用户 ──────────┐          ┌─────────── AI ───────────┐
-        │  右侧栏「架构画布」面板    │          │  每步注入的上下文里就有图  │
+        │  主窗口「架构画布」子页    │          │  每步注入的上下文里就有图  │
         │  拖拽 / 连线 / 改标签      │          │  arch_read / arch_edit    │
         │  AI 改过的地方会高亮       │          │  改动过的节点会在画布上高亮 │
         └───────────┬──────────────┘          └────────────┬─────────────┘
@@ -140,7 +140,7 @@ test/
   host.e2e.mjs       在 vm 里用桩服务端到端跑宿主逻辑（种子、RPC、工具、改动来源、落盘、扫描、按路径打开、留言旁路表/锚点/总结）
   host-loader.e2e.mjs 引导层本身：能不能正确加载磁盘上的真身、路径不对会不会吵
   plugin-mount.e2e.mjs 装机形态（lib/index.js）挂载：注册数、console 零输出、周期扫描定时器
-  ui.render.mjs      界面真渲染（jsdom + React）：工具条、起始页、选择器、按路径打开、留言、锚点与总结、左下角开关
+  ui.render.mjs      界面真渲染（jsdom + React）：工具条、起始页、选择器、按路径打开、留言、锚点与总结、子页登记
   tools.schema.mjs   拿 DSH 自己的 sandboxDefineTool 校验四个工具的 schema
 tools/build.mjs      拼接 src → dist 与 lib
 dist/                构建产物（不入库）
@@ -182,7 +182,7 @@ npm run check     # 上面全部 + 工具 schema 校验（改完必须过这一�
 
 图库**跟着项目走**：每个项目目录下有一个 `.arch-canvas/`，里面每张图一个 `.mmd` 文件。
 项目路径来自会话的 cwd：AI 工具侧用 `exec.agent.cwd`，界面侧从 DSH 的
-`sidebar.right.pane.tab` 槽位注入的 `useSessions` 取 `sessionId` 的 cwd
+`conversation.view` 槽位注入的 `useSessions` 取 `sessionId` 的 cwd
 （`src/client/register.ts`），两端都带 `where` 交给宿主解析 —— 于是**人和 AI 落在同一个项目图库**。
 识别不出 cwd 就回退全局图库 `~/.dsh/arch-canvas/`，并且提示词里会写明当前用的是哪个。
 

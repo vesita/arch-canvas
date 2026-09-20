@@ -2,8 +2,14 @@
 // 编辑历史的关键：committedRef 存「已提交」快照，拖拽期间逐帧的 model 不进去。
 // ==================== 主面板 ====================
 var PLUGIN_CTX = null
-var TAB_KIND = 'arch'
 var TAB_ID = 'arch-canvas'
+
+/**
+ * 按下之后多远才算「拖动」而不是「点了一下」（client 像素，曼哈顿距离）。
+ * 定这条门槛是为了让「点选」这个动作在触控板上也可靠：人的手点一下很少一动不动，
+ * 没有门槛就会把「手抖了一像素」当成拖动 —— 既挪了节点、又记一条假历史、还不开详情。
+ */
+var DRAG_SLOP = 4
 
 // 当前画布的实时节点快照，供 register.ts 里的 @ 引用 trigger source 消费
 var studioLiveNodes = []
@@ -112,6 +118,14 @@ function ArchStudio(props) {
   var selState = React.useState(null)
   var sel = selState[0]
   var setSel = selState[1]
+
+  // 下挂的检查器（节点/连线的详情）是**点开**的，不是**按下**就开的 —— 见 onPointerUp。
+  // 从前面板在 pointerdown 就 setSel，于是「想拖一个节点」的那一下也把详情顶出来：
+  // 它最多吃掉画布 46% 的高度，拖动途中画布变矮，节点被挤到看不见的地方，手感就坏了。
+  // 选中的高亮仍然在按下时给（描边不改变布局，是拖动时该有的即时反馈），详情等抬手。
+  var dockState = React.useState(false)
+  var dockOpen = dockState[0]
+  var setDockOpen = dockState[1]
 
   var viewState = React.useState({ x: 0, y: 0, k: 1 })
   var view = viewState[0]
@@ -436,6 +450,7 @@ function ArchStudio(props) {
       histRef.current.future.length = 0
       setHistTick(function (n) { return n + 1 })
       setSel(null)
+      setDockOpen(false)
     } else if (origin === 'ai' || origin === 'local') {
       // AI 改图、从源码重建，同样进历史：Ctrl+Z 能把 AI 的改动退回去
       remember(cloneModel(prev))
@@ -728,6 +743,7 @@ function ArchStudio(props) {
   function onBackgroundDown(e) {
     if (e.button !== 0) return
     setSel(null)
+    setDockOpen(false)
     capture(e)
     var v = viewRef.current
     dragRef.current = { kind: 'pan', ox: e.clientX - v.x, oy: e.clientY - v.y }
@@ -747,7 +763,7 @@ function ArchStudio(props) {
     capture(e)
     var pt = toModelPt(e)
     var g = geomRef.current[node.id]
-    dragRef.current = { kind: 'node', id: node.id, dx: g.x - pt.x, dy: g.y - pt.y, moved: false }
+    dragRef.current = { kind: 'node', id: node.id, dx: g.x - pt.x, dy: g.y - pt.y, moved: false, sx: e.clientX, sy: e.clientY }
   }
 
   /**
@@ -768,7 +784,7 @@ function ArchStudio(props) {
     }
     if (!members.length) return
     capture(e)
-    dragRef.current = { kind: 'group', gid: gid, start: toModelPt(e), members: members, moved: false }
+    dragRef.current = { kind: 'group', gid: gid, start: toModelPt(e), members: members, moved: false, sx: e.clientX, sy: e.clientY }
   }
 
   function onHandleDown(e, node) {
@@ -783,6 +799,8 @@ function ArchStudio(props) {
     if (e.button !== 0) return
     e.stopPropagation()
     setSel({ kind: 'edge', from: from, to: to })
+    // 连线没有拖动语义，按下就是点 —— 详情直接开。
+    setDockOpen(true)
     var cur = modelRef.current
     var ed = null
     if (cur && cur.edges) {
@@ -809,6 +827,10 @@ function ArchStudio(props) {
     if (d.kind === 'node') {
       var cur = modelRef.current
       if (!cur) return
+      // 抖动门槛：按下之后的一两像素移动**不算拖动**（触控板点一下很少一动不动）。
+      // 过了门槛才认成拖动，也才可能进历史 —— 于是「按下就没动」的那一次干净地留给
+      // onPointerUp 去开详情，而不是既开详情又记一条「用户移动了节点」的假历史。
+      if (!d.moved && Math.abs(e.clientX - d.sx) + Math.abs(e.clientY - d.sy) < DRAG_SLOP) return
       d.moved = true
       // 吸附：接近别的节点的中心线就贴上去，并留一条参考线说明「贴的是哪一条」。
       var sn = snapToPeers(cur.nodes, d.id, Math.round(pt.x + d.dx), Math.round(pt.y + d.dy))
@@ -828,6 +850,8 @@ function ArchStudio(props) {
     if (d.kind === 'group') {
       var curG = modelRef.current
       if (!curG) return
+      // 与节点拖动同一条门槛：折叠块「点一下」不该把整组挪走，也不该记一条历史。
+      if (!d.moved && Math.abs(e.clientX - d.sx) + Math.abs(e.clientY - d.sy) < DRAG_SLOP) return
       d.moved = true
       // 组**没有自己的坐标** —— 它就是成员节点的包围盒。所以「拖动组」唯一真实的含义
       // 是把成员一起挪。位移用**起点差值**而不是逐帧累加，免得浮点误差把坐标磨偏。
@@ -856,6 +880,12 @@ function ArchStudio(props) {
     if (d.kind === 'node' && d.moved) {
       push(modelRef.current, '用户移动了节点')
       setStatus('已移动节点并同步')
+      return
+    }
+    if (d.kind === 'node' && !d.moved) {
+      // 按下与抬手之间没有真实位移 = 一次「点选」。详情在这一刻才展开：
+      // 它下挂的是一块最多占 46% 高度的面板，拖动中途展开会把画布挤矮、把节点挤出视野。
+      setDockOpen(true)
       return
     }
     if (d.kind === 'group' && d.moved) {
@@ -989,6 +1019,7 @@ function ArchStudio(props) {
     next.nodes.push({ id: id, label: '新节点', shape: 'rect', group: null, x: x, y: y })
     push(next, '用户新增了节点')
     setSel({ kind: 'node', id: id })
+    setDockOpen(true)
     setLabelDraft('新节点')
     setDescDraft('')
     setGroupDraft('')
@@ -1162,6 +1193,7 @@ function ArchStudio(props) {
     for (var i = 0; i < cur.nodes.length; i++) if (cur.nodes[i].id === id) node = cur.nodes[i]
     if (!node) return
     setSel({ kind: 'node', id: id })
+    setDockOpen(true)
     var sp1 = splitLabel(node.label)
     setLabelDraft(sp1.title)
     setDescDraft(sp1.desc)
@@ -1972,9 +2004,9 @@ function ArchStudio(props) {
     }),
   ) : null
 
-  // ---------- 底部检查器（只在选中时出现，窄栏也不挤） ----------
+  // ---------- 底部检查器（点选后才展开，拖动中不弹） ----------
   var dock = null
-  if (nodeSel) {
+  if (nodeSel && dockOpen) {
     dock = React.createElement('div', { className: 'ac-dock' },
       React.createElement('h4', null, '节点 ' + nodeSel.id),
       React.createElement('div', { className: 'ac-grid' },
@@ -2092,7 +2124,7 @@ function ArchStudio(props) {
         ),
       ),
     )
-  } else if (edgeSel) {
+  } else if (edgeSel && dockOpen) {
     dock = React.createElement('div', { className: 'ac-dock' },
       React.createElement('h4', null, '连线 ' + edgeSel.from + ' → ' + edgeSel.to),
       React.createElement('div', { className: 'ac-grid' },
