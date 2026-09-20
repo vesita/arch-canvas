@@ -197,7 +197,10 @@ function PendingNotesDock(props) {
     if (String(draft || '').indexOf('@' + pending[k]) < 0) missing.push(pending[k])
   }
   var allIn = missing.length === 0
-  var canPut = !!(inputActions && typeof inputActions.setDraft === 'function') && !allIn
+  // 全部都已经在草稿里 → 整条消失。留一条"已在输入框中"的灰条只是噪音：
+  // 它不再提供任何动作，却一直占着输入框上方那一行。
+  if (allIn) return null
+  var canPut = !!(inputActions && typeof inputActions.setDraft === 'function')
   var put = function () {
     if (!canPut) return
     var add = missing.map(function (id) { return '@' + id }).join(' ')
@@ -206,10 +209,11 @@ function PendingNotesDock(props) {
   return React.createElement('div', { className: 'ac-pending' },
     React.createElement('span', { className: 'ac-pending-n' },
       '留言 ' + pending.length + ' 条待发' +
-      (allIn ? '（已全部在输入框中）' : (draft.trim() ? '（只补还没放进来的，追加在后面）' : ''))),
+      (missing.length < pending.length ? '（只补还没放进来的 ' + missing.length + ' 条）'
+        : (draft.trim() ? '（追加在你已写的后面）' : ''))),
     React.createElement('button', {
       className: 'ac-pending-btn', onClick: put, disabled: !canPut,
-    }, allIn ? '已在输入框中' : payloadLabel(missing.length)),
+    }, payloadLabel(missing.length)),
   )
 }
 

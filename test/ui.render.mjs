@@ -1600,12 +1600,10 @@ console.log('\n[4n] 留言横条的查重：已经在草稿里的不再重复加
     return { h, r, calls }
   }
 
-  // (a) 两条都已在草稿里 → 按钮禁用、文案说明
+  // (a) 两条都已在草稿里 → 整条横条消失（不再占着输入框上方那一行）
   const dupA = await renderDock('@x1 @x2')
-  ok('全都在草稿里时，横条说明「已全部在输入框中」',
-    (dupA.h.textContent || '').indexOf('已全部在输入框中') >= 0, dupA.h.textContent)
-  const dupABtn = dupA.h.querySelector('button')
-  ok('全都在草稿里时按钮禁用（点不出重复）', !!dupABtn && dupABtn.disabled === true, dupABtn && dupABtn.disabled)
+  ok('全都在草稿里时整条横条消失',
+    (dupA.h.textContent || '').trim() === '' && !dupA.h.querySelector('button'), dupA.h.textContent)
 
   // (b) 部分去重：只有 x1 在草稿里 → 只补 x2，且不再重复加 x1
   const dupB = await renderDock('@x1')

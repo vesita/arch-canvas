@@ -926,6 +926,39 @@ ok('删节点后孤儿留言仍可保留在 notes.json 中', !!(notesAfterDel['a
 const getAfterDel = await call('doc:get', { where: dirNote })
 ok('模型中已无节点 n3', !getAfterDel.model.nodes.some((n) => n.id === 'n3'))
 eq('删节点后当前图 noteCount 为 1（仅剩 n1，n3 已成孤儿）', getAfterDel.noteCount, 1)
+
+// 8. AI 自己标记已办（mark_note）—— 从前没有这个 op，AI 只能干看着
+//    这一段自包含：新加一个节点、给它写条留言，不依赖上面留下的状态。
+console.log('【AI 标记留言已办 mark_note】')
+const mnAdd = await tool('arch_edit').execute({ ops: [{ op: 'add_node', id: 'mn1', label: '待标记' }] }, {})
+ok('备好一个节点', mnAdd && mnAdd.problems && mnAdd.problems.length === 0, mnAdd && mnAdd.problems)
+const mnGet = await call('doc:get', { where: dirNote })
+const mnModel = JSON.parse(JSON.stringify(mnGet.model))
+mnModel.nodes.find((n) => n.id === 'mn1').note = '这条留言交给 AI 自己标已办'
+mnModel.nodes.find((n) => n.id === 'mn1').noteDone = false
+await call('doc:set', { model: mnModel, where: dirNote })
+
+const mnDone = await tool('arch_edit').execute({ ops: [{ op: 'mark_note', id: 'mn1', done: true }] }, {})
+ok('mark_note 标已办没有 problems', mnDone && mnDone.problems && mnDone.problems.length === 0, mnDone && mnDone.problems)
+const mnAfter = await call('doc:get', { where: dirNote })
+const mnNode = mnAfter.model.nodes.find((n) => n.id === 'mn1')
+eq('mark_note 之后 noteDone = true', mnNode && mnNode.noteDone, true)
+ok('mark_note 之后已办计数 ≥ 1', mnAfter.resolvedNoteCount >= 1, mnAfter.resolvedNoteCount)
+
+// 负向对照一：重新打开（done:false）
+const mnReopen = await tool('arch_edit').execute({ ops: [{ op: 'mark_note', id: 'mn1', done: false }] }, {})
+ok('mark_note done:false 能重新打开', mnReopen && mnReopen.problems && mnReopen.problems.length === 0, mnReopen && mnReopen.problems)
+const mnRe = await call('doc:get', { where: dirNote })
+eq('重新打开后 noteDone = false', mnRe.model.nodes.find((n) => n.id === 'mn1').noteDone, false)
+
+// 负向对照二：没有留言的节点不许标记（别产生「有状态没正文」的半截形态）
+const mnEmpty = await tool('arch_edit').execute({ ops: [{ op: 'add_node', id: 'mn2', label: '无留言' }, { op: 'mark_note', id: 'mn2' }] }, {})
+ok('对没有留言的节点 mark_note 被拒', mnEmpty.problems && mnEmpty.problems.some((p) => p.indexOf('没有留言') >= 0), mnEmpty.problems)
+// 负向对照三：节点不存在
+const mnGhost = await tool('arch_edit').execute({ ops: [{ op: 'mark_note', id: '查无此节点' }] }, {})
+ok('对不存在的节点 mark_note 被拒', mnGhost.problems && mnGhost.problems.some((p) => p.indexOf('找不到节点') >= 0), mnGhost.problems)
+const mnAfter2 = await call('doc:get', { where: dirNote })
+eq('被拒的两次都没有改动已办计数', mnAfter2.resolvedNoteCount, mnRe.resolvedNoteCount)
 eq('删节点后 resolvedNoteCount 为 0', getAfterDel.resolvedNoteCount, 0)
 eq('删节点后 warnings 为空（不报错）', getAfterDel.warnings.length, 0)
 

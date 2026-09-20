@@ -1098,6 +1098,18 @@ function applyOps(ops) {
     var op = ops[i] && typeof ops[i] === 'object' ? ops[i] : {}
     var kind = op.op
     var tag = '第 ' + (i + 1) + ' 个 op(' + String(kind) + ')'
+    // mark_note：把一条留言标成已办（或重新打开）。留言的存在形态是旁路表，
+    // 但模型上就是节点上的 `note` / `noteDone` 两个字段 —— 这里改的正是它们，
+    // 落盘时由 persist() 收进 notes.json。没有留言的节点直接拒，别产生半截状态。
+    if (kind === 'mark_note') {
+      var mnId = op.id ? cleanId(String(op.id)) : ''
+      var mnNode = mnId ? findNode(mnId) : null
+      if (!mnNode) { problems.push(tag + ': 找不到节点 ' + (mnId || '(空)') + '，mark_note 需要有效的 id'); continue }
+      if (!mnNode.note) { problems.push(tag + ': 节点 ' + mnId + ' 上没有留言，无需标记'); continue }
+      mnNode.noteDone = op.done === false ? false : true
+      done.push(mnNode.noteDone ? ('把 ' + mnId + ' 的留言标成已办') : ('重新打开 ' + mnId + ' 的留言'))
+      continue
+    }
     if (kind === 'add_node') {
       var nid = op.id ? cleanId(op.id) : nextNodeId()
       if (findNode(nid)) { problems.push(tag + ': 节点 ' + nid + ' 已存在，改用 set_label'); continue }
