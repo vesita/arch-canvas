@@ -174,3 +174,28 @@ async function saveNoteStoreFor(file: string, policy?: any): Promise<string | nu
     return err
   }
 }
+
+/**
+ * 改名时把留言表里那一格**搬过去**。
+ *
+ * 表以「图文件名」为键（`{ "architecture.mmd": { <节点id>: … } }`）。`doc:rename` 只搬了
+ * `.mmd` 正文和墓碑，没动这张表 —— 于是旧键变成孤儿、新名字那张图一条留言都没有：
+ * 用户改名后再打开，看到的是「留言自己没了」，而数据其实还躺在文件里。
+ * （2026-09-20 宿主审计第 13 条。）
+ */
+async function renameNoteStoreFor(fromFile: string, toFile: string, policy?: any): Promise<string | null> {
+  var fromKey = noteKeyFor(fromFile)
+  var toKey = noteKeyFor(toFile)
+  if (!fromKey || fromKey === toKey) return null
+  var store
+  try {
+    store = await loadNoteStoreFor(fromFile)
+  } catch (e) {
+    return msgOf(e)
+  }
+  if (!store || typeof store !== 'object') return null
+  if (!store[fromKey]) return null  // 这张图本来就没留言 —— 不写盘，别凭空造一个空表出来
+  if (!store[toKey]) store[toKey] = store[fromKey]
+  delete store[fromKey]
+  return saveNoteStoreFor(toFile, policy)
+}

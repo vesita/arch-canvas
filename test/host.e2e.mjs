@@ -1455,6 +1455,63 @@ eq('建库后 arch_write 成功 (ok !== false)', writeAllowed && writeAllowed.ok
 // Mermaid 的 hexagon 形状是 `id{{"标签"}}`，而 DSH 的 systemPrompt.context 会把 `{{...}}` 当变量引用，
 // 名字不匹配 `/^[a-z][a-z0-9_]*$/` 就直接抛错 —— 整条提示词注入失败、插件当场崩
 // （2026-09-20 实测：图上加了一个 hex 节点，会话就起不来了）。promptText 的最后一行的拆解就是那次事故的修复。
+console.log('【宿主审计 A：add_node 带组必须把组也建出来，否则往返丢组】')
+// normalizeModel / set_group / add_group 三处都会补建缺失的组，唯独 add_node 漏了：
+// serializeDoc 只为 doc.groups 里的组写 subgraph，落到 loose 的节点下次解析回来 group 就是 null。
+const dirAud = '/tmp/test-arch-audit'
+agentMap.set('sess-aud', { session: { id: 'sess-aud', cwd: dirAud } })
+const audOpen = await call('doc:open', { key: 'ag', create: true, where: dirAud, session: 'sess-aud' })
+ok('审计用例：新建一张图', audOpen && audOpen.ok !== false, audOpen && audOpen.error)
+const agAdd = await tool('arch_edit').execute({
+  ops: [
+    { op: 'add_node', id: 'gn1', label: '带组节点', group: '新组 名' },
+    { op: 'add_node', id: 'gn2', label: '散节点' },
+  ],
+}, {})
+ok('add_node 生效', agAdd && agAdd.appliedCount === 2, agAdd && agAdd.appliedCount)
+ok('带组的节点立刻写成了 subgraph（组被建出来了）',
+  String(agAdd.mermaid).indexOf('subgraph') >= 0, agAdd.mermaid)
+const audBack = await call('doc:open', { key: 'ag', where: dirAud, session: 'sess-aud' })
+const gn1 = audBack && audBack.model && audBack.model.nodes.find((n) => n.id === 'gn1')
+// 这一条是**往返**断言：从磁盘重新读回来，组名必须还在（从前这里是 null —— 静默丢）
+eq('从磁盘读回来组名还在（往返不丢）', gn1 && gn1.group, '新组_名')
+ok('组也回到了 groups 里', !!(audBack.model.groups || []).find((g) => g.id === '新组_名'),
+  audBack.model.groups)
+
+console.log('【宿主审计 B：改名必须把留言表里的那一格一起搬过去】')
+// 留言表以**图文件名**为键；doc:rename 只搬了 .mmd 正文和墓碑，于是新名字那张图一条留言都没有
+const audModel = JSON.parse(JSON.stringify(audBack.model))
+audModel.nodes.find((n) => n.id === 'gn1').note = '这条留言必须跟着改名走'
+const audNote = await call('doc:set', { model: audModel, where: dirAud, session: 'sess-aud' })
+ok('写留言成功', audNote && audNote.saved !== false, audNote && audNote.error)
+const audRen = await call('doc:rename', { from: 'ag', to: 'ag2', where: dirAud, session: 'sess-aud' })
+ok('改名成功', audRen && audRen.ok !== false, audRen && audRen.error)
+const audAfter = await call('doc:open', { key: 'ag2', where: dirAud, session: 'sess-aud' })
+const movedNote = audAfter && audAfter.model && audAfter.model.nodes.find((n) => n.note)
+eq('改名之后留言跟着过来了（不再是「留言自己没了」）', movedNote && movedNote.note, '这条留言必须跟着改名走')
+const audStoreTxt = files.get(dirAud + '/.arch-canvas/notes.json') || ''
+ok('留言表里旧键已经搬走（不留孤儿）', audStoreTxt.indexOf('"ag.mmd"') < 0, audStoreTxt.slice(0, 160))
+ok('留言表里新键拿到了那一格', audStoreTxt.indexOf('"ag2.mmd"') >= 0, audStoreTxt.slice(0, 160))
+
+console.log('【宿主审计 C：落盘失败不许推进修订号、也不许换作者】')
+const beforeRev = (await call('doc:get', { where: dirAud, session: 'sess-aud' }))
+const revWas = beforeRev.revision
+const byWas = beforeRev.updatedBy
+const audFileNow = beforeRev.file
+const failModel = JSON.parse(JSON.stringify(beforeRev.model))
+failModel.nodes[0].label = '这次不该生效'
+failWritePaths.add(audFileNow)
+const audFail = await call('doc:set', { model: failModel, where: dirAud, session: 'sess-aud' })
+failWritePaths.delete(audFileNow)
+ok('写盘失败如实回报 saved:false', audFail && audFail.saved === false, audFail && audFail.saved)
+const afterFail = await call('doc:get', { where: dirAud, session: 'sess-aud' })
+// 失败的那次在 persist 之前已经 bump 过了；不还原的话修订号会白涨一格、作者记成它 ——
+// 客户端看到修订号变了就以为改动生效了。
+eq('落盘失败后修订号没有被推进', afterFail.revision, revWas)
+eq('落盘失败后作者没有被改写', afterFail.updatedBy, byWas)
+ok('落盘失败后标签也没变（内存已回滚）', afterFail.model.nodes[0].label !== '这次不该生效',
+  afterFail.model.nodes[0].label)
+
 console.log('【提示词模板注入防护】')
 {
   const hexAdd = await tool('arch_edit').execute({ ops: [{ op: 'add_node', id: 'hexprobe', label: '探针', shape: 'hex', x: 0, y: 0 }] }, {})

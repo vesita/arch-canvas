@@ -1018,11 +1018,16 @@ function setEdgeLabel(from, to, label) {
 
 /** 落盘前的模型快照。写盘失败时用它把内存恢复回去，别让内存与磁盘各说各话。 */
 function snapshotModel() {
+  // 版本三件套（revision / updatedBy / updatedAt）**必须一起快照**：落盘失败时会 restoreModel，
+  // 而失败的那次操作在此之前已经 bump 过了 —— 不还原的话，一次**没写进去**的改动照样把
+  // 修订号推进一格、把作者记成它，客户端看到修订号变了就以为改动生效了。
+  // （2026-09-20 宿主审计第 14 条。）
   return JSON.stringify({
     name: doc.name, file: doc.file, tombstoned: doc.tombstoned, absent: doc.absent === true,
     nodes: doc.nodes, edges: doc.edges, groups: doc.groups,
     direction: doc.direction, extras: doc.extras, notes: doc.notes, fileStatus: doc.fileStatus,
     summary: doc.summary,
+    revision: doc.revision, updatedBy: doc.updatedBy, updatedAt: doc.updatedAt,
   })
 }
 
@@ -1040,6 +1045,10 @@ function restoreModel(saved) {
   doc.notes = m.notes
   doc.fileStatus = m.fileStatus || {}
   doc.summary = cleanSummary(m.summary)
+  // 旧快照里没有这三个字段（回滚到更早的代码路径时），有才还原，别把修订号写成 undefined
+  if (typeof m.revision === 'number') doc.revision = m.revision
+  if (typeof m.updatedBy === 'string') doc.updatedBy = m.updatedBy
+  if (typeof m.updatedAt === 'number') doc.updatedAt = m.updatedAt
 }
 
 /**
@@ -1128,11 +1137,20 @@ function applyOps(ops) {
     if (kind === 'add_node') {
       var nid = op.id ? cleanId(op.id) : nextNodeId()
       if (findNode(nid)) { problems.push(tag + ': 节点 ' + nid + ' 已存在，改用 set_label'); continue }
+      // 挂到一个**还不存在的组**上时，必须把组也建出来：serializeDoc 只为 doc.groups 里的组
+      // 写 subgraph，落到 loose 里的节点下次解析回来 `group` 就是 null —— 分组被**静默吞掉**。
+      // normalizeModel / set_group / add_group 三处都会补，唯独 add_node 从前漏了。
+      var ngid = typeof op.group === 'string' && op.group ? cleanId(op.group) : null
+      if (ngid) {
+        var ngHave = false
+        for (var ngi = 0; ngi < doc.groups.length; ngi++) if (doc.groups[ngi].id === ngid) { ngHave = true; break }
+        if (!ngHave) doc.groups.push({ id: ngid, label: String(op.group) })
+      }
       doc.nodes.push({
         id: nid,
         label: typeof op.label === 'string' && op.label !== '' ? op.label : nid,
         shape: SHAPE_WRAP[op.shape] ? op.shape : 'rect',
-        group: typeof op.group === 'string' && op.group ? cleanId(op.group) : null,
+        group: ngid,
         x: typeof op.x === 'number' ? op.x : null,
         y: typeof op.y === 'number' ? op.y : null,
         link: normLink(op.link),

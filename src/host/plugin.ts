@@ -462,6 +462,9 @@ ctx.effect(function () {
       await fs.writeText(await fs.resolve(fileAt(b.dir, b.name)), text, undefined, undefined, renamePolicy)
       // 旧文件只能软删（fs 没有 unlink），于是「改名」= 新建 + 把旧的标成已删除
       await fs.writeText(await fs.resolve(fileAt(a.dir, a.name)), TOMBSTONE + '\n' + text, undefined, undefined, renamePolicy)
+      // 留言表也得跟着搬：它以**文件名**为键，不搬就等于新名字那张图一条留言都没有
+      var noteMoveErr = await renameNoteStoreFor(fileAt(a.dir, a.name), fileAt(b.dir, b.name), renamePolicy)
+      if (noteMoveErr) logEvent('warn', 'notes.rename.fail', { from: a.name, to: b.name, error: noteMoveErr })
     } catch (e) {
       return { ok: false, error: '改名失败：' + msgOf(e) }
     }
