@@ -1359,6 +1359,72 @@ console.log('\n[4j] 连线布线：正交折线 + 避让中间的方块')
   respond = prevRespondRoute
 }
 
+console.log('\n[4k] 发送区上方的留言横条：追加草稿，不顶掉用户打的字')
+{
+  const Dock = captured['conversation.input.dock']
+  ok('注册到了 conversation.input.dock 槽位', typeof Dock === 'function')
+  if (typeof Dock === 'function') {
+    // 横条读的是模块级 studioLiveNodes 快照，所以要先把面板渲染一次把快照喂上。
+    const DOCK_MODEL = {
+      nodes: [
+        { id: 'd1', label: '节点甲', shape: 'rect', group: null, x: 0, y: 0, note: '这里为什么不用队列？', noteDone: false },
+        { id: 'd2', label: '节点乙', shape: 'rect', group: null, x: 200, y: 0, note: '已确认', noteDone: true },
+        { id: 'd3', label: '节点丙', shape: 'rect', group: null, x: 400, y: 0, note: '这里需要限流', noteDone: false },
+      ],
+      edges: [], groups: [], direction: 'TD', extras: [],
+    }
+    const prevRespondDock = respond
+    const dockModel = JSON.parse(JSON.stringify(DOCK_MODEL))
+    respond = function (method, args) {
+      if (method === 'doc:get') {
+        return fullDoc({ model: dockModel, nodeCount: dockModel.nodes.length })
+      }
+      return prevRespondDock(method, args)
+    }
+    const seedHost = document.createElement('div')
+    document.body.appendChild(seedHost)
+    const seedRoot = createRoot(seedHost)
+    await act(async () => {
+      seedRoot.render(React.createElement(captured['sidebar.right.pane.tab'], {
+        cwd: UI, sessionId: 's1', useSessions: () => UI,
+      }))
+    })
+    await flush()
+
+    const drafted = []
+    const dockActions = { setDraft: (t) => drafted.push(t), submit: () => {} }
+    const USER_DRAFT = '我本来打了一半的话'
+    const dockHost = document.createElement('div')
+    document.body.appendChild(dockHost)
+    const dockRoot = createRoot(dockHost)
+    await act(async () => {
+      dockRoot.render(React.createElement(Dock, {
+        inputActions: dockActions,
+        useInput: (sel) => sel({ draft: USER_DRAFT }),
+      }))
+    })
+    await flush()
+
+    const dockText = dockHost.textContent || ''
+    ok('横条只在有未办留言时出现，并报出条数', dockText.indexOf('留言 2 条待发') >= 0, dockText)
+    ok('草稿非空时会说明是追加', dockText.indexOf('追加') >= 0, dockText)
+    const dockBtn = dockHost.querySelector('button')
+    ok('横条上有一个「放入输入框」按钮', !!dockBtn, dockText)
+    if (dockBtn) {
+      await act(async () => { dockBtn.click() })
+    }
+    eq('点一下确实调用了 setDraft', drafted.length, 1)
+    const sentDraft = drafted[0] || ''
+    // 这条是核心：**追加**而不是替换。换成替换式的 setDraft，用户打的字就没了。
+    ok('用户原本打的字没有被顶掉（追加而非替换）', sentDraft.indexOf(USER_DRAFT) === 0, sentDraft)
+    ok('两条未办留言都以 @节点id 的形式进了草稿', sentDraft.indexOf('@d1') >= 0 && sentDraft.indexOf('@d3') >= 0, sentDraft)
+    ok('已办的那条不进草稿', sentDraft.indexOf('@d2') < 0, sentDraft)
+
+    await act(async () => { dockRoot.unmount(); seedRoot.unmount() })
+    respond = prevRespondDock
+  }
+}
+
 console.log('\n[7] 卸载不留尾')
 await act(async () => { root.unmount(); footRoot.unmount() })
 dispose()

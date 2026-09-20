@@ -139,6 +139,11 @@ var STUDIO_CSS = [
   '.ac-hist .ac-hist-item.on{font-weight:600;color:var(--dsw-alias-label-primary,#e8eaed)}',
   '.ac-hist .ac-hist-cur{flex:0 0 auto;font-size:11px;color:var(--dsw-alias-label-secondary,#9aa3af)}',
   '.ac-note-actions{display:flex;gap:6px;margin-top:6px}',
+  // 发送区上方的「留言待发」横条（挂 conversation.input.dock）—— 不占用输入框本身
+  '.ac-pending{display:flex;align-items:center;gap:8px;margin:0 0 6px;padding:5px 9px;border:1px solid var(--dsw-alias-border-l1,#2a2e35);border-radius:8px;background:var(--dsw-alias-bg-layer-1,#1b1e23);font-size:12px}',
+  '.ac-pending-n{color:var(--dsw-alias-text-2,#9aa3ad)}',
+  '.ac-pending-btn{margin-left:auto;padding:2px 10px;border:1px solid #4c8dff;border-radius:6px;background:transparent;color:#4c8dff;font-size:12px;cursor:pointer}',
+  '.ac-pending-btn:disabled{opacity:.45;cursor:default}',
   // 节点上的代码锚点角标与检查器中的引用校验状态
   '.ac-file-badge circle{fill:var(--dsw-alias-brand-primary,#4c8dff);stroke:var(--dsw-alias-bg-base,#14161a);stroke-width:1.5}',
   '.ac-file-badge.broken circle{fill:#e5534b}',
