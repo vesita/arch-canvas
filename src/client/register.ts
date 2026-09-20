@@ -189,18 +189,27 @@ function PendingNotesDock(props) {
     if (nodes[i] && nodes[i].id && nodes[i].note && !nodes[i].noteDone) pending.push(nodes[i].id)
   }
   if (pending.length === 0) return null
-  var canPut = !!(inputActions && typeof inputActions.setDraft === 'function')
+  // 查重：已经在草稿里的不再重复加。否则点两下就会把同一批留言塞进去两遍 ——
+  // 用户报的就是这个（"加过后这个加入功能还在"）。草稿一变 useInput 就会推着我们重渲染，
+  // 所以加完这一下按钮自己就会变成"已在输入框中"。
+  var missing = []
+  for (var k = 0; k < pending.length; k++) {
+    if (String(draft || '').indexOf('@' + pending[k]) < 0) missing.push(pending[k])
+  }
+  var allIn = missing.length === 0
+  var canPut = !!(inputActions && typeof inputActions.setDraft === 'function') && !allIn
   var put = function () {
     if (!canPut) return
-    var add = pending.map(function (id) { return '@' + id }).join(' ')
+    var add = missing.map(function (id) { return '@' + id }).join(' ')
     inputActions.setDraft(draft.trim() ? draft.replace(/\s+$/, '') + '\n' + add : add)
   }
   return React.createElement('div', { className: 'ac-pending' },
     React.createElement('span', { className: 'ac-pending-n' },
-      '留言 ' + pending.length + ' 条待发' + (draft.trim() ? '（会追加到你已写的后面）' : '')),
+      '留言 ' + pending.length + ' 条待发' +
+      (allIn ? '（已全部在输入框中）' : (draft.trim() ? '（只补还没放进来的，追加在后面）' : ''))),
     React.createElement('button', {
       className: 'ac-pending-btn', onClick: put, disabled: !canPut,
-    }, payloadLabel(pending.length)),
+    }, allIn ? '已在输入框中' : payloadLabel(missing.length)),
   )
 }
 

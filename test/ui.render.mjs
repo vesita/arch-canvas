@@ -1558,6 +1558,126 @@ console.log('\n[4m] 端口的硬约束：绝不许越过方块边界（悬空连
   respond = prevRespondShort
 }
 
+console.log('\n[4n] 留言横条的查重：已经在草稿里的不再重复加')
+{
+  const DUP_MODEL = {
+    nodes: [
+      { id: 'x1', label: '甲', shape: 'rect', group: null, x: 0, y: 0, note: '第一条', noteDone: false },
+      { id: 'x2', label: '乙', shape: 'rect', group: null, x: 200, y: 0, note: '第二条', noteDone: false },
+    ],
+    edges: [], groups: [], direction: 'TD', extras: [],
+  }
+  const prevRespondDup = respond
+  const dupModel = JSON.parse(JSON.stringify(DUP_MODEL))
+  respond = function (method, args) {
+    if (method === 'doc:get') return fullDoc({ model: dupModel, nodeCount: dupModel.nodes.length })
+    return prevRespondDup(method, args)
+  }
+  // 横条读的是 studioLiveNodes 快照，先渲染一次面板喂上
+  const seedHost2 = document.createElement('div')
+  document.body.appendChild(seedHost2)
+  const seedRoot2 = createRoot(seedHost2)
+  await act(async () => {
+    seedRoot2.render(React.createElement(captured['sidebar.right.pane.tab'], {
+      cwd: UI, sessionId: 's1', useSessions: () => UI,
+    }))
+  })
+  await flush()
+
+  const DockC = captured['conversation.input.dock']
+  const renderDock = async (draftText) => {
+    const h = document.createElement('div')
+    document.body.appendChild(h)
+    const r = createRoot(h)
+    const calls = []
+    await act(async () => {
+      r.render(React.createElement(DockC, {
+        inputActions: { setDraft: (t) => calls.push(t) },
+        useInput: (sel) => sel({ draft: draftText }),
+      }))
+    })
+    await flush()
+    return { h, r, calls }
+  }
+
+  // (a) 两条都已在草稿里 → 按钮禁用、文案说明
+  const dupA = await renderDock('@x1 @x2')
+  ok('全都在草稿里时，横条说明「已全部在输入框中」',
+    (dupA.h.textContent || '').indexOf('已全部在输入框中') >= 0, dupA.h.textContent)
+  const dupABtn = dupA.h.querySelector('button')
+  ok('全都在草稿里时按钮禁用（点不出重复）', !!dupABtn && dupABtn.disabled === true, dupABtn && dupABtn.disabled)
+
+  // (b) 部分去重：只有 x1 在草稿里 → 只补 x2，且不再重复加 x1
+  const dupB = await renderDock('@x1')
+  const dupBBtn = dupB.h.querySelector('button')
+  ok('只差一条时按钮可用', !!dupBBtn && dupBBtn.disabled === false, dupBBtn && dupBBtn.disabled)
+  if (dupBBtn) await act(async () => { dupBBtn.click() })
+  eq('只补了还没进来的那一条', dupB.calls[0], '@x1\n@x2')
+
+  await act(async () => { dupA.r.unmount(); dupB.r.unmount(); seedRoot2.unmount() })
+  respond = prevRespondDup
+}
+
+console.log('\n[4o] Esc 两段式：第一下只拿焦点，第二下才关编辑页')
+{
+  const ESC_MODEL = {
+    nodes: [
+      { id: 'e1', label: '节点甲', shape: 'rect', group: null, x: 0, y: 0, note: '这里为什么不用队列？', noteDone: false },
+    ],
+    edges: [], groups: [], direction: 'TD', extras: [],
+  }
+  const prevRespondEsc = respond
+  const escModel = JSON.parse(JSON.stringify(ESC_MODEL))
+  respond = function (method, args) {
+    if (method === 'doc:get') return fullDoc({ model: escModel, nodeCount: 1 })
+    return prevRespondEsc(method, args)
+  }
+  const eHost = document.createElement('div')
+  document.body.appendChild(eHost)
+  const eRoot = createRoot(eHost)
+  await act(async () => {
+    eRoot.render(React.createElement(captured['sidebar.right.pane.tab'], {
+      cwd: UI, sessionId: 's1', useSessions: () => UI,
+    }))
+  })
+  await flush()
+  const eNodeEl = eHost.querySelector('g.ac-node')
+  await act(async () => {
+    eNodeEl.dispatchEvent(new dom.window.PointerEvent('pointerdown', { bubbles: true, button: 0 }))
+  })
+  await flush()
+  const inspectorOpen = () => !!eHost.querySelector('textarea[placeholder*="这里为什么不用队列"]')
+  ok('选中节点后编辑页打开', inspectorOpen())
+  const escArea = eHost.querySelector('textarea[placeholder*="这里为什么不用队列"]')
+  await act(async () => { escArea.focus() })
+  eq('焦点在输入框里', document.activeElement === escArea, true)
+
+  // 第一下：焦点在输入框 → 焦点移进面板根，编辑页不动
+  await act(async () => {
+    escArea.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+  })
+  await flush()
+  const rootEl = eHost.querySelector('.ac-root')
+  ok('第一下 Esc 把焦点从输入框拿走了', document.activeElement !== escArea,
+    document.activeElement && document.activeElement.tagName)
+  // 这条是关键：焦点必须落在**面板根**上。用 blur() 掉到 body 的话，
+  // Esc 的处理器（挂在 .ac-root 上）就再也收不到第二下，编辑页永远关不掉。
+  ok('焦点落到了面板根上（所以第二下 Esc 还能被收到）',
+    !!rootEl && document.activeElement === rootEl,
+    document.activeElement && document.activeElement.className)
+  ok('第一下 Esc 没有关掉编辑页', inspectorOpen())
+
+  // 第二下：焦点已在面板根上 → 关掉（取消选中）
+  await act(async () => {
+    rootEl.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+  })
+  await flush()
+  ok('第二下 Esc 关掉了编辑页', !inspectorOpen())
+
+  await act(async () => { eRoot.unmount() })
+  respond = prevRespondEsc
+}
+
 console.log('\n[7] 卸载不留尾')
 await act(async () => { root.unmount(); footRoot.unmount() })
 dispose()

@@ -803,7 +803,20 @@ function ArchStudio(props) {
       return
     }
     if (e.key === 'Escape') {
-      if (inField) return
+      // 两段式：焦点在输入框里时，第一下只把焦点**拿出来**（不关编辑页、也不动你写的内容），
+      // 再按一下（此时焦点已不在输入框）才关。
+      // 为什么不直接关：中文输入法组字过程中按 Esc 是"取消这次组字"，
+      // 顺手把编辑页关掉会连带丢掉刚写的东西；所以组字进行中连焦点都不动。
+      if (inField) {
+        if (e.isComposing) return
+        // 注意：这里**不能**用 blur()。Esc 的处理器挂在面板容器（.ac-root）上，
+        // 一旦焦点 blur 到 body，第二下 Esc 就再也到不了这个函数 —— 实测过：
+        // 那样只会"丢焦点"，编辑页永远关不掉。面板根本来就 tabIndex=0，
+        // 把焦点移进去既是"离开了输入框"，又让第二下仍然落在面板里。
+        if (rootRef.current && typeof rootRef.current.focus === 'function') rootRef.current.focus()
+        else if (e.target && typeof e.target.blur === 'function') e.target.blur()
+        return
+      }
       // 取消选中，连带收掉还没落下的连线预览
       setSel(null)
       setLinkPt(null)
