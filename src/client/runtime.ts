@@ -12,7 +12,11 @@ var STUDIO_CSS = [
   '.ac-tab[disabled]{opacity:.35;cursor:not-allowed}',
   // AI 刚改过的地方：描边转金 + 一圈脉动环（环动画自带 forwards，跑完自己隐形）
   '.ac-node.hl .ac-shape{stroke:#f0b429;stroke-width:3}',
-  '.ac-hl{fill:none;stroke:#f0b429;stroke-width:3;animation:acPulse 2.6s ease-out forwards}',
+  // 这个类从前叫 .ac-hl，而源码页的**代码高亮层**也叫 .ac-hl —— 于是上面那条
+  // `animation:acPulse ... forwards`（终点 opacity:0）被一起焊到了代码 <pre> 上：
+  // 进源码页 2.6 秒后整层淡成透明，读起来就是「文本逐渐变白」。
+  // 两个东西一个管 SVG 描边、一个管 DOM 盒子，别再共用一个类名。
+  '.ac-pulse{fill:none;stroke:#f0b429;stroke-width:3;animation:acPulse 2.6s ease-out forwards}',
   '@keyframes acPulse{0%{opacity:.9}60%{opacity:.45}100%{opacity:0}}',
   '.ac-tools{display:flex;gap:4px;flex-wrap:wrap;padding:0 8px 7px;flex:0 0 auto}',
   '.ac-btn{appearance:none;border:1px solid var(--dsw-alias-border-l2,#3a4048);background:var(--dsw-alias-bg-layer-1,#1b1e23);color:inherit;border-radius:7px;padding:3px 8px;font:inherit;font-size:12px;cursor:pointer;white-space:nowrap}',
@@ -68,12 +72,18 @@ var STUDIO_CSS = [
   '.ac-input,.ac-area,.ac-select{width:100%;box-sizing:border-box;background:var(--dsw-alias-bg-base,#14161a);color:inherit;border:1px solid var(--dsw-alias-border-l2,#3a4048);border-radius:7px;padding:5px 7px;font:inherit;font-size:12.5px}',
   '.ac-readonly{opacity:.65}',
   '.ac-area{height:100%;min-height:120px;resize:none;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;line-height:1.55;white-space:pre;overflow:auto}',
-  // 源码高亮：底层 <pre> 画彩色 token，顶层 textarea 把文字设成透明（只留光标与选区）。
-  // 两层的 font / padding / border / white-space 必须逐项一致，差一点光标就与文字错位。
-  '.ac-editwrap{position:relative;flex:1 1 auto;min-height:120px;display:flex}',
-  '.ac-hl{position:absolute;inset:0;margin:0;box-sizing:border-box;border:1px solid transparent;border-radius:7px;padding:5px 7px;overflow:auto;pointer-events:none;scrollbar-width:none;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;line-height:1.55;white-space:pre;tab-size:2}',
-  '.ac-hl::-webkit-scrollbar{width:0;height:0}',
-  '.ac-area-hl{position:relative;z-index:1;background:transparent;color:transparent;caret-color:var(--dsw-alias-label-primary,#e8eaed);resize:none}',
+  // 源码高亮：底层 <pre> 画彩色 token 并**撑出整段源码的高度**，顶层 textarea 把文字设成透明
+  // （只留光标与选区）用绝对定位铺满它。两层**都不滚动**，滚动交给 .ac-textwrap 这一个口。
+  //
+  // 从前两层各自 overflow:auto、靠 textarea 的 onScroll 同步 —— 那是两个滚动口互相同步，
+  // 滚轮落在哪一层、哪一层先到底都会错位；而它们的文字一层可见一层透明，
+  // 错位看起来就是「一片空白 / 文字在变白」。现在 textarea 没有可滚动的溢出（高度跟着 <pre> 走），
+  // 也就**无从错位**：光标永远落在它自己那一格上。
+  //
+  // 两层的 font / padding / border / white-space / tab-size 必须逐项一致，差一点光标就与文字错位。
+  '.ac-editwrap{position:relative;flex:0 0 auto;min-height:120px;display:block}',
+  '.ac-hl{position:relative;margin:0;box-sizing:border-box;border:1px solid transparent;border-radius:7px;padding:5px 7px;pointer-events:none;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;line-height:1.55;white-space:pre;tab-size:2}',
+  '.ac-area-hl{position:absolute;top:0;left:0;right:0;bottom:0;height:auto;min-height:0;z-index:1;background:transparent;color:transparent;caret-color:var(--dsw-alias-label-primary,#e8eaed);resize:none;overflow:hidden;tab-size:2}',
   '.ac-area-hl::selection{background:rgba(76,141,255,.35)}',
   '.ac-hl-c{color:#6a737d}',
   '.ac-hl-m{color:#c08b5c}',
@@ -83,7 +93,10 @@ var STUDIO_CSS = [
   '.ac-hl-a{color:#ff9e64}',
   '.ac-hl-p{color:#8b949e}',
   '.ac-hl-i{color:#e8eaed}',
-  '.ac-textwrap{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;padding:8px;gap:7px}',
+  // 源码页整个是一个滚动口：子项一律不压缩（flex:0 0 auto），否则列向 flex 会把它们挤扁，
+  // 内容永远超不出容器 —— 表现就是「滚轮怎么滚都没反应」。
+  '.ac-textwrap{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;padding:8px;gap:7px;overflow:auto}',
+  '.ac-textwrap > *{flex:0 0 auto}',
   // 解析警告区：宿主一直在发 warnings，界面从前一条都不显示。折叠不成，直接列出来。
   '.ac-warn{flex:0 0 auto;max-height:32%;overflow:auto;padding:7px 9px;border:1px solid #e8a33d;border-radius:8px;background:rgba(232,163,61,.07)}',
   '.ac-warn-h{color:#e8a33d;font-size:11.5px;font-weight:600;margin-bottom:4px}',
@@ -473,6 +486,7 @@ var EDGE_PAD = 12       // 避让余量：线离方块至少这么远
 var EDGE_LANE = 16      // 绕行时走到障碍外侧的额外距离
 var EDGE_PORT_INSET = 8 // 端口离方块两角的边距，别让线从角上出去
 var EDGE_PORT_MIN_GAP = 12 // 同一侧两个端口的最小间距 ≈ 箭头宽度，否则箭头会叠在一起
+var EDGE_CORNER = 8     // 拐角的圆角半径：折线不是画成直角，而是「稍微转个弯」（用户要的观感）
 
 /** 轴对齐线段是否真的穿过矩形。用严格不等号，所以线可以**贴着**障碍边界走。 */
 function edgeSegHitsRect(x1, y1, x2, y2, r) {
@@ -512,8 +526,28 @@ function edgeCleanPath(pts) {
     if (!col) res.push(c)
   }
   if (out.length > 1) res.push(out[out.length - 1])
+  // 拐角抹圆：折线在拐点处画一个 EDGE_CORNER 的圆角，读起来是「转个弯」而不是折成直角。
+  //
+  // 只抹**中间**的拐点 —— 两端的点必须原样落在方块边界上，抹了箭头就会离开边框。
+  // 半径按相邻两段各一半收敛，短段自动退化成尖角：圆角永远吃不掉一整条线段，
+  // 也就不会把两个拐点抹到交叉或反向（那会让 `d` 里的控制点跑到路径之外）。
+  // 注意 `pts` 返回的仍是**尖角折线**：避让判定与标签中点都按它算，只是画出来带圆角。
   var d = 'M ' + res[0].x + ' ' + res[0].y
-  for (var m = 1; m < res.length; m++) d += ' L ' + res[m].x + ' ' + res[m].y
+  for (var m = 1; m < res.length; m++) {
+    if (m + 1 < res.length) {
+      var pv = res[m - 1], cu = res[m], nx = res[m + 1]
+      var l1 = Math.abs(cu.x - pv.x) + Math.abs(cu.y - pv.y)
+      var l2 = Math.abs(nx.x - cu.x) + Math.abs(nx.y - cu.y)
+      var r = Math.min(EDGE_CORNER, l1 / 2, l2 / 2)
+      if (r > 0.6 && l1 > 0 && l2 > 0) {
+        var c1 = { x: cu.x + (pv.x - cu.x) * (r / l1), y: cu.y + (pv.y - cu.y) * (r / l1) }
+        var c2 = { x: cu.x + (nx.x - cu.x) * (r / l2), y: cu.y + (nx.y - cu.y) * (r / l2) }
+        d += ' L ' + c1.x + ' ' + c1.y + ' Q ' + cu.x + ' ' + cu.y + ' ' + c2.x + ' ' + c2.y
+        continue
+      }
+    }
+    d += ' L ' + res[m].x + ' ' + res[m].y
+  }
   return { d: d, pts: res }
 }
 
@@ -694,7 +728,7 @@ var EXPORT_CSS = [
 // 必须自带 marker 定义的 <defs>，保证连线箭头独立自包含、不丢箭头。
 function buildExportSvg(worldNode, box) {
   var clone = worldNode.cloneNode(true)
-  var drop = ['.ac-handle', '.ac-link-preview', '.ac-hl', '.ac-snapline']
+  var drop = ['.ac-handle', '.ac-link-preview', '.ac-pulse', '.ac-snapline']
   for (var i = 0; i < drop.length; i++) {
     var hits = clone.querySelectorAll(drop[i])
     for (var j = 0; j < hits.length; j++) hits[j].parentNode.removeChild(hits[j])

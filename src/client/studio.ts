@@ -972,20 +972,32 @@ function ArchStudio(props) {
     for (var i = 0; i < next.nodes.length; i++) if (next.nodes[i].id === s.id) node = next.nodes[i]
     if (!node) return
     // 没有正文时「已解决」不成立（宿主侧也这么归一），别把半截状态写进文件
+    var changed = (node.note || '') !== text
     var done = text !== '' && noteDoneDraft === true
+    // 改过正文 = 这条留言重新变成**待办**：用户花力气改了它，就是为了让我重新看到它。
+    // 不改的话，一条被标成「已解决」的留言被编辑后仍然不进上下文 —— 用户改的话 AI 永远读不到，
+    // 而界面上它还是「已解决」，看不出任何异常（用户报的「编辑后应该自动重新打开」）。
+    var reopened = changed && done
+    if (reopened) done = false
     if ((node.note || '') === text && (node.noteDone === true) === done) return
     node.note = text
     node.noteDone = done
-    if (text === '') setNoteDoneDraft(false)
-    push(next, text === '' ? '用户清除了节点留言' : '用户写了节点留言')
-    setStatus(text === '' ? '已清除留言' : (done ? '留言已保存（已解决，不再注入给 AI）' : '留言已保存，会随每一步进入 AI 的上下文'))
+    if (text === '' || reopened) setNoteDoneDraft(false)
+    push(next, text === '' ? '用户清除了节点留言' : (reopened ? '用户改了留言，已自动重新打开' : '用户写了节点留言'))
+    setStatus(text === ''
+      ? '已清除留言'
+      : (reopened
+        ? '留言已改动，自动重新打开（会随每一步进入 AI 的上下文）'
+        : (done ? '留言已保存（已解决，不再注入给 AI）' : '留言已保存，会随每一步进入 AI 的上下文')))
     // 写完留言就**自动**把它作为一个上下文块放进输入框：只追加 `@id`、不加任何文字，
     // 所以打字区一个字符都不占（占用的是 chip，不是文字）。已经有过同一个 `@id` 就不重复加。
+    // 分隔符用**空格**不是换行：这些 `@id` 在草稿里是行内文本节点，
+    // 各占一行就得占掉好几行高度（用户报的「多个留言引用会自己换行」）。
     if (text !== '' && inputActions && typeof inputActions.setDraft === 'function' &&
         String(liveDraft || '').indexOf('@' + s.id) < 0) {
       var addChip = '@' + s.id
       inputActions.setDraft(String(liveDraft || '').trim()
-        ? String(liveDraft).replace(/\s+$/, '') + '\n' + addChip
+        ? String(liveDraft).replace(/\s+$/, '') + ' ' + addChip
         : addChip)
     }
   }
@@ -1527,7 +1539,7 @@ function ArchStudio(props) {
         // key 里带 highlight.key：新一轮改动会强制重挂，动画才会重新播
         isHl ? React.createElement('rect', {
           key: 'hl' + highlight.key,
-          className: 'ac-hl',
+          className: 'ac-pulse',
           x: x0 - 7, y: y0 - 7, width: gm.w + 14, height: gm.h + 14, rx: 13,
         }) : null,
         shapeEl,
@@ -1661,9 +1673,9 @@ function ArchStudio(props) {
     warnings.length > 12 ? React.createElement('div', { className: 'ac-warn-i' }, '…还有 ' + (warnings.length - 12) + ' 条，全部在日志里') : null,
   ) : null
 
-  // 源码高亮：token 由 runtime.ts 的 tokenizeMermaidLine 切（纯着色，不做校验），
-  // 这里只负责把它画成一层 <pre>。滚动同步挂在 textarea 的 onScroll 上 ——
-  // 两层只有 textarea 能交互，它滚到哪，pre 就跟到哪。
+  // 源码页：两层都不滚动，滚动口是 .ac-textwrap（见 runtime.ts 的 STUDIO_CSS）。
+  // 从前这里挂着一个 onScroll 把 textarea 的 scrollTop 灌给 <pre> —— 两个滚动口互相同步，
+  // 注定会错位，而错位的观感就是「文字变白 / 一片空白」。现在不需要同步，也就没有可错位的东西。
   var hlLines = String(draft == null ? '' : draft).split('\n').map(function (ln, li) {
     var toks = tokenizeMermaidLine(ln)
     var kids = []
@@ -1683,11 +1695,6 @@ function ArchStudio(props) {
       React.createElement('textarea', {
         className: 'ac-area ac-area-hl', ref: taRef, value: draft, spellCheck: false,
         onChange: function (e) { setDraft(e.target.value) },
-        onScroll: function (e) {
-          var ta = e.target
-          var hl = hlRef.current
-          if (hl) { hl.scrollTop = ta.scrollTop; hl.scrollLeft = ta.scrollLeft }
-        },
       }),
     ),
   )
@@ -1709,6 +1716,8 @@ function ArchStudio(props) {
       if (nnode.noteDone) noteListDone.push(nnode); else noteListOpen.push(nnode)
     }
   }
+  // 总量（含已解决）：按钮上那个数字以前只有待办数，读起来像「统计漏了已解决的」。
+  var noteTotal = noteListOpen.length + noteListDone.length
   function noteRow(nd, isDone) {
     return React.createElement('div', { key: (isDone ? 'd' : 'o') + nd.id, className: 'ac-lib-row' },
       React.createElement('button', {
@@ -1726,7 +1735,7 @@ function ArchStudio(props) {
   var notePanel = notesOpen ? React.createElement('div', { className: 'ac-lib ac-notes' },
     React.createElement('div', { className: 'ac-lib-head' },
       React.createElement('span', { className: 'grow' },
-        '节点留言：' + noteListOpen.length + ' 条待办'
+        '节点留言：共 ' + noteTotal + ' 条 —— ' + noteListOpen.length + ' 条待办'
         + (noteListDone.length ? '，' + noteListDone.length + ' 条已解决' : '')
         + '　·　未解决的每一步都会进入 AI 的上下文，已解决的不会'),
       (inputActions && typeof inputActions.setDraft === 'function' && noteListOpen.length > 0)
@@ -2011,9 +2020,14 @@ function ArchStudio(props) {
       }, external ? '文件 ' + externalName : '图库 ' + (libKey || '')) : null,
       tab === 'canvas' ? React.createElement('button', {
         className: 'ac-btn' + (noteListOpen.length ? ' primary' : ''),
-        title: '节点留言清单：未解决的待办会随每一步进入 AI 的上下文，已解决的不进',
+        // 这个数字从前只数**未解决**的，于是把一个「留言」按钮读成了「留言总量」的人会
+        // 觉得统计有 bug —— 画布上一共 7 条留言（含 4 条已解决），按钮却写着「留言 3」。
+        // 现在两个都给：左边是待办数（会进 AI 的上下文），右边是总量。没有待办时只报总量。
+        title: '节点留言清单：未解决的待办会随每一步进入 AI 的上下文，已解决的不进'
+          + '（共 ' + noteTotal + ' 条，其中 ' + noteListOpen.length + ' 条待办）',
         onClick: function () { setNotesOpen(!notesOpen) },
-      }, noteListOpen.length ? '留言 ' + noteListOpen.length : '留言') : null,
+      }, noteTotal === 0 ? '留言'
+        : (noteListOpen.length ? '留言 ' + noteListOpen.length + ' · 共 ' + noteTotal : '留言 · 共 ' + noteTotal)) : null,
       tab === 'text' ? React.createElement('button', { className: 'ac-btn primary', onClick: applyDraft }, '应用回画布') : null,
       tab === 'text' ? React.createElement('button', { className: 'ac-btn', onClick: function () { setDraft(mermaidText) } }, '还原') : null,
     ),

@@ -246,7 +246,7 @@ console.log('\n[4c] 元素注释：带注释渲染、角标、清单已解决切
   // 1. 工具条找得到「留言」按钮，且带未解决数量
   const toolBtns = () => Array.from(noteHost.querySelectorAll('.ac-tools button'))
   const noteToolBtn = () => toolBtns().find((b) => b.textContent.startsWith('留言'))
-  ok('工具条：找得到留言按钮且文案为「留言 2」', !!noteToolBtn() && noteToolBtn().textContent.trim() === '留言 2')
+  ok('工具条：找得到留言按钮，且文案同时给出待办数与总量（「留言 2 · 共 3」）', !!noteToolBtn() && noteToolBtn().textContent.trim() === '留言 2 · 共 3', noteToolBtn()?.textContent)
 
   // 2. 画布节点角标
   const nodeEls = () => Array.from(noteHost.querySelectorAll('g.ac-node'))
@@ -269,7 +269,7 @@ console.log('\n[4c] 元素注释：带注释渲染、角标、清单已解决切
   ok('点击工具条按钮展开 .ac-notes 面板', !!notesPanel())
 
   const headText = notesPanel()?.querySelector('.ac-lib-head')?.textContent || ''
-  ok('面板头部文案含未解决与已解决条数', headText.indexOf('节点留言：2 条待办') >= 0 && headText.indexOf('1 条已解决') >= 0, headText)
+  ok('面板头部文案含总量、未解决与已解决三条数', headText.indexOf('节点留言：共 3 条') >= 0 && headText.indexOf('2 条待办') >= 0 && headText.indexOf('1 条已解决') >= 0, headText)
 
   // 3b. 头部批量「发送这一轮留言 (N)」按钮正面断言
   const batchSendBtn = () => Array.from(notesPanel()?.querySelectorAll('.ac-lib-head button') || []).find((b) => b.textContent.includes('发送这一轮留言'))
@@ -313,7 +313,7 @@ console.log('\n[4c] 元素注释：带注释渲染、角标、清单已解决切
 
   const n1ItemAfter = rows().find((r) => r.textContent.indexOf('n1') >= 0)?.querySelector('button.ac-lib-item')
   ok('行变为已解决状态（class 含 done，文案以 ✓ 开头）', !!n1ItemAfter && n1ItemAfter.classList.contains('done') && n1ItemAfter.textContent.indexOf('✓ n1') >= 0)
-  eq('工具条未解决条数更新为 1', noteToolBtn()?.textContent.trim(), '留言 1')
+  eq('工具条待办数更新为 1，总量仍是 3', noteToolBtn()?.textContent.trim(), '留言 1 · 共 3')
 
   // 5. 选中节点乙（未解决）
   const n2El = findNodeEl('节点乙')
@@ -352,7 +352,14 @@ console.log('\n[4c] 元素注释：带注释渲染、角标、清单已解决切
   eq('标记已解决后检查器按钮文案变为「重新打开」', markBtn()?.textContent.trim(), '重新打开')
 
   // 6. 全部解决后的工具条与提示文案
-  eq('全部解决后工具条文案变回「留言」', noteToolBtn()?.textContent.trim(), '留言')
+  //    旧契约是「全部解决后变回『留言』」—— 那正是用户报的「总量统计漏了已解决的」：
+  //    按钮上不再有数字，看起来像一条留言都没有。现在待办数归零，但**总量还在**。
+  eq('全部解决后：待办数归零，总量仍报出来', noteToolBtn()?.textContent.trim(), '留言 · 共 3')
+  ok('全部解决后按钮不再高亮（未解决时才是 primary）',
+    !noteToolBtn()?.classList.contains('primary'), noteToolBtn()?.className)
+  ok('提示里说清「共几条、其中几条待办」',
+    (noteToolBtn()?.getAttribute('title') || '').indexOf('共 3 条，其中 0 条待办') >= 0,
+    noteToolBtn()?.getAttribute('title'))
   ok('没有未解决注释时面板提示「没有未解决的留言」', notesPanel()?.textContent.indexOf('没有未解决的留言') >= 0)
 
   // 7. 检查器点「重新打开」
@@ -364,7 +371,47 @@ console.log('\n[4c] 元素注释：带注释渲染、角标、清单已解决切
   const setNode3 = setCall3?.args?.model?.nodes?.find((n) => n.id === 'n2')
   ok('doc:set 提交的模型里 n2.noteDone 为 false', setNode3 && setNode3.noteDone === false, setNode3)
   eq('重新打开后检查器按钮文案变回「标记已解决」', markBtn()?.textContent.trim(), '标记已解决')
-  eq('重新打开后工具条未解决条数恢复为 1', noteToolBtn()?.textContent.trim(), '留言 1')
+  eq('重新打开后工具条待办数恢复为 1', noteToolBtn()?.textContent.trim(), '留言 1 · 共 3')
+
+  // 8. 改一条**已解决**留言的正文 → 自动重新打开（用户报的「留言区被编辑后应该自动重新打开」）。
+  //    不改的话，用户改过的话仍然躺在「已解决」里、不进 AI 的上下文 —— 界面看不出任何异常。
+  const n3ElSel = findNodeEl('节点丙')
+  await act(async () => {
+    n3ElSel.dispatchEvent(new dom.window.PointerEvent('pointerdown', { bubbles: true, button: 0 }))
+  })
+  await flush()
+  eq('选中本来就是「已解决」的节点丙，检查器按钮为「重新打开」', markBtn()?.textContent.trim(), '重新打开')
+
+  rpcCalls.length = 0
+  const n3Area = () => dock()?.querySelector('textarea[placeholder*="这里为什么不用队列"]')
+  const setAreaValue3 = Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, 'value').set
+  await act(async () => {
+    setAreaValue3.call(n3Area(), '已确认链路，但我又改了一下')
+    n3Area().dispatchEvent(new dom.window.Event('input', { bubbles: true }))
+  })
+  await flush()
+  await act(async () => {
+    n3Area().dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+  })
+  await flush()
+
+  const setCall4 = rpcCalls.find((c) => c.method === 'doc:set')
+  ok('改已解决留言的正文发出 doc:set', !!setCall4, rpcCalls.map((c) => c.method))
+  const setNode4 = setCall4?.args?.model?.nodes?.find((n) => n.id === 'n3')
+  eq('改过正文后 n3.note 是新文本', setNode4?.note, '已确认链路，但我又改了一下')
+  ok('改过正文后 n3.noteDone 自动变回 false（重新打开）', setNode4 && setNode4.noteDone === false, setNode4)
+  eq('检查器按钮随之变回「标记已解决」', markBtn()?.textContent.trim(), '标记已解决')
+  eq('工具条待办数把它算回来了', noteToolBtn()?.textContent.trim(), '留言 2 · 共 3')
+
+  // 负向对照：只点「标记已解决」、不动正文时**不许**被自动重开
+  // （否则「标记已解决」这个按钮自己会把自己掀回来，功能就废了）。
+  rpcCalls.length = 0
+  await act(async () => { markBtn().click() })
+  await flush()
+  const setCall5 = rpcCalls.find((c) => c.method === 'doc:set')
+  const setNode5 = setCall5?.args?.model?.nodes?.find((n) => n.id === 'n3')
+  ok('负向对照：只改状态、不改正文 → 仍是已解决', setNode5 && setNode5.noteDone === true, setNode5)
+  eq('负向对照：按钮变回「重新打开」', markBtn()?.textContent.trim(), '重新打开')
 
   await act(async () => { noteRoot.unmount() })
   noteHost.remove()
@@ -680,7 +727,7 @@ console.log('\n[4f] 节点卡片分段与源码页解析警告')
   ok('未选中时节点不画 .ac-desc', !c1El?.querySelector('.ac-desc'))
   ok('未选中时节点不画 .ac-ref', !c1El?.querySelector('.ac-ref'))
   // 记下**未选中时**的方块高度 —— 下面要证明"选中不改变几何"
-  const c1HeightIdle = c1El?.querySelector('rect:not(.ac-hl)')?.getAttribute('height')
+  const c1HeightIdle = c1El?.querySelector('rect:not(.ac-pulse)')?.getAttribute('height')
 
   // a3. 点一下节点 = 选中 = 展开：描述与引用行这时才出现。
   await act(async () => {
@@ -698,7 +745,7 @@ console.log('\n[4f] 节点卡片分段与源码页解析警告')
   //     尺寸要是还跟着 sel 走，点一下方块就会让它长大一圈 —— 连在它上面的线全都要重画，
   //     看上去就是"点一下就抖"。所以直接量方块高度，选中前后必须一样。
   eq('节点高度不随选中变化（几何稳定，连线不会因为点一下而重画）',
-    c1Open?.querySelector('rect:not(.ac-hl)')?.getAttribute('height'), c1HeightIdle)
+    c1Open?.querySelector('rect:not(.ac-pulse)')?.getAttribute('height'), c1HeightIdle)
 
   // a5. 描述与引用没有丢 —— 它们现在只在检查器里（那一侧由 [4d] 节守着）。
   //     这里钉的是画布这一侧：一个都不画。
@@ -806,6 +853,37 @@ console.log('\n[4g] 源码页语法高亮')
   ok('源码页内存在 pre.ac-hl 高亮底层', !!hlPre)
   ok('源码页内存在 textarea.ac-area 编辑层', !!area)
   ok('.ac-editwrap 容器内包裹 pre.ac-hl 与 textarea', !!hlHost.querySelector('.ac-editwrap pre.ac-hl') && !!hlHost.querySelector('.ac-editwrap textarea.ac-area'))
+
+  // ---- 用户报的源码页两个 bug（文本逐渐变白 / 滚轮滑不动）----
+  // 两个症状都出在这一层 CSS 上，所以这里直接量规则文本，不靠"看着像"。
+  const cssRule = (sel) => {
+    const i = insertedCss.indexOf(sel + '{')
+    return i < 0 ? '' : insertedCss.slice(i + sel.length + 1, insertedCss.indexOf('}', i))
+  }
+  const pulseRule = cssRule('.ac-pulse')
+  const hlRule = cssRule('.ac-hl')
+  const areaHlRule = cssRule('.ac-area-hl')
+  const wrapRule = cssRule('.ac-textwrap')
+  // 「文本逐渐变白」的根因：脉动环（SVG <rect>）与代码高亮层（DOM <pre>）从前共用 .ac-hl，
+  // 于是 `animation:acPulse ... forwards` 被一起焊在代码层上 —— 终帧 opacity:0，2.6 秒后整层透明。
+  ok('脉动环有自己的类 .ac-pulse，动画挂在它身上', pulseRule.indexOf('acPulse') >= 0, pulseRule)
+  ok('负向对照：代码高亮层 .ac-hl 上不再有 animation / acPulse',
+    hlRule.indexOf('animation') < 0 && hlRule.indexOf('acPulse') < 0, hlRule)
+  ok('关键帧 acPulse 的终帧确实是 opacity:0（所以上面那条负向断言不是空转）',
+    /@keyframes acPulse\{[^@]*100%\{opacity:0\}\}/.test(insertedCss))
+  ok('脉动环用的还是同一个动画名（换类名没有把环本身弄坏）',
+    insertedCss.indexOf('@keyframes acPulse') >= 0 && pulseRule.indexOf('animation:acPulse') >= 0, pulseRule)
+  // 「滚轮滑不动」：两个滚动口互相同步注定错位；现在两层都不滚动，页级 .ac-textwrap 是唯一的口。
+  ok('代码高亮层不再自己滚动（没有 overflow:auto）', hlRule.indexOf('overflow:auto') < 0, hlRule)
+  ok('编辑层也不再自己滚动（overflow:hidden，高度跟着 <pre> 走）', areaHlRule.indexOf('overflow:hidden') >= 0, areaHlRule)
+  ok('唯一滚动口 .ac-textwrap 是 overflow:auto', wrapRule.indexOf('overflow:auto') >= 0, wrapRule)
+  ok('滚动口里的子项一律不压缩（否则列向 flex 把它们挤扁，永远超不出去）',
+    cssRule('.ac-textwrap > *').indexOf('flex:0 0 auto') >= 0, cssRule('.ac-textwrap > *'))
+  ok('源码区直接挂在滚动口下', !!hlHost.querySelector('.ac-textwrap > .ac-editwrap'))
+  ok('编辑层是绝对定位铺满 <pre> 撑出的高度', areaHlRule.indexOf('position:absolute') >= 0, areaHlRule)
+  ok('<pre> 回到正常流（由它决定滚动高度）', hlRule.indexOf('position:relative') >= 0, hlRule)
+  // 两层必须逐项对齐，差一项光标就与文字错位 —— tab-size 从前只有 <pre> 有（textarea 默认 8）
+  ok('两层的 tab-size 一致', hlRule.indexOf('tab-size:2') >= 0 && areaHlRule.indexOf('tab-size:2') >= 0, hlRule + ' || ' + areaHlRule)
 
   // 行容器：.ac-hl 内每行一个 <div>
   const lineDivs = Array.from(hlPre?.querySelectorAll('div') || [])
@@ -1225,12 +1303,59 @@ console.log('\n[4j] 连线布线：正交折线 + 避让中间的方块')
   for (let i = 0; i + 1 < rpts.length; i++) {
     if (Math.abs(rpts[i].x - rpts[i + 1].x) > 0.01 && Math.abs(rpts[i].y - rpts[i + 1].y) > 0.01) allOrth = false
   }
+  // 拐角「稍微转弯」（用户要的观感）：每个拐点用一段二次曲线抹圆，而不是折成硬直角。
+  // 这条是那条圆角真的生效了的**正面**证据；下面还有两条负向对照守着它的边界。
+  const pathCmds = dAttr.match(/[MLQ]/g) || []
+  ok('拐角用二次曲线抹圆（路径里有 Q）', pathCmds.indexOf('Q') >= 0, dAttr)
+  ok('抹圆只发生在拐点，不是把整条线做成曲线（Q 的数量 ≤ 拐点数，且每段仍是 L 起头）',
+    pathCmds.filter((c) => c === 'Q').length <= pathCmds.filter((c) => c === 'L').length, pathCmds)
+  // 负向对照一：两端必须原样落在方块边界上。抹圆若吃到了端点，箭头就会离开边框。
+  const firstPt = rpts[0], lastPt = rpts[rpts.length - 1]
+  ok('路径起点没有被抹圆动过（第一段是纯 L，控制点不在起点）',
+    Math.abs(firstPt.x - Number((dAttr.match(/^M (-?[\d.]+)/) || [])[1])) < 0.01, dAttr)
+  ok('路径终点就是折线最后一个顶点（箭头贴着方块）',
+    Math.abs(lastPt.x - rpts[rpts.length - 2].x) < 0.01 || Math.abs(lastPt.y - rpts[rpts.length - 2].y) < 0.01, {
+      last: lastPt, prev: rpts[rpts.length - 2],
+    })
+  // 负向对照二：把路径拆成命令逐条看 —— 每个圆角的两条切线必须分别落在拐点的**两条相邻边**上
+  // （一个切点与拐点同 x、另一个同 y），且切点到拐点的距离不超过半径上限。
+  // 抹穿了的话切点会跑到同一条边上、或距离超过 8（圆角会吃掉整条线段甚至反向）。
+  const segs = []
+  {
+    const re = /([MLQ])((?: -?[\d.]+)+)/g
+    let mm
+    while ((mm = re.exec(dAttr)) !== null) {
+      const ns = (mm[2].match(/-?[\d.]+/g) || []).map(Number)
+      segs.push(mm[1] === 'Q'
+        ? { c: 'Q', cx: ns[0], cy: ns[1], x2: ns[2], y2: ns[3] }
+        : { c: mm[1], x2: ns[0], y2: ns[1] })
+    }
+  }
+  let cornerOk = true
+  let qSeen = 0
+  for (let i = 1; i < segs.length; i++) {
+    if (segs[i].c !== 'Q') continue
+    qSeen++
+    const prevSeg = segs[i - 1]
+    if (prevSeg.c !== 'L') { cornerOk = false; continue }
+    const ax = prevSeg.x2, ay = prevSeg.y2
+    const cx = segs[i].cx, cy = segs[i].cy
+    const ex = segs[i].x2, ey = segs[i].y2
+    const inSharesX = Math.abs(ax - cx) < 0.01, inSharesY = Math.abs(ay - cy) < 0.01
+    const outSharesX = Math.abs(ex - cx) < 0.01, outSharesY = Math.abs(ey - cy) < 0.01
+    const dIn = Math.hypot(ax - cx, ay - cy)
+    const dOut = Math.hypot(ex - cx, ey - cy)
+    if (!((inSharesX && outSharesY) || (inSharesY && outSharesX))) cornerOk = false
+    if (!(dIn > 0 && dOut > 0 && dIn <= 8.01 && dOut <= 8.01)) cornerOk = false
+  }
+  ok('每个圆角都合法：两条切线各在一条相邻边上，切点距离在半径内', qSeen > 0 && cornerOk,
+    { qSeen, cornerOk, segs })
   ok('每一段都是水平或垂直（没有斜线）', allOrth, rpts)
 
   // 从 DOM 量出障碍方块的真实矩形：节点形状用的是绝对坐标，所以 rect 的 x/y/w/h 就是它的几何。
   const routeNodes = Array.from(rHost.querySelectorAll('g.ac-node'))
   const obsEl = routeNodes.find((g) => (g.textContent || '').indexOf('中间障碍') >= 0)
-  const obsRectEl = obsEl ? obsEl.querySelector('rect:not(.ac-hl)') : null
+  const obsRectEl = obsEl ? obsEl.querySelector('rect:not(.ac-pulse)') : null
   const obsRect = obsRectEl ? {
     x1: Number(obsRectEl.getAttribute('x')),
     y1: Number(obsRectEl.getAttribute('y')),
@@ -1263,7 +1388,7 @@ console.log('\n[4j] 连线布线：正交折线 + 避让中间的方块')
   // 负向对照：这个场景**本身**确实是"直连会穿过"的 —— 否则上面那条断言是空的、什么都没证明。
   const rectOfLabel = (label) => {
     const g = routeNodes.find((el) => (el.textContent || '').indexOf(label) >= 0)
-    const r = g ? g.querySelector('rect:not(.ac-hl)') : null
+    const r = g ? g.querySelector('rect:not(.ac-pulse)') : null
     if (!r) return null
     return {
       x1: Number(r.getAttribute('x')), y1: Number(r.getAttribute('y')),
@@ -1415,6 +1540,10 @@ console.log('\n[4k] 发送区上方的留言横条：追加草稿，不顶掉用
     ok('用户原本打的字没有被顶掉（追加而非替换）', sentDraft.indexOf(USER_DRAFT) === 0, sentDraft)
     ok('两条未办留言都以 @节点id 的形式进了草稿', sentDraft.indexOf('@d1') >= 0 && sentDraft.indexOf('@d3') >= 0, sentDraft)
     ok('已办的那条不进草稿', sentDraft.indexOf('@d2') < 0, sentDraft)
+    // 「多个留言引用会自己换行」：这几条引用必须是**同一行**里的行内文本，
+    // 而不是一行一个。批量放进输入框是这个功能的默认路径，一排竖着的引用块很难看。
+    eq('两条引用挤在同一行（引用之间不换行）',
+      sentDraft.split('\n').filter((ln) => ln.indexOf('@') >= 0).length, 1)
 
     await act(async () => { dockRoot.unmount(); seedRoot.unmount() })
     respond = prevRespondDock
@@ -1474,8 +1603,11 @@ console.log('\n[4l] 写完留言自动把上下文块放进输入框（无需点
     await flush()
   }
   ok('写完留言**自动**调用了 setDraft（没点任何按钮）', autoDraft !== null, autoDraft)
-  eq('草稿 = 用户原本打的字 + 一个 @节点id，没有多余文字',
-    autoDraft, USER_TEXT + '\n@a1')
+  // 分隔符是**空格**不是换行：这些 `@id` 在草稿里是行内文本节点，用 `\n` 就会
+  // 每写一条留言多占一行（用户报的「多个留言引用会自己换行」）。
+  eq('草稿 = 用户原本打的字 + 空格 + 一个 @节点id', autoDraft, USER_TEXT + ' @a1')
+  ok('负向对照：自动追加里一个换行都没有', String(autoDraft || '').indexOf('\n') < 0, autoDraft)
+  ok('用户原本打的字还在最前面（追加而非替换）', String(autoDraft || '').indexOf(USER_TEXT) === 0, autoDraft)
 
   await act(async () => { aRoot.unmount() })
   respond = prevRespondAuto
@@ -1532,7 +1664,7 @@ console.log('\n[4m] 端口的硬约束：绝不许越过方块边界（悬空连
   })
   const stEl = Array.from(sHost.querySelectorAll('g.ac-node'))
     .find((g) => (g.textContent || '').indexOf('目标') >= 0)
-  const stRectEl = stEl ? stEl.querySelector('rect:not(.ac-hl)') : null
+  const stRectEl = stEl ? stEl.querySelector('rect:not(.ac-pulse)') : null
   const stRect = stRectEl ? {
     x1: Number(stRectEl.getAttribute('x')),
     y1: Number(stRectEl.getAttribute('y')),
