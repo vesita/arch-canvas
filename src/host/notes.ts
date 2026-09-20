@@ -86,6 +86,10 @@ function applyNoteStore(file: string, nodes: any[], legacyNotes?: Record<string,
   }
 }
 
+// 历史（done）最多留几条：再多就是垃圾 —— 用户要的是「刚才说了什么」能回看，不是一本档案。
+// 超出的按**进入历史的时刻**从旧到新丢。见 harvestNoteStore 里对 `at` 的处理。
+var NOTE_HISTORY_MAX = 6
+
 function harvestNoteStore(file: string, nodes: any[]) {
   if (!file || !Array.isArray(nodes)) return
   var storePath = noteStorePathFor(file)
@@ -100,11 +104,31 @@ function harvestNoteStore(file: string, nodes: any[]) {
     if (!node || !node.id) continue
     var text = typeof node.note === 'string' ? node.note : ''
     if (text) {
-      diagramNotes[node.id] = { text: text, done: node.noteDone === true }
+      var prev = diagramNotes[node.id]
+      var done = node.noteDone === true
+      // `at` = **进入历史的时刻**，在落盘这一刻才盖 —— 模型上没有这个字段，
+      // 所以不用去动 normalizeModel 的白名单与快照（少碰三处就少三个静默丢字段的机会）。
+      // 已经记过就沿用：否则每存一次盘，历史顺序都会被翻新一遍。
+      diagramNotes[node.id] = {
+        text: text,
+        done: done,
+        at: done ? ((prev && typeof prev.at === 'number' && prev.at > 0) ? prev.at : Date.now()) : 0,
+      }
     } else {
       // note 为空 => 删掉该节点在表里的条目。只动当前 nodes 里出现的 id，别碰孤儿。
       delete diagramNotes[node.id]
     }
+  }
+
+  // 历史封顶：丢最旧的几条。
+  var doneKeys = []
+  for (var k in diagramNotes) {
+    if (diagramNotes[k] && diagramNotes[k].done === true) doneKeys.push(k)
+  }
+  if (doneKeys.length > NOTE_HISTORY_MAX) {
+    doneKeys.sort(function (a, b) { return (diagramNotes[a].at || 0) - (diagramNotes[b].at || 0) })
+    var drop = doneKeys.length - NOTE_HISTORY_MAX
+    for (var d = 0; d < drop; d++) delete diagramNotes[doneKeys[d]]
   }
 }
 

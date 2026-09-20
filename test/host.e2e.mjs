@@ -909,6 +909,15 @@ if (typeof promptFn === 'function') {
   const pText = promptFn()
   ok('未解决的出现在 text 列表里', pText.indexOf('- `n1`（' + (pn1.label || '') + '）：未解决：检查鉴权') >= 0, pText)
   ok('提示词含「另有 1 条留言已完成」', pText.indexOf('另有 1 条留言已完成') >= 0, pText)
+  // 僵尸驻守的修法：责任从「提醒用户去点」翻成「AI 干完自己标」
+  ok('提示词说明了「读一次即送达」（一次性消耗）', pText.indexOf('读一次即送达') >= 0, pText)
+  ok('提示词要求本轮一次处理完', pText.indexOf('本轮一次处理完') >= 0, pText)
+  ok('提示词报出历史条数上限', pText.indexOf('历史只留最近 6 条') >= 0, pText)
+  ok('负向对照：旧的「自己标掉 / 没做的不许标」已经不在了',
+    pText.indexOf('处理完就自己标掉') < 0 && pText.indexOf('没做的不许标') < 0, pText)
+  // **这条断言就是「僵尸没了」本身**：同一批留言再问一次提示词，它必须不再出现。
+  ok('送达之后同一条不再出现在提示词里（一次性消耗）',
+    promptFn().indexOf('未解决：检查鉴权') < 0, promptFn().slice(0, 400))
   ok('源文本里不含 %% @done', pText.indexOf('%% @done n2') < 0, pText)
   ok('源文本里也不含 %% @note', pText.indexOf('%% @note n1') < 0, pText)
 }
@@ -984,21 +993,66 @@ const mnAfter = await call('doc:get', { where: dirNote })
 const mnNode = mnAfter.model.nodes.find((n) => n.id === 'mn1')
 eq('mark_note 之后 noteDone = true', mnNode && mnNode.noteDone, true)
 ok('mark_note 之后已办计数 ≥ 1', mnAfter.resolvedNoteCount >= 1, mnAfter.resolvedNoteCount)
+// **这条断言就是「僵尸没了」本身**：标掉之后，那一条不再出现在注入的清单里。
+// 空断言风险：如果 promptText 压根不注入留言，下面两条会一起「通过」——
+// 所以先要求它出现过（上一段【4. 提示词注入】已经保证了这一点），再要求它消失。
+if (prompts[0] && typeof prompts[0].text === 'function') {
+  ok('标掉之后这一条不再进提示词（僵尸没了）',
+    prompts[0].text().indexOf('这条留言交给 AI 自己标已办') < 0, prompts[0].text())
+}
 
 // 负向对照一：重新打开（done:false）
 const mnReopen = await tool('arch_edit').execute({ ops: [{ op: 'mark_note', id: 'mn1', done: false }] }, {})
 ok('mark_note done:false 能重新打开', mnReopen && mnReopen.problems && mnReopen.problems.length === 0, mnReopen && mnReopen.problems)
 const mnRe = await call('doc:get', { where: dirNote })
 eq('重新打开后 noteDone = false', mnRe.model.nodes.find((n) => n.id === 'mn1').noteDone, false)
+// 配对的另一半：重新打开之后它必须**回到**注入里 —— 否则上面那条「消失」可能只是注入坏了
+if (prompts[0] && typeof prompts[0].text === 'function') {
+  ok('重新打开后又回到提示词里（配对的负向对照）',
+    prompts[0].text().indexOf('这条留言交给 AI 自己标已办') >= 0, prompts[0].text())
+}
 
 // 负向对照二：没有留言的节点不许标记（别产生「有状态没正文」的半截形态）
+// 基准要在**紧邻这次调用之前**取：上面的 prompts[0].text() 会把重新打开的那条又送达一次，
+// 已办计数本来就会 +1 —— 那是送达，不是这两次被拒的调用干的。
+const mnBeforeReject = (await call('doc:get', { where: dirNote })).resolvedNoteCount
 const mnEmpty = await tool('arch_edit').execute({ ops: [{ op: 'add_node', id: 'mn2', label: '无留言' }, { op: 'mark_note', id: 'mn2' }] }, {})
 ok('对没有留言的节点 mark_note 被拒', mnEmpty.problems && mnEmpty.problems.some((p) => p.indexOf('没有留言') >= 0), mnEmpty.problems)
 // 负向对照三：节点不存在
 const mnGhost = await tool('arch_edit').execute({ ops: [{ op: 'mark_note', id: '查无此节点' }] }, {})
 ok('对不存在的节点 mark_note 被拒', mnGhost.problems && mnGhost.problems.some((p) => p.indexOf('找不到节点') >= 0), mnGhost.problems)
 const mnAfter2 = await call('doc:get', { where: dirNote })
-eq('被拒的两次都没有改动已办计数', mnAfter2.resolvedNoteCount, mnRe.resolvedNoteCount)
+eq('被拒的两次都没有改动已办计数', mnAfter2.resolvedNoteCount, mnBeforeReject)
+
+console.log('【留言历史封顶 6 条】')
+{
+  // 用户要的是「历史最多存 6 条」。封顶发生在落盘那一刻（harvestNoteStore），
+  // 排序按 `at`＝**进入历史的时刻**；那个时刻是落盘时盖的，所以这里必须分两批存，
+  // 让两批的 at 真的不同（同一批内的 at 相等，谁被丢是任意的）。
+  const capNotes = dirNote + '/.arch-canvas/notes.json'
+  const capModel = JSON.parse(JSON.stringify((await call('doc:get', { where: dirNote })).model))
+  for (let i = 0; i < 9; i++) {
+    capModel.nodes.push({ id: 'cap' + i, label: 'C' + i, shape: 'rect', group: null, x: i * 10, y: 0, note: '历史' + i, noteDone: false })
+  }
+  await call('doc:set', { model: capModel, where: dirNote })
+  // 第一批 3 条标已办（存一次 → 它们拿到较早的 at）
+  let capNow = JSON.parse(JSON.stringify((await call('doc:get', { where: dirNote })).model))
+  for (let i = 0; i < 3; i++) capNow.nodes.find((n) => n.id === 'cap' + i).noteDone = true
+  await call('doc:set', { model: capNow, where: dirNote })
+  await new Promise((r) => setTimeout(r, 3))
+  // 第二批 6 条标已办（再存一次 → at 更大）
+  capNow = JSON.parse(JSON.stringify((await call('doc:get', { where: dirNote })).model))
+  for (let i = 3; i < 9; i++) capNow.nodes.find((n) => n.id === 'cap' + i).noteDone = true
+  await call('doc:set', { model: capNow, where: dirNote })
+
+  const capStore = (JSON.parse(files.get(capNotes) || '{}'))['architecture.mmd'] || {}
+  const capDone = Object.keys(capStore).filter((k) => capStore[k] && capStore[k].done === true)
+  eq('历史最多留 6 条', capDone.length, 6)
+  ok('留下的是最新的那 6 条（第二批全在）',
+    [3, 4, 5, 6, 7, 8].every((i) => capDone.indexOf('cap' + i) >= 0), capDone)
+  ok('更早的那批被丢掉（负向对照：不然「封顶」等于没做）',
+    capDone.filter((k) => ['cap0', 'cap1', 'cap2'].indexOf(k) >= 0).length === 0, capDone)
+}
 eq('删节点后 resolvedNoteCount 为 0', getAfterDel.resolvedNoteCount, 0)
 // 把 warnings 的内容带出来：这条断言从前只说"多了几条"，多出来的是什么看不到
 ok('删节点后 warnings 为空（不报错）', getAfterDel.warnings.length === 0, getAfterDel.warnings)
