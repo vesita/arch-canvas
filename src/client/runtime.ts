@@ -466,6 +466,8 @@ function autoLayout(model) {
 // 老调用（只传 a、b）仍然得到一条合法的正交折线。
 var EDGE_PAD = 12       // 避让余量：线离方块至少这么远
 var EDGE_LANE = 16      // 绕行时走到障碍外侧的额外距离
+var EDGE_PORT_INSET = 8 // 端口离方块两角的边距，别让线从角上出去
+var EDGE_PORT_MIN_GAP = 12 // 同一侧两个端口的最小间距 ≈ 箭头宽度，否则箭头会叠在一起
 
 /** 轴对齐线段是否真的穿过矩形。用严格不等号，所以线可以**贴着**障碍边界走。 */
 function edgeSegHitsRect(x1, y1, x2, y2, r) {
@@ -530,10 +532,24 @@ function edgeMidOfPath(pts) {
 }
 
 /**
- * 一条连线的路径。`obstacles` 是画布上**其它可见方块**的几何（被折叠收起的方块不该挡路），
- * `offset` 用于把同一对节点之间的多条线错开（由调用方按序号算）。
+ * 端口在它那一侧上偏离正中心的距离。`p = { n, i }` 是「这一侧一共 n 根线、我是第 i 根」
+ * （调用方按对端方向排好序传入），于是同一侧的线会沿边**展开**而不是全挤在边心。
+ * 装不下时（间距会小于箭头宽）就按最小间距摆 —— 允许溢出到角外，也不让箭头叠在一起。
  */
-function edgeGeometry(a, b, obstacles, offset) {
+function edgePortOffset(span, p) {
+  if (!p || !(p.n > 1) || !(p.i >= 0)) return 0
+  var usable = Math.max(0, span - 2 * EDGE_PORT_INSET)
+  var gap = usable / (p.n - 1)
+  if (gap < EDGE_PORT_MIN_GAP) gap = EDGE_PORT_MIN_GAP
+  return (p.i - (p.n - 1) / 2) * gap
+}
+
+/**
+ * 一条连线的路径。`obstacles` 是画布上**其它可见方块**的几何（被折叠收起的方块不该挡路），
+ * `offset` 用于把同一对节点之间的多条线错开（由调用方按序号算），
+ * `ports` 是两端的端口位次 `{ a: {n,i}, b: {n,i} }`。
+ */
+function edgeGeometry(a, b, obstacles, offset, ports) {
   if (!a || !b) return null
   var shift = (typeof offset === 'number' && isFinite(offset)) ? offset : 0
   var obs = []
@@ -551,15 +567,17 @@ function edgeGeometry(a, b, obstacles, offset) {
   var dx = b.x - a.x
   var dy = b.y - a.y
   var vertical = Math.abs(dy) >= Math.abs(dx)
+  var pA = ports && ports.a
+  var pB = ports && ports.b
   var p0, p1
   if (vertical) {
     var down = dy >= 0
-    p0 = { x: a.x, y: a.y + (down ? a.h / 2 : -a.h / 2) }
-    p1 = { x: b.x, y: b.y + (down ? -b.h / 2 : b.h / 2) }
+    p0 = { x: a.x + edgePortOffset(a.w, pA), y: a.y + (down ? a.h / 2 : -a.h / 2) }
+    p1 = { x: b.x + edgePortOffset(b.w, pB), y: b.y + (down ? -b.h / 2 : b.h / 2) }
   } else {
     var right = dx >= 0
-    p0 = { x: a.x + (right ? a.w / 2 : -a.w / 2), y: a.y }
-    p1 = { x: b.x + (right ? -b.w / 2 : b.w / 2), y: b.y }
+    p0 = { x: a.x + (right ? a.w / 2 : -a.w / 2), y: a.y + edgePortOffset(a.h, pA) }
+    p1 = { x: b.x + (right ? -b.w / 2 : b.w / 2), y: b.y + edgePortOffset(b.h, pB) }
   }
 
   // 一段跨越式：从出点直走 → 在某个「跨越线」上横过去 → 再直走进点。

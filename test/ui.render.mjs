@@ -1307,7 +1307,55 @@ console.log('\n[4j] 连线布线：正交折线 + 避让中间的方块')
   eq('一对节点之间的两条线都画出来了', pPaths.length, 2)
   ok('两条平行线不重叠（路径不相同）', pPaths.length === 2 && pPaths[0] !== pPaths[1], pPaths)
 
-  await act(async () => { rRoot.unmount(); pRoot.unmount() })
+  // 扇入：三个源节点同时接进同一个目标节点的**同一侧**。
+  // 从前三根线的端口是**同一个点**（这就是"一侧的箭头叠在一起"），现在必须沿边展开。
+  const FAN_MODEL = {
+    nodes: [
+      { id: 'f1', label: '源一', shape: 'rect', group: null, x: -220, y: 0 },
+      { id: 'f2', label: '源二', shape: 'rect', group: null, x: 0, y: 0 },
+      { id: 'f3', label: '源三', shape: 'rect', group: null, x: 220, y: 0 },
+      { id: 'ft', label: '汇总节点', shape: 'rect', group: null, x: 0, y: 340 },
+    ],
+    edges: [
+      { id: 'fe1', from: 'f1', to: 'ft', label: '', arrow: '-->' },
+      { id: 'fe2', from: 'f2', to: 'ft', label: '', arrow: '-->' },
+      { id: 'fe3', from: 'f3', to: 'ft', label: '', arrow: '-->' },
+    ],
+    groups: [],
+    direction: 'TD',
+    extras: [],
+  }
+  const fanModel = JSON.parse(JSON.stringify(FAN_MODEL))
+  respond = function (method, args) {
+    if (method === 'doc:get') {
+      return fullDoc({ model: fanModel, nodeCount: fanModel.nodes.length, edgeCount: fanModel.edges.length })
+    }
+    return prevRespondRoute(method, args)
+  }
+  const fHost = document.createElement('div')
+  document.body.appendChild(fHost)
+  const fRoot = createRoot(fHost)
+  await act(async () => {
+    fRoot.render(React.createElement(captured['sidebar.right.pane.tab'], {
+      cwd: UI, sessionId: 's1', useSessions: () => UI,
+    }))
+  })
+  await flush()
+  const fPaths = Array.from(fHost.querySelectorAll('path.ac-edge'))
+  eq('扇入的三条线都画出来了', fPaths.length, 3)
+  // 路径的最后一个点就是它在目标边上的端口
+  const endX = fPaths.map((p) => {
+    const ns = (p.getAttribute('d').match(/-?\d+(?:\.\d+)?/g) || []).map(Number)
+    return ns[ns.length - 2]
+  })
+  ok('三个端口互不相同（不再挤成一个点）',
+    new Set(endX.map((v) => Math.round(v))).size === 3, endX)
+  ok('相邻端口间距不小于箭头宽（箭头不会叠在一起）',
+    Math.min(Math.abs(endX[0] - endX[1]), Math.abs(endX[1] - endX[2])) >= 11.9, endX)
+  ok('端口顺序与源头顺序一致（线不会在方块跟前交叉）',
+    endX[0] < endX[1] && endX[1] < endX[2], endX)
+
+  await act(async () => { rRoot.unmount(); pRoot.unmount(); fRoot.unmount() })
   respond = prevRespondRoute
 }
 

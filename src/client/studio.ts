@@ -1386,6 +1386,35 @@ function ArchStudio(props) {
       var pk = pe.from < pe.to ? pe.from + '|' + pe.to : pe.to + '|' + pe.from
       pairCount[pk] = (pairCount[pk] || 0) + 1
     }
+    // 端口分配：同一侧的 N 根线不能全挤在边心 —— 那就是"箭头叠在一起"。
+    // 按**对端方向**给同一侧的线排序再平分该侧；顺序反了的话线会在方块附近互相交叉。
+    // 判据是「可用边长 / 箭头宽」，**与缩放无关**：线宽与箭头都随画布变换缩放，两者比值恒定，
+    // 所以放大缩小不会改变"叠不叠"这件事（实测：CSS 里没有任何 non-scaling-stroke）。
+    var sideGroups = {}
+    for (var gi = 0; gi < model.edges.length; gi++) {
+      var ge = model.edges[gi]
+      if (foldMap[ge.from] && foldMap[ge.from] === foldMap[ge.to]) continue
+      var ga2 = visGeom(ge.from)
+      var gb2 = visGeom(ge.to)
+      if (!ga2 || !gb2) continue
+      for (var gend = 0; gend < 2; gend++) {
+        var gme = gend === 0 ? ga2 : gb2
+        var got = gend === 0 ? gb2 : ga2
+        var gvert = Math.abs(got.y - gme.y) >= Math.abs(got.x - gme.x)
+        var gside = gvert ? (got.y >= gme.y ? 'b' : 't') : (got.x >= gme.x ? 'r' : 'l')
+        var gkey = (gend === 0 ? ge.from : ge.to) + '|' + gside
+        if (!sideGroups[gkey]) sideGroups[gkey] = []
+        sideGroups[gkey].push({ ei: gi, end: gend, at: gvert ? got.x : got.y })
+      }
+    }
+    var portSlots = {}
+    for (var sk in sideGroups) {
+      var sArr = sideGroups[sk]
+      sArr.sort(function (x, y) { return x.at - y.at })
+      for (var si2 = 0; si2 < sArr.length; si2++) {
+        portSlots[sArr[si2].ei + ':' + sArr[si2].end] = { n: sArr.length, i: si2 }
+      }
+    }
     var pairSeen = {}
     for (var ei = 0; ei < model.edges.length; ei++) {
       var ed = model.edges[ei]
@@ -1397,7 +1426,8 @@ function ArchStudio(props) {
       var eidx = pairSeen[ek] || 0
       pairSeen[ek] = eidx + 1
       var geo = edgeGeometry(visGeom(ed.from), visGeom(ed.to), visList,
-        en > 1 ? (eidx - (en - 1) / 2) * 10 : 0)
+        en > 1 ? (eidx - (en - 1) / 2) * 10 : 0,
+        { a: portSlots[ei + ':0'], b: portSlots[ei + ':1'] })
       if (!geo) continue
       var dashed = ed.arrow === '-.->'
       var isEdgeSel = sel && sel.kind === 'edge' && sel.from === ed.from && sel.to === ed.to
