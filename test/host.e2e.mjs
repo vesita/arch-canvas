@@ -1,7 +1,14 @@
 // 在 vm 里真实执行 host 半边，用桩服务端到端跑一遍：
 // 种子加载 / 四个 RPC / 三个工具 / 提示词上下文 / 静态资源路由
-import { readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import vm from 'node:vm'
+
+// 数据目录必须是一次性临时目录。这里曾经写死本机路径 '/home/vesita/.dsh/arch-canvas' ——
+// AGENTS.md 明写「宿主逻辑里出现任何 /home/<某人> 都是 bug」，测试里同理：
+// 写死它等于把「测试到底有没有碰生产数据目录」这件事交给运气。
+const TEST_DATA_DIR = mkdtempSync(join(tmpdir(), 'arch-canvas-host-'))
 
 let pass = 0
 let fail = 0
@@ -14,7 +21,7 @@ function eq(name, got, want) {
 }
 
 // ---------- 桩服务 ----------
-const DOC = '/home/vesita/.dsh/arch-canvas/architecture.mmd'
+const DOC = TEST_DATA_DIR + '/architecture.mmd'
 const CACHE = '/home/vesita/.dsh/.cache/arch-canvas/mermaid.min.js'
 const files = new Map()
 files.set(CACHE, '/* fake mermaid bundle */')
@@ -128,7 +135,7 @@ const ctx = {
 }
 
 // ---------- 日志后端桩 ----------
-const LOG_DIR = '/home/vesita/.dsh/arch-canvas/logs'
+const LOG_DIR = TEST_DATA_DIR + '/logs'
 const logStorage = new Map()
 const oldLogFiles = [
   'arch-canvas-2020-01-01.log',
@@ -168,7 +175,7 @@ const logBackend = {
 // 外层必须递的三样：界面/资源路径、数据目录、日志后端（真插件那半由 lib/index.js 算）。
 const hostEnv = {
   logBackend,
-  dataDir: '/home/vesita/.dsh/arch-canvas',
+  dataDir: TEST_DATA_DIR,
   uiFile: '/home/vesita/coding/my/arch-canvas/dist/ui.js',
   mermaidFile: CACHE,
 }
@@ -180,6 +187,10 @@ const plugin = await vm.runInContext(`(async () => {\n${code}\n})()`, sandbox, {
 
 console.log('【插件对象】')
 ok('返回了 { apply } 形状的插件', plugin && typeof plugin.apply === 'function', plugin === null ? 'null' : typeof plugin)
+// 守门：测试的数据目录必须是一次性临时目录。写死本机路径的话，日志后端一旦换成真的
+// node:fs（装机形态那半就是），测试事件会直接灌进生产日志 —— 实测被刷出 44 条假
+// notes.load.fail + 35 条假 plugin.mount，还让人误以为线上有 bug。
+ok('数据目录是一次性临时目录，不是生产目录', TEST_DATA_DIR !== '/home/vesita/.dsh/arch-canvas' && TEST_DATA_DIR.startsWith(tmpdir()), TEST_DATA_DIR)
 plugin.apply(ctx)
 ok('注册了 15 个 RPC 处理器', handlers.size === 15, [...handlers.keys()])
 ok('注册了检查点的两条 RPC（取代了早先的 AI 写图开关）',
@@ -213,7 +224,7 @@ ok('返回的 file 是路径字符串', g1.file === DOC, g1.file)
 ok('返回了 model 与 mermaid', !!g1.model && typeof g1.mermaid === 'string')
 ok('doc:get 带 lastChange 字段', 'lastChange' in g1)
 eq('未识别项目时用全局图库', g1.scope, 'global')
-eq('全局图库目录', g1.dir, '/home/vesita/.dsh/arch-canvas')
+eq('全局图库目录', g1.dir, TEST_DATA_DIR)
 eq('默认图名', g1.diagram, 'architecture')
 ok('mermaid 里含 flowchart TD', g1.mermaid.indexOf('flowchart TD') >= 0)
 ok('mermaid 里含 @pos 坐标注释', g1.mermaid.indexOf('%% @pos n1 0 0') >= 0)
@@ -395,7 +406,7 @@ ok('写盘后文件写出，目录因此存在',
   [...files.keys()].some((k) => k.indexOf('/proj-a/.arch-canvas/') === 0), [...files.keys()].filter((k) => k.indexOf('/proj-a/') === 0))
 ok('全局图库的图在首次写盘时被继承了过来',
   files.has('/proj-a/.arch-canvas/architecture.mmd'), [...files.keys()].filter((k) => k.indexOf('/proj-a/') === 0))
-ok('继承有标记文件，只做一次', files.has('/home/vesita/.dsh/arch-canvas/.inherited'))
+ok('继承有标记文件，只做一次', files.has(TEST_DATA_DIR + '/.inherited'))
 const P2 = await call('doc:get', { where: '/proj-b' })
 ok('读路径未建占位文件', !files.has('/proj-b/.arch-canvas/.gitkeep'))
 eq('第二个项目读路径也是干净空图', P2.nodeCount, 0)

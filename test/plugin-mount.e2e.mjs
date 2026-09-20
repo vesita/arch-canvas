@@ -6,6 +6,20 @@
 //   2. 整个挂载过程对 console **一字不吐**（hmr 每次 `npm run build` 都会重新挂一遍，
 //      任何一行播报都会从一行变成一屏）。
 import { createRequire } from 'node:module'
+import { existsSync, mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+// ---------- 数据目录隔离（2026-09-20） ----------
+// 这个测试加载的是**装机形态**的 lib/index.js：它的 dataDir 由 $DSH_HOME 推出（缺省 ~/.dsh），
+// 而日志后端是**真的 node:fs**。两者一叠加，测试事件就会直接灌进生产日志
+// ~/.dsh/arch-canvas/logs/ —— 实测刷出 44 条假 notes.load.fail + 35 条假 plugin.mount
+// （假内容正是下面那个桩 fs 的 'flowchart TD\n  a["桩"]\n'），还让人误以为线上有 bug、白追一轮。
+// 把 DSH_HOME 指到一次性临时目录即可彻底隔离。**必须在 require(ENTRY) 之前设** ——
+// lib/index.js 在模块求值期就把 dataDir 算出来了。
+const TEST_HOME = mkdtempSync(join(tmpdir(), 'arch-canvas-mount-'))
+process.env.DSH_HOME = TEST_HOME
+const TEST_LOG_DIR = join(TEST_HOME, 'arch-canvas', 'logs')
 
 let pass = 0
 let fail = 0
@@ -82,6 +96,15 @@ eq('注册了 3 条路由（1 RPC + 2 静态）', routes.length, 3)
 eq('注册了 1 条提示词上下文', prompts.length, 1)
 eq('注册了周期扫描定时器（自动扫描 .arch-canvas）', timers.length, 1)
 eq('挂载过程一行 console 输出都没有', said.length, 0)
+
+// 守门：日志必须落在那个一次性临时目录里。这是**正面证据** —— 只断言"生产目录没变"
+// 会跟此刻正在运行的活插件打架（它本来就在往那个目录写），必然 flaky。
+let waitedLog = 0
+while (!existsSync(TEST_LOG_DIR) && waitedLog < 1000) {
+  await new Promise((r) => setTimeout(r, 20))
+  waitedLog += 20
+}
+ok('日志写进一次性临时目录（没碰生产目录 ~/.dsh/arch-canvas）', existsSync(TEST_LOG_DIR), TEST_LOG_DIR)
 
 out('【再次挂载（hmr 场景）：还是一行都不出】')
 // 桩不做卸载，所以每次挂载前清一遍 —— 数的是「这一次挂载注册了多少」
