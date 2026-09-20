@@ -28,7 +28,7 @@ var STUDIO_CSS = [
   '.ac-stage{flex:1 1 auto;min-height:140px;position:relative;overflow:hidden}',
   '.ac-svg{width:100%;height:100%;display:block;touch-action:none;cursor:grab;background:radial-gradient(circle at 1px 1px,var(--dsw-alias-border-l1,#2a2e35) 1px,transparent 0) 0 0/22px 22px}',
   '.ac-node{cursor:pointer}',
-  '.ac-node .ac-shape{fill:var(--dsw-alias-bg-layer-2,#232830);stroke:var(--dsw-alias-border-l2,#3a4048);stroke-width:1.5}',
+  '.ac-node .ac-shape{fill:var(--dsw-alias-bg-layer-2,#232830);stroke:var(--ac-line);stroke-width:1.5}',
   '.ac-node.sel .ac-shape{stroke:var(--dsw-alias-brand-primary,#4c8dff);stroke-width:2.5}',
   // 节点卡片：第一段是标题（.ac-lbl —— 保持既有契约，它的 textContent 就是标题本身），
   // 其余段是描述（.ac-desc）；「意图：」「原理：」是**惯例**不是框架硬约束，写了才分层着色。
@@ -37,15 +37,56 @@ var STUDIO_CSS = [
   '.ac-node .ac-desc .ac-intent{fill:#7cc4ff}',
   '.ac-node .ac-desc .ac-rationale{fill:#b39ddb}',
   '.ac-node .ac-ref{fill:var(--dsw-alias-label-secondary,#9aa3af);font-size:10px;text-anchor:middle;dominant-baseline:central;pointer-events:none;user-select:none;opacity:.8}',
-  '.ac-edge{fill:none;stroke:var(--dsw-alias-border-l2,#3a4048);stroke-width:1.6}',
+  '.ac-edge{fill:none;stroke:var(--ac-line);stroke-width:1.6}',
   '.ac-edge.dashed{stroke-dasharray:6 5}',
   '.ac-edge.sel{stroke:var(--dsw-alias-brand-primary,#4c8dff);stroke-width:2.6}',
   '.ac-edge-hit{fill:none;stroke:transparent;stroke-width:14;cursor:pointer}',
-  '.ac-arrowhead{fill:var(--dsw-alias-border-l2,#3a4048)}',
+  '.ac-arrowhead{fill:var(--ac-line)}',
   '.ac-elbl{fill:var(--dsw-alias-label-secondary,#9aa3af);font-size:11.5px;text-anchor:middle;dominant-baseline:central;pointer-events:none;user-select:none}',
   '.ac-elbl-bg{fill:var(--dsw-alias-bg-base,#14161a)}',
-  '.ac-group-box{fill:var(--dsw-alias-bg-layer-1,#1b1e23);fill-opacity:.5;stroke:var(--dsw-alias-border-l1,#2a2e35);stroke-dasharray:5 5;stroke-width:1.2}',
-  '.ac-group-lbl{fill:var(--dsw-alias-label-secondary,#9aa3af);font-size:11.5px;font-weight:600;cursor:pointer}',
+  '.ac-group-box{fill:var(--dsw-alias-bg-layer-1,#1b1e23);fill-opacity:.5;stroke:var(--ac-line);stroke-dasharray:5 5;stroke-width:1.4}',
+  '.ac-group-lbl{fill:var(--ac-line);font-size:11.5px;font-weight:600;cursor:pointer}',
+  // ==================== 描边与组配色 ====================
+  // 为什么不直接用 --dsw-alias-border-*：「边框」与「图形描边」在令牌体系里是两件事。
+  // 实测（2026-09-21，把两个 token 的合成色算出来比对）：border-l2 = #ffffff1f（12% 白），
+  // 当作节点描边只有 1.48:1、当作连线 1.42:1，border-l1 当作组框 1.17:1 —— 而 WCAG 对
+  // 「有意义的图形」要求 ≥3:1。用户说「淡」不是审美偏好，是这三个数。所以这里自带描边色。
+  '.ac-root{--ac-line:#7c828a;--ac-fill-a:.13;--ac-p0:#c238c2;--ac-p1:#ca4772;--ac-p2:#c94f43;--ac-p3:#91732a;--ac-p4:#27864f;--ac-p5:#268478;--ac-p6:#377abc;--ac-p7:#8e5ed0}',
+  // 深色钩子：DSH 把深色调色板挂在 body[data-ds-dark-theme] 上（浅色在裸 body 上）。
+  // **主题只在这两行里体现** —— 下面每档色相都写 var(--ac-pN)，于是「深/浅」只改这里的值，
+  // 不必把每档规则写两遍，规则的特异性也就停在两个类上，永远不会盖掉 .ac-node.sel（三个类）。
+  // 套 :where() 是让这条主题规则自身不涨权重（它只是几个变量的声明）。
+  // 这个属性名不在令牌清单里，属于实现细节。万一哪天改名，退化成浅色值不会失读
+  // （#7c828a 在深色底上仍有 4.8:1），只是组框偏淡 —— 是可接受的退化，不是崩。
+  ':where(body[data-ds-dark-theme]) .ac-root{--ac-line:#86888a;--ac-fill-a:.18;--ac-p0:#d139d1;--ac-p1:#d54d7b;--ac-p2:#d45549;--ac-p3:#9d7925;--ac-p4:#229150;--ac-p5:#218d7f;--ac-p6:#3281cf;--ac-p7:#9664db}',
+  // 八档色相：同一个组的**组框描边 + 组名 + 组内节点的边框**都是这个色 —— 组框互相压住、
+  // 或者折叠起来的时候，成员关系照样读得出来。每档都做过**亮度归一**：让相对亮度相同，
+  // 而不是 HSL 的 L 相同 —— 同一个 L 下蓝色比绿色暗三倍（实测 2.58:1 vs 7.83:1）。
+  // 归一后每档对底色都是 ≈4.5:1。组框填充只取 13~18%：整块铺满色相会盖过节点本身。
+  '.ac-h0 .ac-shape,.ac-h0 .ac-group-box,.ac-h0 .ac-fold-box{stroke:var(--ac-p0)}',
+  '.ac-h0 .ac-group-box,.ac-h0 .ac-fold-box{fill:var(--ac-p0);fill-opacity:var(--ac-fill-a)}',
+  '.ac-h0 .ac-group-lbl,.ac-h0 .ac-fold-lbl{fill:var(--ac-p0)}',
+  '.ac-h1 .ac-shape,.ac-h1 .ac-group-box,.ac-h1 .ac-fold-box{stroke:var(--ac-p1)}',
+  '.ac-h1 .ac-group-box,.ac-h1 .ac-fold-box{fill:var(--ac-p1);fill-opacity:var(--ac-fill-a)}',
+  '.ac-h1 .ac-group-lbl,.ac-h1 .ac-fold-lbl{fill:var(--ac-p1)}',
+  '.ac-h2 .ac-shape,.ac-h2 .ac-group-box,.ac-h2 .ac-fold-box{stroke:var(--ac-p2)}',
+  '.ac-h2 .ac-group-box,.ac-h2 .ac-fold-box{fill:var(--ac-p2);fill-opacity:var(--ac-fill-a)}',
+  '.ac-h2 .ac-group-lbl,.ac-h2 .ac-fold-lbl{fill:var(--ac-p2)}',
+  '.ac-h3 .ac-shape,.ac-h3 .ac-group-box,.ac-h3 .ac-fold-box{stroke:var(--ac-p3)}',
+  '.ac-h3 .ac-group-box,.ac-h3 .ac-fold-box{fill:var(--ac-p3);fill-opacity:var(--ac-fill-a)}',
+  '.ac-h3 .ac-group-lbl,.ac-h3 .ac-fold-lbl{fill:var(--ac-p3)}',
+  '.ac-h4 .ac-shape,.ac-h4 .ac-group-box,.ac-h4 .ac-fold-box{stroke:var(--ac-p4)}',
+  '.ac-h4 .ac-group-box,.ac-h4 .ac-fold-box{fill:var(--ac-p4);fill-opacity:var(--ac-fill-a)}',
+  '.ac-h4 .ac-group-lbl,.ac-h4 .ac-fold-lbl{fill:var(--ac-p4)}',
+  '.ac-h5 .ac-shape,.ac-h5 .ac-group-box,.ac-h5 .ac-fold-box{stroke:var(--ac-p5)}',
+  '.ac-h5 .ac-group-box,.ac-h5 .ac-fold-box{fill:var(--ac-p5);fill-opacity:var(--ac-fill-a)}',
+  '.ac-h5 .ac-group-lbl,.ac-h5 .ac-fold-lbl{fill:var(--ac-p5)}',
+  '.ac-h6 .ac-shape,.ac-h6 .ac-group-box,.ac-h6 .ac-fold-box{stroke:var(--ac-p6)}',
+  '.ac-h6 .ac-group-box,.ac-h6 .ac-fold-box{fill:var(--ac-p6);fill-opacity:var(--ac-fill-a)}',
+  '.ac-h6 .ac-group-lbl,.ac-h6 .ac-fold-lbl{fill:var(--ac-p6)}',
+  '.ac-h7 .ac-shape,.ac-h7 .ac-group-box,.ac-h7 .ac-fold-box{stroke:var(--ac-p7)}',
+  '.ac-h7 .ac-group-box,.ac-h7 .ac-fold-box{fill:var(--ac-p7);fill-opacity:var(--ac-fill-a)}',
+  '.ac-h7 .ac-group-lbl,.ac-h7 .ac-fold-lbl{fill:var(--ac-p7)}',
   // 折叠块：被收起来的组（视图状态，不落盘）。点一下展开 —— 与「点节点展开描述」同一个心智模型。
   // 块本体**可拖**（拖的是组内所有人），但不可点开 —— 展开只认右边那个按钮。
   // 所以光标是 move 而不是 pointer：给的是「能搬动它」的暗示，不是「点了会发生什么」。
@@ -407,6 +448,44 @@ function tokenizeMermaidLine(line) {
   return out
 }
 
+// ==================== 组 → 色相档位 ====================
+// 为什么不是「第几个组就用第几档」：删掉中间一个组会让它后面**所有**组换色，而用户记住的
+// 是「那个绿框」。所以按组 id 哈希定位。哈希撞档时按 id 字典序往后探 —— 分配只取决于
+// 「有哪些组」（顺序无关），现实中最多在插入新组时动一个组。
+// 组多于 8 个时色相从头复用（图上一眼看得出「不是同一组」，但两组同色 —— 有意的取舍）。
+var GROUP_HUE_COUNT = 8
+function groupHueIndex(groups) {
+  var ids = []
+  var seen = {}
+  for (var i = 0; i < (groups || []).length; i++) {
+    var id = groups[i] && groups[i].id
+    if (typeof id !== 'string' || id === '' || seen[id]) continue
+    seen[id] = true
+    ids.push(id)
+  }
+  ids.sort()
+  var used = {}
+  var out = {}
+  for (var k = 0; k < ids.length; k++) {
+    var h = 5381
+    for (var j = 0; j < ids[k].length; j++) h = ((h * 33) ^ ids[k].charCodeAt(j)) >>> 0
+    var slot = h % GROUP_HUE_COUNT
+    for (var probe = 0; probe < GROUP_HUE_COUNT; probe++) {
+      var cand = (slot + probe) % GROUP_HUE_COUNT
+      if (!used[cand]) { slot = cand; break }
+    }
+    used[slot] = true
+    out[ids[k]] = slot
+  }
+  return out
+}
+
+// 拿不到档位（没有组、节点不属于任何组）时返回空串 —— 节点于是落在中性的 --ac-line 上。
+function hueClassOf(hueOf, id) {
+  var h = hueOf && id ? hueOf[id] : undefined
+  return typeof h === 'number' ? ' ac-h' + h : ''
+}
+
 function needsLayout(model) {
   if (!model || !model.nodes || model.nodes.length === 0) return false
   for (var i = 0; i < model.nodes.length; i++) {
@@ -416,40 +495,230 @@ function needsLayout(model) {
   return false
 }
 
+// ==================== 自动布局 ====================
+// 两条**从真实图里量出来**的规矩，动这一段之前先读（数字见 test/layout.test.cjs 的守门断言）：
+//
+// 1. **分层前必须先折环。** 从前是「对边做最长路径松弛，靠 `cand < nodes.length` 兜底」——
+//    有环时那个上界就是唯一的刹车。实测（2026-09-21，本仓库自己的 dsh-plugin-framework：
+//    28 节点 / 35 边，环是 reg→dyn→studio→ui 这四个）：层号变成 0,1,2,3,24,25,26,27，
+//    15 个节点被扔到第 24~27 层，中间 20 层是空的 —— 而每层照样吃掉 84px，画布上凭空多出
+//    ~1.7k px 的空白，35 条边压出 92 个交叉。折成强连通分量再分层，层分布回到 0..7，
+//    交叉降到 68。缩点图是 DAG，最长路径一次收敛，不需要任何人为上界。
+// 2. **同层排序不是必胜，所以要比一遍再决定。** 中位数（barycenter）启发式把上面那张大图
+//    从 92 压到 31，但在本仓库的 architecture 图（23 节点 / 6 层、本来只有 11 个交叉）上
+//    会把交叉顶到 13。所以这里算完**比交叉数，不更少就不换** —— 「新布局永远不比旧布局差」
+//    是有意维持的不变量，不是实现细节。代价是那一次比较为 O(E²)，所以给它一个边数上限。
+
+var LAYOUT_ORDER_ROUNDS = 4      // 中位数扫描轮数（上下来回交替）
+var LAYOUT_ORDER_MAX_EDGES = 600 // 超过这个边数就不做「比交叉数」这一步（它是 O(E²)）
+
+/** Kosaraju 求强连通分量。**迭代版**：递归版在几千节点的长链上会爆栈。 */
+function sccOf(ids, edges) {
+  var adj = {}, radj = {}
+  for (var i = 0; i < ids.length; i++) { adj[ids[i]] = []; radj[ids[i]] = [] }
+  for (var e = 0; e < edges.length; e++) {
+    adj[edges[e][0]].push(edges[e][1])
+    radj[edges[e][1]].push(edges[e][0])
+  }
+  // 第一趟：正图上的完成序
+  var order = [], seen = {}
+  for (var s = 0; s < ids.length; s++) {
+    if (seen[ids[s]]) continue
+    seen[ids[s]] = true
+    var stack = [[ids[s], 0]]
+    while (stack.length) {
+      var top = stack[stack.length - 1]
+      var nb = adj[top[0]]
+      if (top[1] < nb.length) {
+        var w = nb[top[1]++]
+        if (!seen[w]) { seen[w] = true; stack.push([w, 0]) }
+      } else { order.push(top[0]); stack.pop() }
+    }
+  }
+  // 第二趟：反图按完成序的逆序走，一次能捞到的就是同一个分量
+  var comp = {}, count = 0
+  for (var k = order.length - 1; k >= 0; k--) {
+    var root = order[k]
+    if (comp[root] !== undefined) continue
+    comp[root] = count
+    var st2 = [root]
+    while (st2.length) {
+      var v = st2.pop()
+      var back = radj[v]
+      for (var j = 0; j < back.length; j++) {
+        if (comp[back[j]] === undefined) { comp[back[j]] = count; st2.push(back[j]) }
+      }
+    }
+    count++
+  }
+  // 成员按 ids 的原始顺序收集：同层里的先后必须稳定，不能随 DFS 的访问顺序漂
+  var comps = []
+  for (var c = 0; c < count; c++) comps.push([])
+  for (var m = 0; m < ids.length; m++) comps[comp[ids[m]]].push(ids[m])
+  return { comp: comp, comps: comps }
+}
+
+/** 缩点图上的最长路径分层：环已经折掉，所以不需要任何上界。 */
+function layerOfComps(comps, edges, comp) {
+  var n = comps.length
+  var cl = []
+  for (var i = 0; i < n; i++) cl.push(0)
+  var ce = [], seen = {}
+  for (var e = 0; e < edges.length; e++) {
+    var a = comp[edges[e][0]], b = comp[edges[e][1]]
+    if (a === b) continue
+    var key = a + '>' + b
+    if (seen[key]) continue
+    seen[key] = true
+    ce.push([a, b])
+  }
+  for (var pass = 0; pass <= n; pass++) {
+    var changed = false
+    for (var m = 0; m < ce.length; m++) {
+      var cand = cl[ce[m][0]] + 1
+      if (cand > cl[ce[m][1]]) { cl[ce[m][1]] = cand; changed = true }
+    }
+    if (!changed) break
+  }
+  return cl
+}
+
+function groupByLayer(ids, layer) {
+  var layers = {}
+  for (var i = 0; i < ids.length; i++) {
+    var L = layer[ids[i]] || 0
+    if (!layers[L]) layers[L] = []
+    layers[L].push(ids[i])
+  }
+  return layers
+}
+
+function sortedLayerKeys(layers) {
+  var keys = []
+  for (var k in layers) keys.push(Number(k))
+  keys.sort(function (a, b) { return a - b })
+  return keys
+}
+
+/** 中位数（barycenter）启发式：上下交替扫，每层按「邻居那一层的平均位次」重排。 */
+function medianOrder(ids, layer, edges, rounds) {
+  var layers = groupByLayer(ids, layer)
+  var keys = sortedLayerKeys(layers)
+  var pos = {}
+  for (var i = 0; i < keys.length; i++) {
+    var row0 = layers[keys[i]]
+    for (var j = 0; j < row0.length; j++) pos[row0[j]] = j
+  }
+  var pred = {}, succ = {}
+  for (var m = 0; m < ids.length; m++) { pred[ids[m]] = []; succ[ids[m]] = [] }
+  for (var e = 0; e < edges.length; e++) { succ[edges[e][0]].push(edges[e][1]); pred[edges[e][1]].push(edges[e][0]) }
+  for (var r = 0; r < rounds; r++) {
+    var down = r % 2 === 0
+    var seq = down ? keys : keys.slice().reverse()
+    for (var s = 0; s < seq.length; s++) {
+      var row = layers[seq[s]]
+      var key = {}
+      for (var n = 0; n < row.length; n++) {
+        var nb = down ? pred[row[n]] : succ[row[n]]
+        var sum = 0, cnt = 0
+        for (var b = 0; b < nb.length; b++) {
+          var p = pos[nb[b]]
+          if (p !== undefined) { sum += p; cnt++ }
+        }
+        key[row[n]] = cnt ? sum / cnt : pos[row[n]]
+      }
+      // 平局按 id 定序：同一份图跑两次必须得到同一个布局
+      row.sort(function (a, b) { return (key[a] - key[b]) || (a < b ? -1 : a > b ? 1 : 0) })
+      for (var f = 0; f < row.length; f++) pos[row[f]] = f
+    }
+  }
+  return layers
+}
+
+/** 按层摆坐标。`rev` 只影响摆出去的值，**不能去改累加器本身** —— 从前的写法是
+ *  `along = -along`，于是累加器被来回翻转，BT / RL 下第 0 层和第 2 层会落到同一个 y。 */
+function layoutPositions(sizes, layers, horiz, rev, GAP) {
+  var keys = sortedLayerKeys(layers)
+  var pos = {}
+  var along = 0
+  for (var i = 0; i < keys.length; i++) {
+    var bucket = layers[keys[i]] || []
+    var deep = 0
+    for (var d = 0; d < bucket.length; d++) deep = Math.max(deep, horiz ? sizes[bucket[d]].w : sizes[bucket[d]].h)
+    var span = GAP * Math.max(0, bucket.length - 1)
+    for (var s = 0; s < bucket.length; s++) span += horiz ? sizes[bucket[s]].h : sizes[bucket[s]].w
+    var acc = -span / 2
+    var axis = rev ? -along : along
+    for (var n = 0; n < bucket.length; n++) {
+      var sz = sizes[bucket[n]]
+      var cross = acc + (horiz ? sz.h : sz.w) / 2
+      acc += (horiz ? sz.h : sz.w) + GAP
+      pos[bucket[n]] = horiz ? { x: axis, y: cross } : { x: cross, y: axis }
+    }
+    along += deep + 84
+  }
+  return pos
+}
+
+/** 两条边（按节点中心连直线）真交叉的条数。共端点的直接跳过 —— 它们必然交在端点。 */
+function crossingsOf(pos, edges) {
+  var n = 0
+  for (var i = 0; i < edges.length; i++) {
+    var a1 = edges[i][0], b1 = edges[i][1]
+    var p1 = pos[a1], p2 = pos[b1]
+    if (!p1 || !p2) continue
+    for (var j = i + 1; j < edges.length; j++) {
+      var a2 = edges[j][0], b2 = edges[j][1]
+      if (a1 === a2 || a1 === b2 || b1 === a2 || b1 === b2) continue
+      var p3 = pos[a2], p4 = pos[b2]
+      if (!p3 || !p4) continue
+      var den = (p2.x - p1.x) * (p4.y - p3.y) - (p2.y - p1.y) * (p4.x - p3.x)
+      if (den === 0) continue
+      var t = ((p3.x - p1.x) * (p4.y - p3.y) - (p3.y - p1.y) * (p4.x - p3.x)) / den
+      var u = ((p3.x - p1.x) * (p2.y - p1.y) - (p3.y - p1.y) * (p2.x - p1.x)) / den
+      if (t > 1e-9 && t < 1 - 1e-9 && u > 1e-9 && u < 1 - 1e-9) n++
+    }
+  }
+  return n
+}
+
+/** 把一份 model 排成坐标。纯函数：不改入参，返回新的 nodes 数组。 */
 function autoLayout(model) {
   var nodes = model.nodes || []
   if (nodes.length === 0) return model
   var byId = {}
   var sizes = {}
+  var ids = []
   for (var i = 0; i < nodes.length; i++) {
     byId[nodes[i].id] = nodes[i]
+    ids.push(nodes[i].id)
     sizes[nodes[i].id] = nodeSize(nodes[i].label, refRowCount(nodes[i].files))
   }
-  var edges = []
+  var pairs = []
   for (var e = 0; e < (model.edges || []).length; e++) {
     var ed = model.edges[e]
-    if (byId[ed.from] && byId[ed.to] && ed.from !== ed.to) edges.push(ed)
-  }
-  var layer = {}
-  for (var k = 0; k < nodes.length; k++) layer[nodes[k].id] = 0
-  for (var pass = 0; pass < nodes.length + 1; pass++) {
-    var changed = false
-    for (var m = 0; m < edges.length; m++) {
-      var cand = layer[edges[m].from] + 1
-      if (cand > layer[edges[m].to] && cand < nodes.length) { layer[edges[m].to] = cand; changed = true }
-    }
-    if (!changed) break
-  }
-  var buckets = []
-  for (var j = 0; j < nodes.length; j++) {
-    var L = layer[nodes[j].id] || 0
-    if (!buckets[L]) buckets[L] = []
-    buckets[L].push(nodes[j])
+    if (byId[ed.from] && byId[ed.to] && ed.from !== ed.to) pairs.push([ed.from, ed.to])
   }
   var dir = model.direction || 'TD'
   var horiz = dir === 'LR' || dir === 'RL'
   var rev = dir === 'BT' || dir === 'RL'
   var GAP = horiz ? 74 : 56
+
+  // 1) 分层：先把环折成强连通分量，再在缩点图上做最长路径
+  var part = sccOf(ids, pairs)
+  var cl = layerOfComps(part.comps, pairs, part.comp)
+  var layer = {}
+  for (var t = 0; t < ids.length; t++) layer[ids[t]] = cl[part.comp[ids[t]]]
+
+  // 2) 同层顺序：中位数启发式，但只在不更差的时候才采纳（见文件头那两条实测）
+  var layers = groupByLayer(ids, layer)
+  var pos = layoutPositions(sizes, layers, horiz, rev, GAP)
+  if (pairs.length > 1 && pairs.length <= LAYOUT_ORDER_MAX_EDGES) {
+    var alt = medianOrder(ids, layer, pairs, LAYOUT_ORDER_ROUNDS)
+    var altPos = layoutPositions(sizes, alt, horiz, rev, GAP)
+    if (crossingsOf(altPos, pairs) < crossingsOf(pos, pairs)) { layers = alt; pos = altPos }
+  }
+
   var out = []
   for (var q = 0; q < nodes.length; q++) {
     // **整份复制，只改坐标。** 从前这里是逐字段重建 `{id,label,shape,group,x,y}` ——
@@ -458,28 +727,6 @@ function autoLayout(model) {
     // （2026-09-20 客户端逻辑审计抓到的头号问题；`refRowCount(nodes[i].files)` 上面还在用
     //   files 算尺寸，就更说明这些字段本该跟着走。）
     out.push(Object.assign({}, nodes[q]))
-  }
-  var pos = {}
-  for (var li = 0; li < buckets.length; li++) {
-    var bucket = buckets[li] || []
-    var span = GAP * Math.max(0, bucket.length - 1)
-    for (var b = 0; b < bucket.length; b++) span += horiz ? sizes[bucket[b].id].h : sizes[bucket[b].id].w
-    var acc = -span / 2
-    var along = 0
-    for (var p = 0; p < li; p++) {
-      var deep = 0
-      var row = buckets[p] || []
-      for (var r = 0; r < row.length; r++) deep = Math.max(deep, horiz ? sizes[row[r].id].w : sizes[row[r].id].h)
-      along += deep + 84
-    }
-    if (rev) along = -along
-    for (var n2 = 0; n2 < bucket.length; n2++) {
-      var node = bucket[n2]
-      var sz = sizes[node.id]
-      var cross = acc + (horiz ? sz.h : sz.w) / 2
-      acc += (horiz ? sz.h : sz.w) + GAP
-      pos[node.id] = horiz ? { x: along, y: cross } : { x: cross, y: along }
-    }
   }
   for (var f = 0; f < out.length; f++) {
     var pt = pos[out[f].id]
@@ -865,8 +1112,34 @@ var EXPORT_CSS = [
   '.ac-arrowhead{fill:#718096}',
   '.ac-elbl{fill:#4a5568;font-size:11.5px;text-anchor:middle;dominant-baseline:central}',
   '.ac-elbl-bg{fill:#ffffff}',
-  '.ac-group-box{fill:#f7fafc;stroke:#cbd5e0;stroke-dasharray:5 5;stroke-width:1.2}',
+  '.ac-group-box{fill:#f2f6fa;stroke:#7b8794;stroke-dasharray:5 5;stroke-width:1.4}',
   '.ac-group-lbl{fill:#4a5568;font-size:11.5px;font-weight:600}',
+  // 组配色：与屏幕同一套色相，这里写字面值（导出件没有主题上下文，取不到变量）。
+  // 白的底上用的是浅色那一列：每一档对白底 ≈4.5:1，实测见 runtime.ts 里屏幕那一段的注释。
+  '.ac-h0 .ac-shape,.ac-h0 .ac-group-box,.ac-h0 .ac-fold-box{stroke:#c238c2}',
+  '.ac-h0 .ac-group-box,.ac-h0 .ac-fold-box{fill:#c238c2;fill-opacity:.13}',
+  '.ac-h0 .ac-group-lbl,.ac-h0 .ac-fold-lbl{fill:#c238c2}',
+  '.ac-h1 .ac-shape,.ac-h1 .ac-group-box,.ac-h1 .ac-fold-box{stroke:#ca4772}',
+  '.ac-h1 .ac-group-box,.ac-h1 .ac-fold-box{fill:#ca4772;fill-opacity:.13}',
+  '.ac-h1 .ac-group-lbl,.ac-h1 .ac-fold-lbl{fill:#ca4772}',
+  '.ac-h2 .ac-shape,.ac-h2 .ac-group-box,.ac-h2 .ac-fold-box{stroke:#c94f43}',
+  '.ac-h2 .ac-group-box,.ac-h2 .ac-fold-box{fill:#c94f43;fill-opacity:.13}',
+  '.ac-h2 .ac-group-lbl,.ac-h2 .ac-fold-lbl{fill:#c94f43}',
+  '.ac-h3 .ac-shape,.ac-h3 .ac-group-box,.ac-h3 .ac-fold-box{stroke:#91732a}',
+  '.ac-h3 .ac-group-box,.ac-h3 .ac-fold-box{fill:#91732a;fill-opacity:.13}',
+  '.ac-h3 .ac-group-lbl,.ac-h3 .ac-fold-lbl{fill:#91732a}',
+  '.ac-h4 .ac-shape,.ac-h4 .ac-group-box,.ac-h4 .ac-fold-box{stroke:#27864f}',
+  '.ac-h4 .ac-group-box,.ac-h4 .ac-fold-box{fill:#27864f;fill-opacity:.13}',
+  '.ac-h4 .ac-group-lbl,.ac-h4 .ac-fold-lbl{fill:#27864f}',
+  '.ac-h5 .ac-shape,.ac-h5 .ac-group-box,.ac-h5 .ac-fold-box{stroke:#268478}',
+  '.ac-h5 .ac-group-box,.ac-h5 .ac-fold-box{fill:#268478;fill-opacity:.13}',
+  '.ac-h5 .ac-group-lbl,.ac-h5 .ac-fold-lbl{fill:#268478}',
+  '.ac-h6 .ac-shape,.ac-h6 .ac-group-box,.ac-h6 .ac-fold-box{stroke:#377abc}',
+  '.ac-h6 .ac-group-box,.ac-h6 .ac-fold-box{fill:#377abc;fill-opacity:.13}',
+  '.ac-h6 .ac-group-lbl,.ac-h6 .ac-fold-lbl{fill:#377abc}',
+  '.ac-h7 .ac-shape,.ac-h7 .ac-group-box,.ac-h7 .ac-fold-box{stroke:#8e5ed0}',
+  '.ac-h7 .ac-group-box,.ac-h7 .ac-fold-box{fill:#8e5ed0;fill-opacity:.13}',
+  '.ac-h7 .ac-group-lbl,.ac-h7 .ac-fold-lbl{fill:#8e5ed0}',
   '.ac-fold-box{fill:#ebf4ff;stroke:#4c8dff;stroke-width:1.5}',
   '.ac-fold-lbl{fill:#1a202c;font-size:12.5px;text-anchor:middle;dominant-baseline:central}',
   '.ac-fold-btn circle,.ac-group-btn circle{fill:#4c8dff;stroke:#ffffff;stroke-width:1.5}',

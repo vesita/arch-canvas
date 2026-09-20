@@ -2594,6 +2594,112 @@ console.log('\n[4t] 锚点保鲜：角标三态 / 检查器逐条说明 / 画布
   drHost.remove()
 }
 
+console.log('\n[4u] 描边亮度与组配色：描边不再用「边框」令牌，同一组一个稳定色相')
+{
+  const ruleOf = (sel) => {
+    const i = insertedCss.indexOf(sel + '{')
+    return i < 0 ? '' : insertedCss.slice(i + sel.length + 1, insertedCss.indexOf('}', i))
+  }
+
+  // a. 「边框令牌」不许再出现在图形描边上。border-l2 是 #ffffff1f（12% 白），
+  //    当作节点描边只有 1.48:1、当作连线 1.42:1 —— 这就是用户说的「淡」。
+  ok('节点描边不再用 border-l2', ruleOf('.ac-node .ac-shape').indexOf('--ac-line') >= 0
+    && ruleOf('.ac-node .ac-shape').indexOf('border-l2') < 0, ruleOf('.ac-node .ac-shape'))
+  ok('连线不再用 border-l2', ruleOf('.ac-edge').indexOf('--ac-line') >= 0
+    && ruleOf('.ac-edge').indexOf('border-l2') < 0, ruleOf('.ac-edge'))
+  ok('箭头跟着连线改色', ruleOf('.ac-arrowhead').indexOf('--ac-line') >= 0, ruleOf('.ac-arrowhead'))
+  // b. 描边色自己定义，且深色有一份（浅色在裸 body 上，深色挂在 body[data-ds-dark-theme]）
+  //    注意 `.ac-root` 有两条（原来那条定义面板底色的还在），所以按整串找，不能取第一条规则。
+  ok('--ac-line 有浅色值', insertedCss.indexOf('--ac-line:#7c828a') >= 0)
+  const darkAt = insertedCss.indexOf('body[data-ds-dark-theme]) .ac-root{')
+  ok('--ac-line 有深色值', darkAt >= 0)
+  ok('深色那份描边与浅色不同', darkAt >= 0 && insertedCss.slice(darkAt).indexOf('--ac-line:#86888a') >= 0)
+
+  // c. 八档色相：每档都要有「描边 / 框填充 / 组名」三条，且都指向自己的变量
+  let hueRules = 0
+  for (let i = 0; i < 8; i++) {
+    if (insertedCss.indexOf(`.ac-h${i} .ac-shape,.ac-h${i} .ac-group-box,.ac-h${i} .ac-fold-box{stroke:var(--ac-p${i})}`) >= 0) hueRules++
+    if (insertedCss.indexOf(`.ac-h${i} .ac-group-box,.ac-h${i} .ac-fold-box{fill:var(--ac-p${i});fill-opacity:var(--ac-fill-a)}`) >= 0) hueRules++
+    if (insertedCss.indexOf(`.ac-h${i} .ac-group-lbl,.ac-h${i} .ac-fold-lbl{fill:var(--ac-p${i})}`) >= 0) hueRules++
+  }
+  eq('八档色相 × 三条规则都在样式表里', hueRules, 24)
+  // 导出件（白底）是字面色板，与屏幕同一套色相 —— 别让屏幕和导出长得不一样
+  const hueShapeSel = (insertedCss.match(/\.ac-h[0-7] \.ac-shape/g) || []).length
+  ok('导出样式表也带了这八档（屏幕 8 条 + 导出 8 条）', hueShapeSel >= 16, hueShapeSel)
+
+  // d. 真渲染一遍：组框、组内节点的边框是同一个档位；无组的节点没有档位
+  // 两个组 id 在哈希上**故意撞档**（alpha 与 组一 都落在 1）：只有这样才真的走到
+  // 「撞了往后探」那条路，也才验得出下面的顺序无关性 —— 不撞的话探针分支一次都没跑。
+  const prevR = respond
+  const PAL = (reversed) => ({
+    nodes: [
+      { id: 'pa', label: '甲一', shape: 'rect', group: 'alpha', x: 0, y: 0 },
+      { id: 'pb', label: '甲二', shape: 'rect', group: 'alpha', x: 240, y: 0 },
+      { id: 'pc', label: '乙一', shape: 'rect', group: '组一', x: 0, y: 200 },
+      { id: 'pd', label: '野的', shape: 'rect', group: null, x: 240, y: 200 },
+    ],
+    edges: [{ id: 'e1', from: 'pa', to: 'pc' }],
+    groups: reversed
+      ? [{ id: '组一', label: '乙组' }, { id: 'alpha', label: '甲组' }]
+      : [{ id: 'alpha', label: '甲组' }, { id: '组一', label: '乙组' }],
+    direction: 'TD', extras: [],
+  })
+  async function renderPal(model, sid) {
+    respond = function (method, args) {
+      const extra = { model, nodeCount: model.nodes.length, groupCount: model.groups.length, key: 'pal/x', diagram: 'pal/x' }
+      if (method === 'doc:get') return fullDoc(extra)
+      if (method === 'doc:set') return fullDoc(Object.assign({}, extra, { model: args.model }))
+      if (method === 'doc:rev') return { revision: 1, updatedBy: 'switch', diagram: 'pal/x', dir: UI + '/.arch-canvas', libraryRev: 1, external: null }
+      if (method === 'doc:history') return { ok: true, entries: [] }
+      return prevR(method, args)
+    }
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    await act(async () => {
+      root.render(React.createElement(captured['conversation.view'], {
+        cwd: UI, sessionId: sid, useSessions: () => UI,
+      }))
+    })
+    await flush()
+    return { host, root }
+  }
+  const hueIn = (el) => {
+    const m = el ? /(?:^|\s)ac-h(\d)(?:\s|$)/.exec(el.getAttribute('class') || '') : null
+    return m ? Number(m[1]) : null
+  }
+  const nodeHue = (host, title) => hueIn(Array.from(host.querySelectorAll('g.ac-node'))
+    .find((el) => ((el.querySelector('.ac-lbl') || {}).textContent || '').trim() === title))
+  const grpHue = (host, label) => hueIn(Array.from(host.querySelectorAll('g.ac-grp'))
+    .find((el) => ((el.querySelector('.ac-group-lbl') || {}).textContent || '').trim() === label))
+
+  const p1 = await renderPal(PAL(false), 's-pal-1')
+  const a1 = grpHue(p1.host, '甲组')
+  const b1 = grpHue(p1.host, '乙组')
+  ok('组框带上了色相类', a1 !== null && b1 !== null, { a1, b1 })
+  ok('两个组拿到的档位不同', a1 !== null && b1 !== null && a1 !== b1, { a1, b1 })
+  // 正向先立住，否则下面「没色相」那条是空断言
+  eq('组内节点与组框同档（甲）', nodeHue(p1.host, '甲一'), a1)
+  eq('组内第二个节点也同档（甲）', nodeHue(p1.host, '甲二'), a1)
+  eq('另一个组的节点跟另一个档（乙）', nodeHue(p1.host, '乙一'), b1)
+  // **负向对照**：不属于任何组的节点不许带档位（否则它就跟着别人的色走了）
+  eq('无组节点没有色相类', nodeHue(p1.host, '野的'), null)
+  ok('无组节点仍然渲染出来了（所以上一条不是「没找到元素」）', !!Array.from(p1.host.querySelectorAll('g.ac-node'))
+    .find((el) => ((el.querySelector('.ac-lbl') || {}).textContent || '').trim() === '野的'))
+  await act(async () => { p1.root.unmount() })
+  p1.host.remove()
+
+  // e. **不变量**：档位只取决于「有哪些组」，与组在文件里的顺序无关 ——
+  //    否则删掉中间一个组，用户记住的「那个绿框」就会换色。
+  const p2 = await renderPal(PAL(true), 's-pal-2')
+  eq('组顺序颠倒后，同一个组的档位不变（甲）', grpHue(p2.host, '甲组'), a1)
+  eq('组顺序颠倒后，同一个组的档位不变（乙）', grpHue(p2.host, '乙组'), b1)
+  await act(async () => { p2.root.unmount() })
+  p2.host.remove()
+
+  respond = prevR
+}
+
 console.log('\n[7] 卸载不留尾')
 await act(async () => { root.unmount() })
 dispose()

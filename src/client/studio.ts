@@ -437,6 +437,11 @@ function ArchStudio(props) {
     return gstate[id]
   }
 
+  // 组 → 色相档位。只取决于「有哪些组」，与它们在文件里的顺序无关（见 runtime.ts 的 groupHueIndex）。
+  var hueOfGroup = React.useMemo(function () {
+    return groupHueIndex(model && model.groups ? model.groups : [])
+  }, [model])
+
   var groups = React.useMemo(function () {
     if (!model || !model.groups) return []
     var res = []
@@ -1690,7 +1695,7 @@ function ArchStudio(props) {
       // 折叠/展开只挂在按钮上，块本体不响应 —— 组块长得像个节点，点它多半是想选中或拖它，
       // 顺手把它弹开是最烦的那种误触。
       inner.push(React.createElement('g', {
-        key: 'g' + gb.id, className: 'ac-fold',
+        key: 'g' + gb.id, className: 'ac-fold' + hueClassOf(hueOfGroup, gb.id),
         // 折叠块整块可拖（拖的是组内所有人）—— 但**拖不等于展开**，展开只认右边那个按钮。
         onPointerDown: (function (gid) { return function (ev) { onGroupDown(ev, gid) } })(gb.id),
       },
@@ -1705,7 +1710,7 @@ function ArchStudio(props) {
           React.createElement('text', { y: 3.6 }, '▸')),
       ))
     } else {
-      inner.push(React.createElement('g', { key: 'g' + gb.id },
+      inner.push(React.createElement('g', { key: 'g' + gb.id, className: 'ac-grp' + hueClassOf(hueOfGroup, gb.id) },
         React.createElement('rect', { className: 'ac-group-box', x: gb.x, y: gb.y, width: gb.w, height: gb.h, rx: 12 }),
         React.createElement('text', { className: 'ac-group-lbl', x: gb.x + 12, y: gb.y + 17 },
           String(gb.label == null ? gb.id : gb.label)),
@@ -1891,7 +1896,7 @@ function ArchStudio(props) {
       var isHl = !!(highlight && highlight.nodes && highlight.nodes.indexOf(node.id) >= 0)
       inner.push(React.createElement('g', {
         key: 'n' + node.id,
-        className: 'ac-node' + (isSel ? ' sel' : '') + (isHl ? ' hl' : ''),
+        className: 'ac-node' + (isSel ? ' sel' : '') + (isHl ? ' hl' : '') + hueClassOf(hueOfGroup, node.group),
         onPointerDown: (function (nd) { return function (ev) { onNodeDown(ev, nd) } })(node),
       },
         // key 里带 highlight.key：新一轮改动会强制重挂，动画才会重新播

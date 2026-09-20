@@ -194,6 +194,9 @@ writeFileSync(join(ROOT, 'dist/ui.js'), ui)
 // 解析器单独出一份：test/mermaid.test.cjs 要跑**当前构建**的解析器，
 // 而不是 /tmp 下一份会腐烂的手工快照。
 writeFileSync(join(ROOT, 'dist/mermaid.js'), hostOut('src/host/mermaid.js'))
+// 客户端那半的**纯函数**也单独出一份：test/layout.test.cjs 要跑当前构建的自动布局，
+// 而 lib/ui.js 里那些函数活在闭包里（它只把 install 挂出去），测试够不着。
+writeFileSync(join(ROOT, 'dist/client-runtime.js'), clientOut('src/client/runtime.js'))
 writeFileSync(join(ROOT, 'dist/bootstrap-host.js'), bootstrapHost)
 writeFileSync(join(ROOT, 'dist/bootstrap-client.js'), bootstrapClient)
 
