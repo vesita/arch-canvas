@@ -26,6 +26,15 @@ function ArchStudio(props) {
   sidRef.current = sessionId
 
   var inputActions = props && props.inputActions
+  // 草稿当前内容。写完留言要**自动**把 `@节点id` 追加进去（它会被装饰成上下文块），
+  // 而 setDraft 是**整段替换** —— 不先读出来就会把用户正在打的字顶掉。
+  // 这里的判断条件（props.useInput 在不在）在会话内是稳定的，不影响 hook 顺序。
+  var useInputHook = (props && typeof props.useInput === 'function') ? props.useInput : null
+  var liveDraft = ''
+  if (useInputHook) {
+    var draftSel = useInputHook(function (s) { return (s && typeof s.draft === 'string') ? s.draft : '' })
+    if (typeof draftSel === 'string') liveDraft = draftSel
+  }
 
   var modelState = React.useState(null)
   var model = modelState[0]
@@ -957,6 +966,15 @@ function ArchStudio(props) {
     if (text === '') setNoteDoneDraft(false)
     push(next, text === '' ? '用户清除了节点留言' : '用户写了节点留言')
     setStatus(text === '' ? '已清除留言' : (done ? '留言已保存（已解决，不再注入给 AI）' : '留言已保存，会随每一步进入 AI 的上下文'))
+    // 写完留言就**自动**把它作为一个上下文块放进输入框：只追加 `@id`、不加任何文字，
+    // 所以打字区一个字符都不占（占用的是 chip，不是文字）。已经有过同一个 `@id` 就不重复加。
+    if (text !== '' && inputActions && typeof inputActions.setDraft === 'function' &&
+        String(liveDraft || '').indexOf('@' + s.id) < 0) {
+      var addChip = '@' + s.id
+      inputActions.setDraft(String(liveDraft || '').trim()
+        ? String(liveDraft).replace(/\s+$/, '') + '\n' + addChip
+        : addChip)
+    }
   }
 
   /**

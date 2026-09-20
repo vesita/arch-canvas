@@ -1425,6 +1425,66 @@ console.log('\n[4k] 发送区上方的留言横条：追加草稿，不顶掉用
   }
 }
 
+console.log('\n[4l] 写完留言自动把上下文块放进输入框（无需点按钮）')
+{
+  const AUTO_MODEL = {
+    nodes: [
+      // 故意带一条已有留言：textarea 的 placeholder 就是它，选择器和 [4c] 一致
+      { id: 'a1', label: '节点甲', shape: 'rect', group: null, x: 0, y: 0, note: '这里为什么不用队列？', noteDone: false },
+    ],
+    edges: [], groups: [], direction: 'TD', extras: [],
+  }
+  const prevRespondAuto = respond
+  const autoModel = JSON.parse(JSON.stringify(AUTO_MODEL))
+  respond = function (method, args) {
+    if (method === 'doc:get') return fullDoc({ model: autoModel, nodeCount: autoModel.nodes.length })
+    return prevRespondAuto(method, args)
+  }
+  let autoDraft = null
+  const USER_TEXT = '我本来打了一半的话'
+  const aHost = document.createElement('div')
+  document.body.appendChild(aHost)
+  const aRoot = createRoot(aHost)
+  await act(async () => {
+    aRoot.render(React.createElement(captured['sidebar.right.pane.tab'], {
+      cwd: UI, sessionId: 's1', useSessions: () => UI,
+      inputActions: { setDraft: (t) => { autoDraft = t } },
+      // 草稿里已经有用户打的字 —— 自动追加必须**保住**它们
+      useInput: (sel) => sel({ draft: USER_TEXT }),
+    }))
+  })
+  await flush()
+
+  const aNodeEl = Array.from(aHost.querySelectorAll('g.ac-node'))
+    .find((g) => (g.textContent || '').indexOf('节点甲') >= 0)
+  ok('画布上找得到那个节点', !!aNodeEl)
+  await act(async () => {
+    aNodeEl.dispatchEvent(new dom.window.PointerEvent('pointerdown', { bubbles: true, button: 0 }))
+  })
+  await flush()
+
+  const aArea = aHost.querySelector('textarea[placeholder*="这里为什么不用队列"]')
+  ok('检查器里出现留言输入框', !!aArea)
+  if (aArea) {
+    const setAreaValueAuto = Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, 'value').set
+    await act(async () => {
+      setAreaValueAuto.call(aArea, '这条留言应该自动变成上下文块')
+      aArea.dispatchEvent(new dom.window.Event('input', { bubbles: true }))
+    })
+    await flush()
+    await act(async () => {
+      aArea.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    })
+    await flush()
+  }
+  ok('写完留言**自动**调用了 setDraft（没点任何按钮）', autoDraft !== null, autoDraft)
+  eq('草稿 = 用户原本打的字 + 一个 @节点id，没有多余文字',
+    autoDraft, USER_TEXT + '\n@a1')
+
+  await act(async () => { aRoot.unmount() })
+  respond = prevRespondAuto
+}
+
 console.log('\n[7] 卸载不留尾')
 await act(async () => { root.unmount(); footRoot.unmount() })
 dispose()
