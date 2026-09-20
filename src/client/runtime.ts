@@ -26,7 +26,13 @@ var STUDIO_CSS = [
   '.ac-node{cursor:pointer}',
   '.ac-node .ac-shape{fill:var(--dsw-alias-bg-layer-2,#232830);stroke:var(--dsw-alias-border-l2,#3a4048);stroke-width:1.5}',
   '.ac-node.sel .ac-shape{stroke:var(--dsw-alias-brand-primary,#4c8dff);stroke-width:2.5}',
-  '.ac-node .ac-lbl{fill:var(--dsw-alias-label-primary,#e8eaed);font-size:13px;text-anchor:middle;dominant-baseline:central;pointer-events:none;user-select:none}',
+  // 节点卡片：第一段是标题（.ac-lbl —— 保持既有契约，它的 textContent 就是标题本身），
+  // 其余段是描述（.ac-desc）；「意图：」「原理：」是**惯例**不是框架硬约束，写了才分层着色。
+  '.ac-node .ac-lbl{fill:var(--dsw-alias-label-primary,#e8eaed);font-size:13px;font-weight:600;text-anchor:middle;dominant-baseline:central;pointer-events:none;user-select:none}',
+  '.ac-node .ac-desc{fill:var(--dsw-alias-label-secondary,#9aa3af);font-size:11.5px;text-anchor:middle;dominant-baseline:central;pointer-events:none;user-select:none}',
+  '.ac-node .ac-desc .ac-intent{fill:#7cc4ff}',
+  '.ac-node .ac-desc .ac-rationale{fill:#b39ddb}',
+  '.ac-node .ac-ref{fill:var(--dsw-alias-label-secondary,#9aa3af);font-size:10px;text-anchor:middle;dominant-baseline:central;pointer-events:none;user-select:none;opacity:.8}',
   '.ac-edge{fill:none;stroke:var(--dsw-alias-border-l2,#3a4048);stroke-width:1.6}',
   '.ac-edge.dashed{stroke-dasharray:6 5}',
   '.ac-edge.sel{stroke:var(--dsw-alias-brand-primary,#4c8dff);stroke-width:2.6}',
@@ -47,7 +53,26 @@ var STUDIO_CSS = [
   '.ac-input,.ac-area,.ac-select{width:100%;box-sizing:border-box;background:var(--dsw-alias-bg-base,#14161a);color:inherit;border:1px solid var(--dsw-alias-border-l2,#3a4048);border-radius:7px;padding:5px 7px;font:inherit;font-size:12.5px}',
   '.ac-readonly{opacity:.65}',
   '.ac-area{height:100%;min-height:120px;resize:none;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;line-height:1.55;white-space:pre;overflow:auto}',
+  // 源码高亮：底层 <pre> 画彩色 token，顶层 textarea 把文字设成透明（只留光标与选区）。
+  // 两层的 font / padding / border / white-space 必须逐项一致，差一点光标就与文字错位。
+  '.ac-editwrap{position:relative;flex:1 1 auto;min-height:120px;display:flex}',
+  '.ac-hl{position:absolute;inset:0;margin:0;box-sizing:border-box;border:1px solid transparent;border-radius:7px;padding:5px 7px;overflow:auto;pointer-events:none;scrollbar-width:none;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;line-height:1.55;white-space:pre;tab-size:2}',
+  '.ac-hl::-webkit-scrollbar{width:0;height:0}',
+  '.ac-area-hl{position:relative;z-index:1;background:transparent;color:transparent;caret-color:var(--dsw-alias-label-primary,#e8eaed);resize:none}',
+  '.ac-area-hl::selection{background:rgba(76,141,255,.35)}',
+  '.ac-hl-c{color:#6a737d}',
+  '.ac-hl-m{color:#c08b5c}',
+  '.ac-hl-u{color:#e8a33d}',
+  '.ac-hl-k{color:#7cc4ff}',
+  '.ac-hl-s{color:#a5d6a7}',
+  '.ac-hl-a{color:#ff9e64}',
+  '.ac-hl-p{color:#8b949e}',
+  '.ac-hl-i{color:#e8eaed}',
   '.ac-textwrap{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;padding:8px;gap:7px}',
+  // 解析警告区：宿主一直在发 warnings，界面从前一条都不显示。折叠不成，直接列出来。
+  '.ac-warn{flex:0 0 auto;max-height:32%;overflow:auto;padding:7px 9px;border:1px solid #e8a33d;border-radius:8px;background:rgba(232,163,61,.07)}',
+  '.ac-warn-h{color:#e8a33d;font-size:11.5px;font-weight:600;margin-bottom:4px}',
+  '.ac-warn-i{color:var(--dsw-alias-label-secondary,#9aa3af);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;line-height:1.6;word-break:break-all}',
   '.ac-previewwrap{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;overflow:hidden}',
   '.ac-preview{flex:1 1 auto;min-height:0;overflow:auto;padding:12px;background:#fff;color:#111}',
   '.ac-preview svg{max-width:100%;height:auto}',
@@ -200,16 +225,21 @@ function visualLen(s) {
 var nodeSizeCache = Object.create(null)
 var nodeSizeCacheCount = 0
 
-function nodeSize(label) {
-  var key = String(label == null ? '' : label)
+// extraRows：标签之外还要占几行（目前只有「引用」那一行）。
+// 它必须进缓存键 —— 同一个标签的节点，带 @file 与不带 @file 的高度不同，
+// 共用一条缓存会让先算出来的那个尺寸污染另一个。
+function nodeSize(label, extraRows) {
+  var text = String(label == null ? '' : label)
+  var extra = extraRows > 0 ? Math.round(extraRows) : 0
+  var key = text + '\u0000' + extra
   var cached = nodeSizeCache[key]
   if (cached) return cached
-  var lines = key.split('\n')
+  var lines = text.split('\n')
   var widest = 4
   for (var i = 0; i < lines.length; i++) widest = Math.max(widest, visualLen(lines[i]))
   var res = {
     w: Math.round(Math.min(300, Math.max(104, widest * 8.2 + 36))),
-    h: Math.round(Math.max(44, lines.length * 19 + 26)),
+    h: Math.round(Math.max(44, (lines.length + extra) * 19 + 26)),
   }
   if (nodeSizeCacheCount > 2000) {
     nodeSizeCache = Object.create(null)
@@ -218,6 +248,102 @@ function nodeSize(label) {
   nodeSizeCache[key] = res
   nodeSizeCacheCount++
   return res
+}
+
+// 节点上「引用」那一行的文案：取路径最后一段、去掉 `#符号`，多条锚点追加 +N。
+// 只给人看，不参与寻址 —— 完整路径在底部检查器与 AI 提示词里。
+function refRowText(files) {
+  if (!files || !files.length) return ''
+  var first = String(files[0] == null ? '' : files[0]).split('#')[0].replace(/\/+$/, '')
+  var base = first.split('/').pop() || first
+  return base ? ('▤ ' + base + (files.length > 1 ? ' +' + (files.length - 1) : '')) : ''
+}
+
+// 引用行占不占一行 —— nodeSize 与渲染必须用同一个判据，否则节点高度和文字对不上。
+function refRowCount(files) {
+  return refRowText(files) ? 1 : 0
+}
+
+// 标签 = 标题（第一段）+ 描述（其余段）。节点默认只画标题，点开（选中）才画描述 ——
+// 所以这套分/合规则被**四处**共用：节点渲染、gstate 的尺寸、检查器的两个输入框、提交时的合成。
+// 任何一处自己 split 一下，都会在某个方向上和别处对不上。
+function splitLabel(label) {
+  var s = String(label == null ? '' : label)
+  var i = s.indexOf('\n')
+  if (i < 0) return { title: s, desc: '' }
+  return { title: s.slice(0, i), desc: s.slice(i + 1) }
+}
+
+// 标题是单行（换行压成空格）；描述保留内部换行、只去掉尾部空行。
+// 描述为空时**不留尾随换行** —— 否则「只有标题」的节点会凭空多出一个空描述段，
+// 每往返一次就多一行，节点也越画越高。
+function composeLabel(title, desc) {
+  var t = String(title == null ? '' : title).replace(/\r?\n/g, ' ')
+  var d = String(desc == null ? '' : desc).replace(/\s+$/, '')
+  return d ? (t + '\n' + d) : t
+}
+
+// ==================== 源码页分词 ====================
+// 只用来给源码页着色，**不做任何校验**（语义校验归宿主的 mermaid.ts 解析器）。
+// 认的是 AC 那个 mermaid 子集：`%%` 注释行分三类、关键字、引号标签、箭头、id。
+// 三类注释的颜色不同是有意的：`%%!` 是格式说明（最淡，可以无视）、
+// `@pos/@link/@summary` 是元数据、`@note/@done/@file` 是**用户写在这个元素上的东西**。
+var HL_ARROWS = ['<==>', '<-->', '-.->', '==>', '-->', '---', '~~~', '===', '->']
+var HL_KEYWORDS = {
+  flowchart: 1, graph: 1, subgraph: 1, end: 1, direction: 1,
+  classDef: 1, class: 1, style: 1, linkStyle: 1, click: 1, link: 1,
+}
+
+function tokenizeMermaidLine(line) {
+  var out = []
+  var t = String(line == null ? '' : line)
+  var trimmed = t.replace(/^\s+/, '')
+  if (trimmed.slice(0, 2) === '%%') {
+    var lead = t.slice(0, t.length - trimmed.length)
+    var kind = 'c'
+    if (trimmed.slice(0, 3) !== '%%!') {
+      if (/^%%\s*@(pos|link|summary)\b/.test(trimmed)) kind = 'm'
+      else if (/^%%\s*@(note|done|file)\b/.test(trimmed)) kind = 'u'
+    }
+    if (lead) out.push({ k: '', s: lead })
+    out.push({ k: kind, s: trimmed })
+    return out
+  }
+  var i = 0
+  var buf = ''
+  // 先切掉行首缩进（真实文件里节点行是缩进的，注入给 AI 的视图也带空白），再认行首关键字。
+  // 关键字必须在这里单独认：进了下面的字符循环，`flowchart` 会被当普通 id 一路累积进 buf，
+  // 等遇见空白时 buf 已非空，就再也认不出它是关键字了 ——
+  // 这个 bug（顶格版与缩进版）是被 test/ui.render.mjs 的 [4g] 断言连着抓出来两次的。
+  var lead = /^\s*/.exec(t)[0]
+  if (lead) { out.push({ k: '', s: lead }); i = lead.length }
+  var km = /^([A-Za-z][A-Za-z0-9_]*)/.exec(t.slice(i))
+  if (km && HL_KEYWORDS[km[1]]) {
+    out.push({ k: 'k', s: km[1] })
+    i += km[1].length
+  }
+  function flush() { if (buf) { out.push({ k: 'i', s: buf }); buf = '' } }
+  while (i < t.length) {
+    var ch = t.charAt(i)
+    if (ch === '"') {
+      flush()
+      var j = i + 1
+      while (j < t.length && t.charAt(j) !== '"') j++
+      out.push({ k: 's', s: t.slice(i, Math.min(j + 1, t.length)) })
+      i = j + 1
+      continue
+    }
+    var arrow = null
+    for (var a = 0; a < HL_ARROWS.length; a++) {
+      if (t.slice(i, i + HL_ARROWS[a].length) === HL_ARROWS[a]) { arrow = HL_ARROWS[a]; break }
+    }
+    if (arrow) { flush(); out.push({ k: 'a', s: arrow }); i += arrow.length; continue }
+    if ('[](){}|&;,>'.indexOf(ch) >= 0) { flush(); out.push({ k: 'p', s: ch }); i++; continue }
+    buf += ch
+    i++
+  }
+  flush()
+  return out
 }
 
 function needsLayout(model) {
@@ -236,7 +362,7 @@ function autoLayout(model) {
   var sizes = {}
   for (var i = 0; i < nodes.length; i++) {
     byId[nodes[i].id] = nodes[i]
-    sizes[nodes[i].id] = nodeSize(nodes[i].label)
+    sizes[nodes[i].id] = nodeSize(nodes[i].label, refRowCount(nodes[i].files))
   }
   var edges = []
   for (var e = 0; e < (model.edges || []).length; e++) {
@@ -346,7 +472,11 @@ function ArchIcon(props) {
 var EXPORT_CSS = [
   '.ac-shape{fill:#ffffff;stroke:#4a5568;stroke-width:1.5}',
   '.ac-node.sel .ac-shape{stroke:#4a5568;stroke-width:1.5}',
-  '.ac-lbl{fill:#1a202c;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;font-size:13px;text-anchor:middle;dominant-baseline:central}',
+  '.ac-lbl{fill:#1a202c;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;font-size:13px;font-weight:600;text-anchor:middle;dominant-baseline:central}',
+  '.ac-desc{fill:#718096;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;font-size:11.5px;text-anchor:middle;dominant-baseline:central}',
+  '.ac-desc .ac-intent{fill:#2b6cb0}',
+  '.ac-desc .ac-rationale{fill:#6b46c1}',
+  '.ac-ref{fill:#a0aec0;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;font-size:10px;text-anchor:middle;dominant-baseline:central}',
   '.ac-edge{fill:none;stroke:#718096;stroke-width:1.6}',
   '.ac-edge.dashed{stroke-dasharray:6 5}',
   '.ac-arrowhead{fill:#718096}',

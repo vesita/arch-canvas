@@ -102,9 +102,21 @@ function ArchStudio(props) {
   var renderError = errState[0]
   var setRenderError = errState[1]
 
+  // 解析警告：宿主一直把 warnings 随每个响应带回来，但界面从前一处都没读 ——
+  // 「图悄悄少了一块」这件事，人和 AI 都看不见。这里把它接住，源码页渲染成诊断列表。
+  var warnState = React.useState([])
+  var warnings = warnState[0]
+  var setWarnings = warnState[1]
+
   var labState = React.useState('')
   var labelDraft = labState[0]
   var setLabelDraft = labState[1]
+
+  // 描述单独一个草稿：检查器把「标题 / 描述」拆成两个框，提交时用 composeLabel 合成完整 label。
+  // 这两个草稿必须**成对**读写 —— 切节点时只更新其中一个，另一个就会把上个节点的文字串过去。
+  var descState = React.useState('')
+  var descDraft = descState[0]
+  var setDescDraft = descState[1]
 
   var grpState = React.useState('')
   var groupDraft = grpState[0]
@@ -163,6 +175,10 @@ function ArchStudio(props) {
   var committedRef = React.useRef(null)
   var hotRef = React.useRef(false)
   var tabRef = React.useRef('canvas')
+  // 源码页高亮：底层 <pre> 画彩色 token、顶层 textarea 文字透明（只留光标与选区）。
+  // 两层必须字体、行高、padding、border 逐项一致，差一点光标与文字就错位。
+  var hlRef = React.useRef(null)
+  var taRef = React.useRef(null)
   var histState = React.useState(0)
   var setHistTick = histState[1]
 
@@ -175,13 +191,16 @@ function ArchStudio(props) {
     if (model && model.nodes) {
       for (var i = 0; i < model.nodes.length; i++) {
         var n = model.nodes[i]
-        var s = nodeSize(n.label)
+        // 节点默认只画标题，点开（= 选中）才画描述与引用行 —— 尺寸必须跟着同一个判据走，
+        // 否则展开时文字会溢出没长高的框。所以 sel 也是这个 memo 的依赖。
+        var open = !!(sel && sel.kind === 'node' && sel.id === n.id)
+        var s = open ? nodeSize(n.label, refRowCount(n.files)) : nodeSize(splitLabel(n.label).title, 0)
         out[n.id] = { x: n.x == null ? 0 : n.x, y: n.y == null ? 0 : n.y, w: s.w, h: s.h }
       }
     }
     geomRef.current = out
     return out
-  }, [model])
+  }, [model, sel])
 
   var groups = React.useMemo(function () {
     if (!model || !model.groups) return []
@@ -318,6 +337,7 @@ function ArchStudio(props) {
     // 检查点条数：顶栏「历史 N」显示它。清单本身打开面板时才拉（可能刚好有新的一次 AI 改动）。
     if (typeof r.historyCount === 'number') setHistoryCount(r.historyCount)
     if (typeof r.libraryRev === 'number') libRevRef.current = r.libraryRev
+    setWarnings(Array.isArray(r.warnings) ? r.warnings : [])
     setMermaidText(r.mermaid)
     setDraft(r.mermaid)
     var lc = r.lastChange
@@ -526,7 +546,9 @@ function ArchStudio(props) {
     if (e.button !== 0) return
     e.stopPropagation()
     setSel({ kind: 'node', id: node.id })
-    setLabelDraft(node.label == null ? '' : node.label)
+    var sp0 = splitLabel(node.label)
+    setLabelDraft(sp0.title)
+    setDescDraft(sp0.desc)
     setGroupDraft(node.group || '')
     setNoteDraft(node.note || '')
     setNoteDoneDraft(node.noteDone === true)
@@ -678,6 +700,7 @@ function ArchStudio(props) {
     push(next, '用户新增了节点')
     setSel({ kind: 'node', id: id })
     setLabelDraft('新节点')
+    setDescDraft('')
     setGroupDraft('')
     setNoteDraft('')
     setNoteDoneDraft(false)
@@ -700,9 +723,12 @@ function ArchStudio(props) {
     if (!s || s.kind !== 'node' || !cur) return
     var node = null
     for (var i = 0; i < cur.nodes.length; i++) if (cur.nodes[i].id === s.id) node = cur.nodes[i]
-    if (!node || node.label === labelDraft) return
+    // 标题与描述是两个框，合成之后才是真正的 label —— 比较也用合成值，
+    // 否则「只改了描述」会被误判成没变而悄悄丢掉。
+    var want = composeLabel(labelDraft, descDraft)
+    if (!node || node.label === want) return
     var next = cloneModel(cur)
-    for (var j = 0; j < next.nodes.length; j++) if (next.nodes[j].id === s.id) next.nodes[j].label = labelDraft
+    for (var j = 0; j < next.nodes.length; j++) if (next.nodes[j].id === s.id) next.nodes[j].label = want
     push(next, '用户改了节点名称')
     setStatus('已改名')
     fittedRef.current = false
@@ -812,7 +838,9 @@ function ArchStudio(props) {
     for (var i = 0; i < cur.nodes.length; i++) if (cur.nodes[i].id === id) node = cur.nodes[i]
     if (!node) return
     setSel({ kind: 'node', id: id })
-    setLabelDraft(node.label == null ? '' : node.label)
+    var sp1 = splitLabel(node.label)
+    setLabelDraft(sp1.title)
+    setDescDraft(sp1.desc)
     setGroupDraft(node.group || '')
     setNoteDraft(node.note || '')
     setNoteDoneDraft(node.noteDone === true)
@@ -1170,12 +1198,28 @@ function ArchStudio(props) {
         var rx2 = kind === 'rect' ? 9 : gm.h / 2
         shapeEl = React.createElement('rect', { className: 'ac-shape', x: x0, y: y0, width: gm.w, height: gm.h, rx: rx2 })
       }
+      // 默认只画标题；点开（选中）才画描述与引用行 —— 与 gstate 的尺寸判据必须一致，
+      // 否则文字会溢出没长高的框（或框里留一大块空白）。
+      var open = !!(sel && sel.kind === 'node' && sel.id === node.id)
       var lines = String(node.label == null ? '' : node.label).split('\n')
-      var spanStart = -((lines.length - 1) * 19) / 2
-      var tspans = []
-      for (var li2 = 0; li2 < lines.length; li2++) {
-        tspans.push(React.createElement('tspan', { key: 'l' + li2, x: gm.x, y: gm.y + spanStart + li2 * 19 }, lines[li2]))
-      }
+      var descLines = open ? lines.slice(1) : []
+      var refText = open ? refRowText(node.files) : ''
+      var rows = (open ? lines.length : 1) + (refText ? 1 : 0)
+      var spanStart = -((rows - 1) * 19) / 2
+      // 标题必须是 .ac-lbl 的**全部**文本：测试与用户都靠它认节点。
+      var titleEl = React.createElement('text', { className: 'ac-lbl' },
+        React.createElement('tspan', { key: 't0', x: gm.x, y: gm.y + spanStart }, lines.length > 0 ? lines[0] : ''))
+      var descEl = descLines.length > 0 ? React.createElement('text', { className: 'ac-desc' },
+        descLines.map(function (ln, di) {
+          // 前缀是**惯例**：写了就分层着色，没写就是普通描述（老图因此可以渐进迁移）。
+          var cls = /^\s*意图\s*[：:]/.test(ln) ? 'ac-intent' : (/^\s*原理\s*[：:]/.test(ln) ? 'ac-rationale' : '')
+          return React.createElement('tspan', {
+            key: 'd' + di, x: gm.x, y: gm.y + spanStart + (di + 1) * 19,
+            className: cls || undefined,
+          }, ln)
+        })) : null
+      var refEl = refText ? React.createElement('text', { className: 'ac-ref' },
+        React.createElement('tspan', { key: 'r0', x: gm.x, y: gm.y + spanStart + lines.length * 19 }, refText)) : null
       var isHl = !!(highlight && highlight.nodes && highlight.nodes.indexOf(node.id) >= 0)
       inner.push(React.createElement('g', {
         key: 'n' + node.id,
@@ -1189,7 +1233,9 @@ function ArchStudio(props) {
           x: x0 - 7, y: y0 - 7, width: gm.w + 14, height: gm.h + 14, rx: 13,
         }) : null,
         shapeEl,
-        React.createElement('text', { className: 'ac-lbl' }, tspans),
+        titleEl,
+        descEl,
+        refEl,
         // 下钻角标：带 @link 的节点点它跳到那张图
         node.link ? React.createElement('g', {
           key: 'jump', className: 'ac-jump',
@@ -1296,10 +1342,45 @@ function ArchStudio(props) {
       : null,
   )
 
+  // 解析警告：宿主每条响应都带着 warnings，但从前界面一处都没读 ——
+  // 「图悄悄少了一块」这件事，人和 AI 都看不见。这里列出来，最多 12 条，其余提示看日志。
+  var warnBox = warnings.length > 0 ? React.createElement('div', { className: 'ac-warn' },
+    React.createElement('div', { className: 'ac-warn-h' }, '⚠ 解析警告 ' + warnings.length + ' 条 —— 图可能少了一块'),
+    warnings.slice(0, 12).map(function (w, wi) {
+      return React.createElement('div', { key: 'w' + wi, className: 'ac-warn-i' }, String(w))
+    }),
+    warnings.length > 12 ? React.createElement('div', { className: 'ac-warn-i' }, '…还有 ' + (warnings.length - 12) + ' 条，全部在日志里') : null,
+  ) : null
+
+  // 源码高亮：token 由 runtime.ts 的 tokenizeMermaidLine 切（纯着色，不做校验），
+  // 这里只负责把它画成一层 <pre>。滚动同步挂在 textarea 的 onScroll 上 ——
+  // 两层只有 textarea 能交互，它滚到哪，pre 就跟到哪。
+  var hlLines = String(draft == null ? '' : draft).split('\n').map(function (ln, li) {
+    var toks = tokenizeMermaidLine(ln)
+    var kids = []
+    for (var ti = 0; ti < toks.length; ti++) {
+      var tk = toks[ti]
+      kids.push(tk.k ? React.createElement('span', { key: 'k' + ti, className: 'ac-hl-' + tk.k }, tk.s) : tk.s)
+    }
+    return React.createElement('div', { key: 'L' + li }, kids.length ? kids : '\u00a0')
+  })
+
   var textPane = React.createElement('div', { className: 'ac-textwrap' },
     React.createElement('div', { className: 'ac-hint' }, '这段 Mermaid 就是 AI 看到的全部内容。可以直接改，然后点「应用回画布」。%% @pos 行是坐标注释，删掉只会让节点重新自动布局。'),
     renderError ? React.createElement('div', { className: 'ac-err' }, '源码解析报错：\n' + renderError) : null,
-    React.createElement('textarea', { className: 'ac-area', value: draft, spellCheck: false, onChange: function (e) { setDraft(e.target.value) } }),
+    warnBox,
+    React.createElement('div', { className: 'ac-editwrap' },
+      React.createElement('pre', { className: 'ac-hl', ref: hlRef, 'aria-hidden': 'true' }, hlLines),
+      React.createElement('textarea', {
+        className: 'ac-area ac-area-hl', ref: taRef, value: draft, spellCheck: false,
+        onChange: function (e) { setDraft(e.target.value) },
+        onScroll: function (e) {
+          var ta = e.target
+          var hl = hlRef.current
+          if (hl) { hl.scrollTop = ta.scrollTop; hl.scrollLeft = ta.scrollLeft }
+        },
+      }),
+    ),
   )
 
   var previewPane = React.createElement('div', { className: 'ac-previewwrap' },
@@ -1405,11 +1486,21 @@ function ArchStudio(props) {
       React.createElement('h4', null, '节点 ' + nodeSel.id),
       React.createElement('div', { className: 'ac-grid' },
         React.createElement('div', { className: 'ac-field full' },
-          React.createElement('label', null, '显示文本（回车生效，Shift+回车换行）'),
+          React.createElement('label', null, '标题（回车生效）'),
+          React.createElement('input', {
+            className: 'ac-input', value: labelDraft, placeholder: '这个元素是什么',
+            onChange: function (e) { setLabelDraft(e.target.value) },
+            onBlur: commitLabel,
+            onKeyDown: function (e) { if (e.key === 'Enter') { e.preventDefault(); commitLabel() } },
+          }),
+        ),
+        React.createElement('div', { className: 'ac-field full' },
+          React.createElement('label', null, '描述（回车生效，Shift+回车换行）'),
           React.createElement('textarea', {
             className: 'ac-input', style: { height: 54, resize: 'vertical', fontFamily: 'inherit' },
-            value: labelDraft,
-            onChange: function (e) { setLabelDraft(e.target.value) },
+            placeholder: '意图：想达成什么　/　原理：为什么这么设计',
+            value: descDraft,
+            onChange: function (e) { setDescDraft(e.target.value) },
             onBlur: commitLabel,
             onKeyDown: function (e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); commitLabel() } },
           }),

@@ -589,6 +589,244 @@ console.log('\n[4e] 检查点清单：谁改的、点「退回」真发 RPC')
   respond = prevRespond
 }
 
+console.log('\n[4f] 节点卡片分段与源码页解析警告')
+{
+  const CARD_MODEL = {
+    nodes: [
+      {
+        id: 'c1',
+        label: '核心服务\n意图：处理高并发请求\n原理：基于事件循环与非阻塞IO\n补充说明行',
+        shape: 'rect', group: null, x: 100, y: 100,
+        note: '', noteDone: false,
+        files: ['src/server/core.ts#startServer'],
+      },
+      {
+        id: 'c0',
+        label: '单行无锚点',
+        shape: 'rect', group: null, x: 300, y: 100,
+        note: '', noteDone: false,
+        files: [],
+      },
+    ],
+    edges: [], groups: [], direction: 'TD', extras: [], summary: '',
+  }
+  const SAMPLE_WARNS = ['第 3 行没能解析', '注释 @note n9 指向不存在的节点']
+
+  const prevRespond = respond
+  let currentModel = JSON.parse(JSON.stringify(CARD_MODEL))
+  let currentWarnings = SAMPLE_WARNS
+  respond = function (method, args) {
+    if (method === 'doc:get') {
+      return fullDoc({
+        model: currentModel,
+        nodeCount: currentModel.nodes.length,
+        warnings: currentWarnings,
+      })
+    }
+    return prevRespond(method, args)
+  }
+
+  const cardHost = document.createElement('div')
+  document.body.appendChild(cardHost)
+  const cardRoot = createRoot(cardHost)
+  await act(async () => {
+    cardRoot.render(React.createElement(captured['sidebar.right.pane.tab'], {
+      cwd: UI, sessionId: 's1', useSessions: () => UI,
+    }))
+  })
+  await flush()
+
+  // 1. 节点卡片分段渲染
+  const cardNodes = () => Array.from(cardHost.querySelectorAll('g.ac-node'))
+  const findCardNode = (firstLine) => cardNodes().find((el) => el.querySelector('.ac-lbl')?.textContent.trim() === firstLine)
+  const c1El = findCardNode('核心服务')
+  const c0El = findCardNode('单行无锚点')
+
+  // a. 多行 label 的节点：.ac-lbl 的 textContent 恰好等于第一段
+  eq('多行节点的 .ac-lbl textContent 恰好等于第一段标题', c1El?.querySelector('.ac-lbl')?.textContent, '核心服务')
+
+  // a2. 默认（未选中）**只画标题**：描述与引用行都不渲染 —— 这是刻意的空间节省，
+  //     所以必须是负向断言（元素不存在），而不是"有但看不见"。
+  ok('未选中时节点不画 .ac-desc', !c1El?.querySelector('.ac-desc'))
+  ok('未选中时节点不画 .ac-ref', !c1El?.querySelector('.ac-ref'))
+
+  // a3. 点一下节点 = 选中 = 展开：描述与引用行这时才出现。
+  await act(async () => {
+    c1El.dispatchEvent(new dom.window.PointerEvent('pointerdown', { bubbles: true, button: 0 }))
+  })
+  await flush()
+  const c1Open = findCardNode('核心服务')
+  ok('选中后节点出现 .ac-desc', !!c1Open?.querySelector('.ac-desc'))
+
+  // b. 展开后同一节点内有 .ac-desc，其文本包含其余段
+  const descEl = c1Open?.querySelector('.ac-desc')
+  ok('多行节点内存在 .ac-desc', !!descEl)
+  const descText = descEl?.textContent || ''
+  ok('.ac-desc 包含意图行', descText.indexOf('意图：处理高并发请求') >= 0, descText)
+  ok('.ac-desc 包含原理行', descText.indexOf('原理：基于事件循环与非阻塞IO') >= 0, descText)
+  ok('.ac-desc 包含普通描述行', descText.indexOf('补充说明行') >= 0, descText)
+
+  // c. 「意图：」开头带 ac-intent、「原理：」开头带 ac-rationale、无前缀的段都不带
+  const descSpans = Array.from(descEl?.querySelectorAll('tspan') || [])
+  const intentSpan = descSpans.find((s) => s.textContent.indexOf('意图：') === 0)
+  const rationaleSpan = descSpans.find((s) => s.textContent.indexOf('原理：') === 0)
+  const plainSpan = descSpans.find((s) => s.textContent.indexOf('补充说明行') === 0)
+  ok('「意图：」开头的 tspan 带 class ac-intent', intentSpan?.getAttribute('class') === 'ac-intent', intentSpan?.getAttribute('class'))
+  ok('「原理：」开头的 tspan 带 class ac-rationale', rationaleSpan?.getAttribute('class') === 'ac-rationale', rationaleSpan?.getAttribute('class'))
+  ok('无前缀的描述段不带 ac-intent 也不带 ac-rationale',
+    plainSpan && !plainSpan.classList.contains('ac-intent') && !plainSpan.classList.contains('ac-rationale'), plainSpan?.getAttribute('class'))
+
+  // d. 带 files 的节点（展开后）有 .ac-ref，文字形如 ▤ xxx.ts
+  const refEl = c1Open?.querySelector('.ac-ref')
+  ok('带 files 的节点存在 .ac-ref', !!refEl)
+  eq('带 files 的节点 .ac-ref 内容为 ▤ core.ts', refEl?.textContent.trim(), '▤ core.ts')
+
+  // e. 负向对照：不带 files 的节点**即使展开**也没有 .ac-ref。
+  //    必须展开后再断言 —— 不展开的话"没有 .ac-ref"是必然的，断言会恒真、抓不到任何回归。
+  await act(async () => {
+    c0El.dispatchEvent(new dom.window.PointerEvent('pointerdown', { bubbles: true, button: 0 }))
+  })
+  await flush()
+  const c0Open = findCardNode('单行无锚点')
+  ok('不带 files 的节点没有 .ac-ref', !c0Open?.querySelector('.ac-ref'))
+
+  // f. 负向对照：单行 label 的节点展开后仍没有 .ac-desc（它本来就没有描述段）
+  ok('单行 label 的节点没有 .ac-desc', !c0Open?.querySelector('.ac-desc'))
+
+  // 2. 源码页解析警告
+  // g. warnings 非空时切到源码页，.ac-warn 存在、.ac-warn-h 含条数、.ac-warn-i 条数与 warnings 数一致
+  const tabs = Array.from(cardHost.querySelectorAll('.ac-tabs button'))
+  const textTab = tabs.find((b) => b.textContent.trim() === '源码')
+  ok('找到「源码」标签按钮', !!textTab)
+  await act(async () => { textTab.click() })
+  await flush()
+
+  const warnBox = cardHost.querySelector('.ac-warn')
+  ok('warnings 非空时源码页显示 .ac-warn', !!warnBox)
+  const warnH = warnBox?.querySelector('.ac-warn-h')
+  ok('.ac-warn-h 文案包含条数与警告标记', (warnH?.textContent || '').indexOf('2') >= 0 && (warnH?.textContent || '').indexOf('⚠ 解析警告') >= 0, warnH?.textContent)
+  const warnItems = Array.from(warnBox?.querySelectorAll('.ac-warn-i') || [])
+  eq('.ac-warn-i 条数与 warnings 数量一致', warnItems.length, SAMPLE_WARNS.length)
+  ok('第 1 条 warning 文本匹配', warnItems[0]?.textContent === SAMPLE_WARNS[0], warnItems[0]?.textContent)
+  ok('第 2 条 warning 文本匹配', warnItems[1]?.textContent === SAMPLE_WARNS[1], warnItems[1]?.textContent)
+
+  await act(async () => { cardRoot.unmount() })
+  cardHost.remove()
+
+  // h. 负向对照：warnings 为空时没有 .ac-warn
+  currentWarnings = []
+  const cleanHost = document.createElement('div')
+  document.body.appendChild(cleanHost)
+  const cleanRoot = createRoot(cleanHost)
+  await act(async () => {
+    cleanRoot.render(React.createElement(captured['sidebar.right.pane.tab'], {
+      cwd: UI, sessionId: 's1', useSessions: () => UI,
+    }))
+  })
+  await flush()
+
+  const cleanTabs = Array.from(cleanHost.querySelectorAll('.ac-tabs button'))
+  const cleanTextTab = cleanTabs.find((b) => b.textContent.trim() === '源码')
+  await act(async () => { cleanTextTab.click() })
+  await flush()
+
+  ok('warnings 为空时源码页没有 .ac-warn', !cleanHost.querySelector('.ac-warn'))
+
+  await act(async () => { cleanRoot.unmount() })
+  cleanHost.remove()
+  respond = prevRespond
+}
+
+console.log('\n[4g] 源码页语法高亮')
+{
+  const HL_MERMAID = [
+    '%%! @note 格式说明模板',
+    '%% @pos n1 0 0',
+    '%% @note n1 这里是注释',
+    'flowchart TD',
+    '  n1["标签"] --> n9["a < b & c"]',
+  ].join('\n')
+
+  const prevRespond = respond
+  respond = function (method, args) {
+    if (method === 'doc:get') {
+      return fullDoc({
+        mermaid: HL_MERMAID,
+      })
+    }
+    return prevRespond(method, args)
+  }
+
+  const hlHost = document.createElement('div')
+  document.body.appendChild(hlHost)
+  const hlRoot = createRoot(hlHost)
+  await act(async () => {
+    hlRoot.render(React.createElement(captured['sidebar.right.pane.tab'], {
+      cwd: UI, sessionId: 's1', useSessions: () => UI,
+    }))
+  })
+  await flush()
+
+  // 切到源码页
+  const tabs = Array.from(hlHost.querySelectorAll('.ac-tabs button'))
+  const textTab = tabs.find((b) => b.textContent.trim() === '源码')
+  ok('找到「源码」标签按钮', !!textTab)
+  await act(async () => { textTab.click() })
+  await flush()
+
+  // a. 切到源码页后，.ac-hl 与 textarea.ac-area 同时存在
+  const hlPre = hlHost.querySelector('pre.ac-hl')
+  const area = hlHost.querySelector('textarea.ac-area')
+  ok('源码页内存在 pre.ac-hl 高亮底层', !!hlPre)
+  ok('源码页内存在 textarea.ac-area 编辑层', !!area)
+  ok('.ac-editwrap 容器内包裹 pre.ac-hl 与 textarea', !!hlHost.querySelector('.ac-editwrap pre.ac-hl') && !!hlHost.querySelector('.ac-editwrap textarea.ac-area'))
+
+  // 行容器：.ac-hl 内每行一个 <div>
+  const lineDivs = Array.from(hlPre?.querySelectorAll('div') || [])
+  eq('高亮行数与文本行数一致（每行一个 div）', lineDivs.length, HL_MERMAID.split('\n').length)
+
+  // 辅助函数：在一行内找到某个 class 的 token span
+  const findTokenInLine = (lineIdx, cls) => lineDivs[lineIdx]?.querySelector('span.' + cls)
+  const allTokensInLine = (lineIdx) => Array.from(lineDivs[lineIdx]?.querySelectorAll('span') || [])
+
+  // c. %%! 开头的说明行归 ac-hl-c（第 0 行）
+  const cToken = findTokenInLine(0, 'ac-hl-c')
+  ok('%%! 说明行归 ac-hl-c', !!cToken && cToken.textContent.indexOf('%%! @note') >= 0, cToken?.textContent)
+
+  // d. %% @pos n1 0 0 归 ac-hl-m（第 1 行）
+  const mToken = findTokenInLine(1, 'ac-hl-m')
+  ok('%% @pos 元数据行归 ac-hl-m', !!mToken && mToken.textContent.indexOf('%% @pos') >= 0, mToken?.textContent)
+
+  // b. 桩文本里的 %% @note n1 xxx 这一行渲染出的 token class 含 ac-hl-u（第 2 行）
+  const uToken = findTokenInLine(2, 'ac-hl-u')
+  ok('%% @note 用户数据行归 ac-hl-u', !!uToken && uToken.textContent.indexOf('%% @note') >= 0, uToken?.textContent)
+
+  // e. flowchart 是 ac-hl-k（第 3 行）
+  const kToken = findTokenInLine(3, 'ac-hl-k')
+  ok('flowchart 关键字归 ac-hl-k', !!kToken && kToken.textContent.trim() === 'flowchart', kToken?.textContent)
+
+  // f. n1["标签"] 里的 "标签" 是 ac-hl-s（第 4 行）
+  const sTokens = Array.from(lineDivs[4]?.querySelectorAll('span.ac-hl-s') || [])
+  const labelStrToken = sTokens.find((s) => s.textContent === '"标签"')
+  ok('"标签" 字符串字面量归 ac-hl-s', !!labelStrToken, sTokens.map((s) => s.textContent))
+
+  // g. --> 是 ac-hl-a（第 4 行）
+  const aToken = findTokenInLine(4, 'ac-hl-a')
+  ok('--> 连线箭头归 ac-hl-a', !!aToken && aToken.textContent.trim() === '-->', aToken?.textContent)
+
+  // h. 负向对照（安全）：桩文本里含 < 和 &（"a < b & c"），内部没有真的 <b> 等 HTML 元素被创建
+  ok('.ac-hl 内部没有真的 <b> 元素生成', !hlPre?.querySelector('b'))
+  // 且字符串里的 < 和 & 作为纯文本渲染，没被二次实体转义成 &amp; 字符展示
+  const htmlRaw = hlPre?.innerHTML || ''
+  ok('pre 内没有未闭合或误解析的 HTML 标签结构', htmlRaw.indexOf('<b ') === -1 && htmlRaw.indexOf('<b>') === -1)
+  const escapedStrToken = sTokens.find((s) => s.textContent === '"a < b & c"')
+  ok('"a < b & c" 作为文本原样保留在 span 中', !!escapedStrToken && escapedStrToken.textContent === '"a < b & c"', escapedStrToken?.textContent)
+
+  await act(async () => { hlRoot.unmount() })
+  hlHost.remove()
+  respond = prevRespond
+}
+
 console.log('\n[5] 左下角入口：点一下打开、再点一下连画布一起收回')
 const footHost = document.createElement('div')
 document.body.appendChild(footHost)

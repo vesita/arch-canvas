@@ -1,66 +1,82 @@
-%% arch-canvas —— 由「架构画布」面板与 AI 共同维护
-%% @pos <节点id> <x> <y> 是画布坐标注释，@link <节点id> <图名> 是下钻到另一张图；
-%% @note <节点id> <文本> 是用户留给 AI 的注释，@done 是同一件事但已解决；
-%% 以上对 Mermaid 渲染都无任何影响，可忽略或手改
+%% arch-canvas —— 由「架构画布」面板与 AI 共同维护（`%%!` 开头的是格式说明，不是图的内容）
+%%! @summary <一句话> 这张图讲的是什么 —— 会随每一步注入给 AI
+%%! @pos <节点id> <x> <y> 是画布坐标注释，@link <节点id> <图名> 是下钻到另一张图
+%%! @note <节点id> <文本> 是用户留给 AI 的注释，@done 是同一件事但已解决
+%%! @file <节点id> <路径> 是这个节点对应的源码文件（可带 #符号），一个节点可多条
+%%! 以上对 Mermaid 渲染都无任何影响，可忽略或手改
+%% @summary "架构画布（AC）的逻辑框架：三侧协作（Client 交互 / Host 状态管理 / AI 读写）与核心不变式"
 %% @pos canvas 463 -447
-%% @pos picker 650 -536
+%% @pos picker 772 -513
 %% @pos exp 454 -290
-%% @pos rpc 1026 -172
+%% @pos rpc 1149 -204
 %% @pos doc 1044 -67
-%% @pos parser 737 -35
+%% @pos parser 737 -36
 %% @pos lib 892 170
 %% @pos file 752 76
 %% @pos alog 1330 60
 %% @pos prompt 1378 227
-%% @pos tools 1174 335
+%% @pos tools 1141 312
 %% @pos i1 422 10
 %% @pos i2 420 -118
 %% @pos i3 431 155
 %% @pos human 65 -147
 %% @pos bootC 62 -327
-%% @pos bootH 1107 -493
+%% @pos bootH 1159 -442
+%% @note human "你能看到这里吗，我们先测试一下功能"
+%% @file canvas "src/client/studio.ts"
+%% @file picker "src/client/runtime.ts"
+%% @file exp "src/client/register.ts"
+%% @file rpc "src/package/host.ts#35;apply"
+%% @file doc "src/host/document.ts"
+%% @file lib "."
+%% @file file "src/host/document.ts#35;persist"
+%% @file alog "src/host/log.ts"
+%% @file prompt "src/host/plugin.ts#35;promptText"
+%% @file tools "src/host/plugin.ts#35;onTool"
+%% @file bootC "src/bootstrap/client.ts"
+%% @file bootH "src/bootstrap/host.ts"
 flowchart TD
-  subgraph cl["Client 侧 · 人的那一半"]
-    canvas["自绘 SVG 画布<br/>拖拽 · 连线 · 高亮 · 撤销重做"]
-    picker["图库选择器<br/>列图 · 切图 · 改名 · 删除 · 恢复"]
-    exp["导出 SVG / PNG / 源码"]
+  subgraph cl["👤 Client 侧 · 与人的交互层"]
+    canvas["所见即所得的画布<br/>意图：不写代码也能把结构直接摆出来<br/>原理：图形只是文本的一种视图，改动最终都落回文本"]
+    picker["图库管理入口<br/>列图 · 切图 · 改名 · 删除 · 恢复"]
+    exp["导出与分享<br/>SVG / PNG / Mermaid 源码"]
   end
-  subgraph hs["Host 侧 · 唯一真相源"]
-    rpc["私有 RPC ×12"]
-    doc["文档状态<br/>图模型 · revision · lastChange"]
-    parser["parser / serializer<br/>Mermaid ⇄ 图模型"]
-    lib[("图库<br/>项目目录/.arch-canvas/")]
-    file[("每张图一个 .mmd<br/>@pos 坐标 · @link 下钻")]
-    alog[["文件日志<br/>按天 · 留 3 天"]]
+  subgraph hs["⚙️ Host 侧 · 真相与持久化层"]
+    rpc["浏览器 #60;-> 宿主的通道<br/>~12 个私有 RPC 方法"]
+    doc["文档状态管理中心<br/>图模型 · revision 追踪 · 变更通知"]
+    parser["Mermaid 编解码器<br/>意图：让「给人看的图」同时是「可编辑的数据」<br/>原理：坐标等元数据寄生在 %% 注释里，文件仍是合法 Mermaid"]
+    lib[("图库仓库<br/>项目目录下的 .arch-canvas/")]
+    file[("单图文件存储<br/>每张一个 .mmd，坐标与下钻以注释保留")]
+    alog[["文件变更日志<br/>按天滚动，保留 3 天"]]
   end
-  subgraph ai["AI 侧"]
-    prompt["每步注入 systemPrompt.context"]
-    tools["arch_read · arch_edit<br/>arch_write · arch_switch"]
+  subgraph ai["🤖 AI 侧 · 读写接口层"]
+    prompt["每步注入画布上下文<br/>AI 知道这张图并据此调整行为"]
+    tools["AI 操作工具集<br/>arch_read · arch_edit · arch_write · arch_switch"]
   end
-  subgraph inv["不变式 · 讨论时先看这里"]
-    i1["文本是唯一真相源<br/>图形只是它的一种视图"]
-    i2["图不保证与代码一致<br/>它是讨论的画布"]
-    i3["AI 改图走增量<br/>用户摆的布局不会被冲掉"]
+  subgraph inv["🧱 不变式 · 任何改动都不应违反"]
+    i1["文本是唯一真相源<br/>图形只是文本的一种渲染视图"]
+    i2["图不承诺与代码一致<br/>它是辅助讨论的画布，不是代码的镜像"]
+    i3["AI 只能增量改图<br/>用户手动摆好的布局不会被冲掉"]
   end
-  human(["用户"])
-  bootC[["Package · client 引导层 61 行"]]
-  bootH[["Package · host 引导层 50 行"]]
-  human -->|"侧栏入口"| bootC
-  bootC -->|"script 加载 dist/ui.js"| canvas
-  bootH -->|"eval 加载 dist/host.js"| rpc
-  canvas -->|"doc:set 整份模型"| rpc
-  rpc -->|"doc:rev 轻量轮询"| canvas
-  picker -->|"doc:list / open / rename / delete / restore"| rpc
-  exp -->|"读当前画布"| canvas
+  human(["使用者"])
+  bootC[["Client 引导层"]]
+  bootH[["Host 引导层"]]
+  human -->|"左侧栏点开入口"| bootC
+  bootC -->|"初始化时加载 dist/ui.js"| canvas
+  bootH -->|"启动时加载 dist/host.js"| rpc
+  canvas -->|"每次存图发整份模型"| rpc
+  rpc -->|"轻量轮询 revision 同步"| canvas
+  picker -->|"列出 / 打开 / 改名 / 删除 / 恢复"| rpc
+  exp -->|"读取当前画布内容"| canvas
   rpc --> doc
   doc --> parser
-  parser -->|"坐标存成注释"| file
+  parser -->|"坐标以 %% @pos 注释写入"| file
   file --> lib
-  lib -.->|"周期扫描：走目录 + 比指纹"| doc
-  rpc -.->|"RPC 抛错"| alog
-  doc -.->|"落盘失败"| alog
-  doc -->|"每步注入"| prompt
-  tools -->|"增量 op，不碰用户布局"| doc
+  lib -.->|"周期扫描文件系统发现外部修改"| doc
+  rpc -.->|"RPC 异常写日志"| alog
+  doc -.->|"保存失败写日志"| alog
+  doc -->|"每步 AI 循环注入"| prompt
+  tools -->|"只发送增量 op，不动节点布局"| doc
   i1 -.-> parser
   i2 -.-> doc
   i3 -.-> tools
