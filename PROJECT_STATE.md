@@ -88,6 +88,19 @@ TS/JS: `dsh-antigravity` `dsh-collab`；Rust: `stross` `breeze` `exreg`）。
 —— **人给意图骨架 + 机器提取事实 + 显式映射**，Structure101 / Lattix / Structurizr 都要架构师写切片与规则。
 **AC 现在的形状（人画图 + `%% @file` 锚点 + `arch_read` 回读）正是这个形态。**
 
+工具侧（第三份调研，引用抽查过存在）：**没有一个是纯文本正则的** —— 连最轻的
+`madge`、`code2flow` 都带 AST（后者的自述是 "pretty good call graphs"，不是 "perfect"）；
+CodeCharta 的 `RawTextParser` 只敢数行数与缩进；它们把「模块名 → 文件」这一段交给
+`enhanced-resolve` / `tsconfig paths` / `exports` 映射 —— 与我量到的「决议才是最贵的」是同一件事；
+barrel 造成的假依赖边有专门的 issue（[dependency-cruiser #938](https://github.com/sverweij/dependency-cruiser/issues/938)）。
+
+而**活下来的都不是「生成器」，是「一致性检查器」**：dependency-cruiser（分层/禁令规则）、
+ArchUnit（架构契约）、NDepend（CQLinq）、Structure101（Architecture Specs）——
+人先声明架构，机器只负责比对与报警。这条把 `arch_drift` 从「便宜的第一步」升级成「业界验证过的方向」。
+
+（该报告里还引了一条「用 LLM 从代码推断 C4」的 arXiv 论文，我**没能打开验证**
+（arxiv 域名在本机不可达），按未核实处理；它也不影响上面的结论。）
+
 因此的取舍：
 
 - 先做**零决议知识**的那一档：`arch_drift`（锚点腐烂 + 新文件没人画）。
