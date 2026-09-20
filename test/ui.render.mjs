@@ -1485,6 +1485,79 @@ console.log('\n[4l] 写完留言自动把上下文块放进输入框（无需点
   respond = prevRespondAuto
 }
 
+console.log('\n[4m] 端口的硬约束：绝不许越过方块边界（悬空连接的回归断言）')
+{
+  // 用户报的现场：节点**不展开**时，左侧的连线悬空。原因是我先前的端口分配在
+  // "装不下就按最小间距 12 摆、允许溢出到角外"—— 而折叠（只有标题）的节点很矮，
+  // 一侧挤进 4 条线时整串就溢出了方块，线头挂在框外。
+  const SHORT_MODEL = {
+    nodes: [
+      { id: 's1', label: '源一', shape: 'rect', group: null, x: -320, y: 0 },
+      { id: 's2', label: '源二', shape: 'rect', group: null, x: -320, y: 90 },
+      { id: 's3', label: '源三', shape: 'rect', group: null, x: -320, y: 180 },
+      { id: 's4', label: '源四', shape: 'rect', group: null, x: -320, y: 270 },
+      { id: 's5', label: '源五', shape: 'rect', group: null, x: -320, y: 360 },
+      { id: 's6', label: '源六', shape: 'rect', group: null, x: -320, y: 450 },
+      { id: 'st', label: '目标', shape: 'rect', group: null, x: 0, y: 135 },
+    ],
+    edges: [
+      { id: 'se1', from: 's1', to: 'st', label: '', arrow: '-->' },
+      { id: 'se2', from: 's2', to: 'st', label: '', arrow: '-->' },
+      { id: 'se3', from: 's3', to: 'st', label: '', arrow: '-->' },
+      { id: 'se4', from: 's4', to: 'st', label: '', arrow: '-->' },
+      { id: 'se5', from: 's5', to: 'st', label: '', arrow: '-->' },
+      { id: 'se6', from: 's6', to: 'st', label: '', arrow: '-->' },
+    ],
+    groups: [], direction: 'TD', extras: [],
+  }
+  const prevRespondShort = respond
+  const shortModel = JSON.parse(JSON.stringify(SHORT_MODEL))
+  respond = function (method, args) {
+    if (method === 'doc:get') {
+      return fullDoc({ model: shortModel, nodeCount: shortModel.nodes.length, edgeCount: shortModel.edges.length })
+    }
+    return prevRespondShort(method, args)
+  }
+  const sHost = document.createElement('div')
+  document.body.appendChild(sHost)
+  const sRoot = createRoot(sHost)
+  await act(async () => {
+    sRoot.render(React.createElement(captured['sidebar.right.pane.tab'], {
+      cwd: UI, sessionId: 's1', useSessions: () => UI,
+    }))
+  })
+  await flush()
+
+  const sPaths = Array.from(sHost.querySelectorAll('path.ac-edge'))
+  eq('六条线都画出来了（目标左侧确实被挤爆了）', sPaths.length, 6)
+  const ends = sPaths.map((p) => {
+    const ns = (p.getAttribute('d').match(/-?\d+(?:\.\d+)?/g) || []).map(Number)
+    return { x: ns[ns.length - 2], y: ns[ns.length - 1] }
+  })
+  const stEl = Array.from(sHost.querySelectorAll('g.ac-node'))
+    .find((g) => (g.textContent || '').indexOf('目标') >= 0)
+  const stRectEl = stEl ? stEl.querySelector('rect:not(.ac-hl)') : null
+  const stRect = stRectEl ? {
+    x1: Number(stRectEl.getAttribute('x')),
+    y1: Number(stRectEl.getAttribute('y')),
+    x2: Number(stRectEl.getAttribute('x')) + Number(stRectEl.getAttribute('width')),
+    y2: Number(stRectEl.getAttribute('y')) + Number(stRectEl.getAttribute('height')),
+  } : null
+  ok('量到了目标方块的矩形', !!stRect && stRect.y2 > stRect.y1, stRect)
+  // 负向对照：这个场景本来就会溢出 —— 6 条线按"最小间距 12"需要 60px，
+  // 而折叠节点的高度只有 40 出头。证明下面那条断言不是空转。
+  // （第一版只放了 4 条，60→36 还不够高，负向对照当场把它揭穿了。）
+  ok('负向对照成立：按最小间距 12 摆会超出方块高度',
+    !!stRect && (6 - 1) * 12 > (stRect.y2 - stRect.y1), stRect)
+  ok('所有端口都贴在目标方块的左边界上',
+    ends.every((e) => Math.abs(e.x - stRect.x1) <= 1), { stRect, ends })
+  ok('端口全在方块的上下范围之内（没有一个悬空到框外）',
+    !!stRect && ends.every((e) => e.y >= stRect.y1 - 0.5 && e.y <= stRect.y2 + 0.5), { stRect, ends })
+
+  await act(async () => { sRoot.unmount() })
+  respond = prevRespondShort
+}
+
 console.log('\n[7] 卸载不留尾')
 await act(async () => { root.unmount(); footRoot.unmount() })
 dispose()
