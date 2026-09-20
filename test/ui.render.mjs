@@ -2488,6 +2488,112 @@ console.log('\n[4s] 跨页记忆（画布是主窗口子页，切走就卸载）
     await capturedSource.codec.serialize('a4'), '[画布节点 a4（当前画布中已不存在该节点）]')
 }
 
+console.log('\n[4t] 锚点保鲜：角标三态 / 检查器逐条说明 / 画布页的过期横幅')
+{
+  const prevR = respond
+  const DR_MODEL = {
+    nodes: [
+      { id: 'dr1', label: '改过的', shape: 'rect', group: null, x: 0, y: 0, files: ['src/host/mermaid.ts#parseMermaid'] },
+      { id: 'dr2', label: '好着的', shape: 'rect', group: null, x: 240, y: 0, files: ['src/host/plugin.ts'] },
+      { id: 'dr3', label: '坏掉的', shape: 'rect', group: null, x: 480, y: 0, files: ['src/host/没了.ts'] },
+    ],
+    edges: [], groups: [], direction: 'TD', extras: [],
+  }
+  const drFileStatus = {
+    dr1: { 'src/host/mermaid.ts#parseMermaid': 'ok' },
+    dr2: { 'src/host/plugin.ts': 'ok' },
+    dr3: { 'src/host/没了.ts': 'missing' },
+  }
+  const drReport = (stale) => ({
+    stale: stale, uncovered: [{ dir: 'src/package', files: 2 }, { dir: 'tools', files: 3 }],
+    files: 12, baseline: true, truncated: false, checkedAt: 1, external: false,
+  })
+  respond = function (method, args) {
+    const extra = { model: DR_MODEL, nodeCount: 3, key: 'drift/x', diagram: 'drift/x', fileStatus: drFileStatus }
+    if (method === 'doc:get') return fullDoc(Object.assign({}, extra, { drift: drReport([{ node: 'dr1', ref: 'src/host/mermaid.ts#parseMermaid' }]) }))
+    if (method === 'doc:set') return fullDoc(Object.assign({}, extra, { model: args.model, drift: drReport([]) }))
+    if (method === 'doc:rev') return { revision: 1, updatedBy: 'switch', diagram: 'drift/x', dir: UI + '/.arch-canvas', libraryRev: 1, external: null }
+    if (method === 'doc:history') return { ok: true, entries: [] }
+    return prevR(method, args)
+  }
+  const drHost = document.createElement('div')
+  document.body.appendChild(drHost)
+  const drRoot = createRoot(drHost)
+  await act(async () => {
+    drRoot.render(React.createElement(captured['conversation.view'], {
+      cwd: UI, sessionId: 's-drift', useSessions: () => UI,
+    }))
+  })
+  await flush()
+
+  const badgeOf = (t) => Array.from(drHost.querySelectorAll('g.ac-node'))
+    .find((el) => (el.textContent || '').indexOf(t) >= 0)?.querySelector('.ac-file-badge')
+  ok('文件在图之后改过 → 角标是琥珀那一档（.stale）', !!badgeOf('改过的') && badgeOf('改过的').classList.contains('stale'),
+    badgeOf('改过的') && badgeOf('改过的').getAttribute('class'))
+  ok('负向对照：没改过的节点角标不带 stale', !!badgeOf('好着的') && !badgeOf('好着的').classList.contains('stale'))
+  ok('失效的仍然是红的那一档（没被 stale 顶掉）', !!badgeOf('坏掉的') && badgeOf('坏掉的').classList.contains('broken'))
+
+  const box = drHost.querySelector('.ac-drift')
+  ok('画布页出现保鲜横幅', !!box)
+  ok('横幅里点明是哪个节点、哪条引用',
+    !!box && box.textContent.indexOf('dr1') >= 0 && box.textContent.indexOf('src/host/mermaid.ts#parseMermaid') >= 0,
+    box && box.textContent)
+  ok('横幅里也报「没有锚点指向的目录」', !!box && box.textContent.indexOf('src/package') >= 0 && box.textContent.indexOf('tools') >= 0)
+  ok('横幅与「解析警告」是两条，不混在一起',
+    drHost.querySelectorAll('.ac-drift').length === 1 && drHost.querySelectorAll('.ac-warn').length === 0)
+
+  // 点选那个节点：检查器里那一条要写明「为什么」，而且用琥珀那一档样式（不是红的）
+  await act(async () => {
+    const el = Array.from(drHost.querySelectorAll('g.ac-node')).find((e) => (e.textContent || '').indexOf('改过的') >= 0)
+    clickEl(el, 100, 100)
+  })
+  await flush()
+  const refRow = drHost.querySelector('.ac-dock .ac-ref-status')
+  ok('检查器里那条锚点写明原因', !!refRow && refRow.textContent.indexOf('文件在图之后改过') >= 0, refRow && refRow.textContent)
+  ok('并且用的是 amber 那一档，不是红的',
+    !!refRow && !!refRow.querySelector('.ac-ref-stale') && !refRow.querySelector('.ac-ref-bad'),
+    refRow && refRow.innerHTML.slice(0, 200))
+
+  // 只有「没画到」时：**不许用警告色**（三天就被无视了），也不能说「过期」
+  await act(async () => { drRoot.unmount() })
+  respond = function (method, args) {
+    const extra = { model: DR_MODEL, nodeCount: 3, key: 'drift/x', diagram: 'drift/x', fileStatus: drFileStatus }
+    if (method === 'doc:get') return fullDoc(Object.assign({}, extra, { drift: drReport([]) }))
+    if (method === 'doc:rev') return { revision: 1, updatedBy: 'switch', diagram: 'drift/x', dir: UI + '/.arch-canvas', libraryRev: 1, external: null }
+    return prevR(method, args)
+  }
+  const hintRoot = createRoot(drHost)
+  await act(async () => {
+    hintRoot.render(React.createElement(captured['conversation.view'], {
+      cwd: UI, sessionId: 's-drift-hint', useSessions: () => UI,
+    }))
+  })
+  await flush()
+  const hintBox = drHost.querySelector('.ac-drift')
+  ok('只有「没画到」时横幅降一档语气（.hint）', !!hintBox && hintBox.classList.contains('hint'),
+    hintBox && hintBox.getAttribute('class'))
+  ok('并且不说「已经过期」', !!hintBox && hintBox.textContent.indexOf('已经过期') < 0 && hintBox.textContent.indexOf('有源码没画到') >= 0,
+    hintBox && hintBox.textContent)
+  await act(async () => { hintRoot.unmount() })
+
+  // 横幅只属于画布页：源码页讲的是「这段文本」，不是「这张图新不新鲜」
+  respond = prevR
+  const textRoot = createRoot(drHost)
+  await act(async () => {
+    textRoot.render(React.createElement(captured['conversation.view'], {
+      cwd: UI, sessionId: 's-drift-text', useSessions: () => UI,
+    }))
+  })
+  await flush()
+  await act(async () => {
+    Array.from(drHost.querySelectorAll('.ac-tab')).find((b) => b.textContent.trim() === '源码').click()
+  })
+  await flush()
+  ok('源码页不挂保鲜横幅', !drHost.querySelector('.ac-drift'))
+  await act(async () => { textRoot.unmount() })
+  drHost.remove()
+}
+
 console.log('\n[7] 卸载不留尾')
 await act(async () => { root.unmount() })
 dispose()

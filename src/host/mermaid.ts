@@ -469,6 +469,9 @@ function serializeDoc(doc) {
 var RUNTIME_ONLY_FIELDS = [
   'file', 'name', 'tombstoned', 'absent', 'external', 'warnings', 'notes',
   'fileStatus', 'revision', 'updatedBy', 'updatedAt', 'legacyNotes',
+  // 锚点保鲜报告（见 drift.ts）：同样是派生数据，一次落盘都不进文件。
+  // 漏一个的后果不是「多写一行」——是**每次保存都误报** serialize.not-idempotent。
+  'drift',
 ]
 
 // 节点上这两个字段**不由这份文本承载**：留言存在旁路表 notes.json 里（见 notes.ts），

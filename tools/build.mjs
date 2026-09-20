@@ -68,6 +68,9 @@ const HOST_PARTS = [
   'src/host/log.js',
   'src/host/document.js',
   'src/host/notes.js',
+  // drift 排在 notes 之后：它复用 notes 的旁路表写入口（writeSidecarJson），
+  // 又调 document 的 splitFileRef / fileRefRoot（函数声明提升，跨分片共享同一段作用域）。
+  'src/host/drift.js',
   // history 排在 document 之后：它读 doc / lastChange / serializeDoc，同属这一段作用域。
   'src/host/history.js',
   'src/host/plugin.js',

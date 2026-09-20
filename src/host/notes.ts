@@ -108,29 +108,35 @@ function harvestNoteStore(file: string, nodes: any[]) {
   }
 }
 
-async function saveNoteStoreFor(file: string, policy?: any): Promise<string | null> {
-  if (!file) return null
-  if (!fs) return 'fs 服务不可用'
-  var storePath = noteStorePathFor(file)
-
+/**
+ * 旁路表（与图同目录的派生数据文件）的统一写入口，两道闸门都在这里：
+ *   闸门 1 **路径一致**：`fs.processPath` 解出来的必须严格等于预期路径 ——
+ *     防的是「解析规则一歪，派生数据写到别的文件上、把用户的东西覆盖掉」。
+ *   闸门 2 **内容可辨认**：文件不存在、或能 JSON.parse 成对象才允许写 ——
+ *     防的是「这个路径上恰好有别人的东西，我们一把盖过去」。
+ * 任一条不过：拒绝写入 + 记一条能指路的日志（**不许静默**）。
+ *
+ * `tag` 只用来拼事件名（notes / drift），两种旁路表共用同一份实现 ——
+ * 这类闸门复制第二份，早晚会有一份忘了改。
+ */
+async function writeSidecarJson(storePath: string, store: any, policy?: any, tag?: string): Promise<string | null> {
+  var name = tag || 'sidecar'
   var resolved: any = null
   try {
     resolved = await fs.resolve(storePath)
   } catch (e) {
     var resolveErr = msgOf(e)
-    logEvent('error', 'notes.save.fail', { path: storePath, error: resolveErr })
+    logEvent('error', name + '.save.fail', { path: storePath, error: resolveErr })
     return resolveErr
   }
 
-  // 闸门 1：路径一致。拿到 fs.processPath(target) 或重新 resolve 比对，确认解析出来的 target 确实就是 noteStorePathFor(file) 这个路径
   var actualPath = typeof fs.processPath === 'function'
     ? fs.processPath(resolved)
     : (resolved && (resolved.targetKey || resolved.displayPath || resolved))
   var expectedNormalized = storePath.replace(/\\/g, '/')
   var actualNormalized = String(actualPath || '').replace(/\\/g, '/')
-  var pathMatch = actualNormalized === expectedNormalized
-  if (!pathMatch) {
-    logEvent('error', 'notes.save.refused', {
+  if (actualNormalized !== expectedNormalized) {
+    logEvent('error', name + '.save.refused', {
       reason: 'path-mismatch',
       expected: storePath,
       actual: actualPath,
@@ -138,7 +144,6 @@ async function saveNoteStoreFor(file: string, policy?: any): Promise<string | nu
     return '目标路径不一致，已拒绝写入'
   }
 
-  // 闸门 2：内容可辨认。先读现有文件；文件不存在或能 JSON.parse 成对象才允许写。如果存在但解析不了，拒绝写
   try {
     var info = await fs.stat(resolved)
     if (info) {
@@ -147,32 +152,39 @@ async function saveNoteStoreFor(file: string, policy?: any): Promise<string | nu
         try {
           var parsedExisting = JSON.parse(existingText)
           if (!parsedExisting || typeof parsedExisting !== 'object' || Array.isArray(parsedExisting)) {
-            logEvent('error', 'notes.save.refused', { reason: 'foreign-content', path: storePath })
-            return '现有文件不是有效的留言表对象，已拒绝覆盖'
+            logEvent('error', name + '.save.refused', { reason: 'foreign-content', path: storePath })
+            return '现有文件不是有效的对象，已拒绝覆盖'
           }
-        } catch (e) {
-          logEvent('error', 'notes.save.refused', { reason: 'foreign-content', path: storePath })
+        } catch (e2) {
+          logEvent('error', name + '.save.refused', { reason: 'foreign-content', path: storePath })
           return '现有文件内容非 JSON 格式，已拒绝覆盖'
         }
       }
     }
-  } catch (e) {
-    // 读取现有文件状态报错（非 ENOENT）
-    var statOrReadErr = msgOf(e)
-    logEvent('error', 'notes.save.fail', { path: storePath, error: statOrReadErr })
+  } catch (e3) {
+    var statOrReadErr = msgOf(e3)
+    logEvent('error', name + '.save.fail', { path: storePath, error: statOrReadErr })
     return statOrReadErr
   }
 
-  var store = noteStoreCache[storePath] || {}
   var body = JSON.stringify(store, null, 2) + '\n'
   try {
     await fs.writeText(resolved, body, undefined, undefined, policy)
     return null
-  } catch (e) {
-    var err = msgOf(e)
-    logEvent('error', 'notes.save.fail', { path: storePath, error: err })
+  } catch (e4) {
+    var err = msgOf(e4)
+    logEvent('error', name + '.save.fail', { path: storePath, error: err })
     return err
   }
+}
+
+async function saveNoteStoreFor(file: string, policy?: any): Promise<string | null> {
+  if (!file) return null
+  if (!fs) return 'fs 服务不可用'
+  var storePath = noteStorePathFor(file)
+  var store = noteStoreCache[storePath] || {}
+  var err = await writeSidecarJson(storePath, store, policy, 'notes')
+  return err
 }
 
 /**

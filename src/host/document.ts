@@ -58,6 +58,10 @@ var doc = {
   absent: false,
   // 代码锚点的失效校验结果（派生数据，不落盘）：{ 节点id: { 引用: 'ok'|'missing'|'symbol-missing'|'unknown' } }
   fileStatus: {},
+  // 锚点保鲜报告（派生数据，不落盘；见 drift.ts）：{ stale:[{node,ref}], uncovered:[{dir,files}], baseline, … }
+  // fileStatus 只说「文件/符号还在不在」，它答不了「函数还在但已经不是图上说的那个东西了」——
+  // 那个要靠和落盘时记下的**内容指纹**比对，就是 drift.stale。
+  drift: null as any,
   // 打开的是项目里某个 .mmd / .mermaid 文件时，这里放它的绝对路径（图库里的图是 null）。
   // 有它就意味着「别被图库加载冲掉」+ 提示词里要写明这张图的真相源是哪个文件。
   external: null,
@@ -255,6 +259,13 @@ async function persist(policy?, site?) {
       logEvent('warn', 'notes.persist.fail', { file: doc.file, error: noteErr })
       doc.warnings.push('留言表保存失败: ' + noteErr)
     }
+    // 锚点指纹基线（见 drift.ts）：**只在这一条写路径上记** —— 图刚落盘，此刻的代码就是
+    // 这张图所描述的那份代码。读路径一个字节都不写（那是这个项目的硬规矩）。
+    //
+    // 失败**只记日志、不挂警告**：它只是这一轮没记上基线（drift 会如实说 baseline=false），
+    // 图本身完好、也没有用户能采取的动作 —— 把它塞进「解析警告」那条横幅只会稀释真正的坏消息。
+    var driftErr = await saveDriftStampsFor(doc, policy)
+    if (driftErr) logEvent('warn', 'drift.persist.fail', { file: doc.file, error: driftErr })
     pushHistory(body, site)
     return null
   } catch (e) {
@@ -1407,7 +1418,7 @@ async function checkFileRef(ref, root) {
  */
 async function verifyFileRefs() {
   var status = {}
-  if (!fs) { doc.fileStatus = status; return status }
+  if (!fs) { doc.fileStatus = status; doc.drift = null; return status }
   var root = fileRefRoot()
   var budget = FILE_REF_LIMIT
   for (var i = 0; i < doc.nodes.length; i++) {
@@ -1423,5 +1434,13 @@ async function verifyFileRefs() {
     status[n.id] = per
   }
   doc.fileStatus = status
+  // 顺手算一次保鲜（drift.ts）：它读旁路表里的指纹基线，跟「现在」比 —— 只读不写。
+  // 放在这里而不是每个调用点：界面与提示词两条消费路径都经过 verifyFileRefs。
+  try {
+    doc.drift = await computeDrift()
+  } catch (e) {
+    doc.drift = null
+    logEvent('warn', 'drift.compute.fail', { file: doc.file, error: msgOf(e) })
+  }
   return status
 }

@@ -157,6 +157,17 @@ var STUDIO_CSS = [
   // 节点上的代码锚点角标与检查器中的引用校验状态
   '.ac-file-badge circle{fill:var(--dsw-alias-brand-primary,#4c8dff);stroke:var(--dsw-alias-bg-base,#14161a);stroke-width:1.5}',
   '.ac-file-badge.broken circle{fill:#e5534b}',
+  // 中间那一档：锚点还指得到，但文件在图上一次落盘之后改过 —— 内容可能已经不是图上说的了。
+  // 从前的角标只有「蓝=好 / 红=坏」，这一档和「好」长得一模一样，等于没说。
+  '.ac-file-badge.stale circle{fill:#e8a33d}',
+  // 保鲜横幅（画布页顶部）：与「解析警告」同一套几何，但颜色与措辞都分开 —— 两件事不一样。
+  '.ac-drift{flex:0 0 auto;max-height:26%;overflow:auto;margin:0 8px 6px;padding:7px 9px;border:1px solid #e8a33d;border-radius:8px;background:rgba(232,163,61,.06)}',
+  '.ac-drift-h{color:#e8a33d;font-size:11.5px;font-weight:600;margin-bottom:4px}',
+  // 只有「没画到」那一档：中性色 —— 它不是错误，只是一个待办提示。
+  '.ac-drift.hint{border-color:var(--dsw-alias-border-l2,#3a4048);background:transparent}',
+  '.ac-drift.hint .ac-drift-h{color:var(--dsw-alias-label-secondary,#9aa3af);font-weight:500}',
+  '.ac-drift-i{color:var(--dsw-alias-label-secondary,#9aa3af);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;line-height:1.6;word-break:break-all}',
+  '.ac-ref-status .ac-ref-stale{color:#e8a33d}',
   '.ac-file-badge text{fill:#fff;font-size:10px;text-anchor:middle;pointer-events:none;user-select:none}',
   '.ac-ref-status{display:flex;flex-direction:column;gap:2px;margin-top:6px;font-size:11px;color:var(--dsw-alias-label-secondary,#9aa3af)}',
   '.ac-ref-status .ac-ref-bad{color:#e5534b}',

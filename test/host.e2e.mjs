@@ -1138,6 +1138,121 @@ ok('全局图库里也能标锚点', gEdit && gEdit.ok !== false, gEdit && gEdit
 const gGet = await call('doc:get', { where: '' })
 eq('没有项目根可参照时状态是 unknown（不假装 ok）', (gGet.fileStatus.gAnchor || {})['src/x.ts'], 'unknown')
 
+// ---------- [17b] 锚点保鲜 drift ----------
+console.log('【锚点保鲜 drift：文件在图之后改过 / 有源码却没画到】')
+{
+  const dirDr = '/tmp/proj-drift'
+  const drFile = dirDr + '/.arch-canvas/architecture.mmd'
+  const drStore = dirDr + '/.arch-canvas/anchors.json'
+  const srcHost = dirDr + '/src/host/mermaid.ts'
+  // 锚点**一开始就在文件里**：这样「有锚点、还没有基线」这个场景才真的被走了一遍。
+  // （第一版是加载之后才用 doc:set 加锚点，于是「没有基线就不猜」那条断言是空转的 ——
+  //  负向对照把它照出来了：把守卫拆掉，那两条照样绿。）
+  files.set(drFile, 'flowchart TD\n  d1["编解码器"] --> d2["面板"]\n%% @file d1 "src/host/mermaid.ts#parseMermaid"\n')
+  files.set(srcHost, 'function parseMermaid(t) { return t }\n')
+  files.set(dirDr + '/src/client/studio.ts', 'function draw() {}\n')   // 有源码、没锚点
+  files.set(dirDr + '/tools/build.mjs', 'export const PARTS = []\n')   // 同上（构建脚本也是源码）
+  files.set(dirDr + '/test/x.test.ts', 'it("x", () => {})\n')          // 测试：图本来就不画它
+  files.set(dirDr + '/node_modules/left-pad/index.js', 'module.exports = 1\n')
+
+  // 1. 还没有基线：**不许把「未知」说成「过期」**
+  const dr0 = await call('doc:get', { where: dirDr })
+  ok('进入 drift 测试图库', dr0 && dr0.ok === true, dr0 && dr0.error)
+  eq('锚点确实已经在了（否则下面那条是空断言）', Object.keys(dr0.fileStatus.d1 || {}).length, 1, dr0.fileStatus)
+  ok('没有基线时如实说 baseline=false', !!(dr0.drift && dr0.drift.baseline === false), dr0.drift)
+  eq('没有基线就不报 stale（宁可不猜，也不许吓人）', (dr0.drift && dr0.drift.stale.length) || 0, 0)
+  ok('读路径不建旁路表', !files.has(drStore))
+
+  // 2. 落一次盘 → 记下基线（锚点本来就在，不需要改模型）
+  const mDr = JSON.parse(JSON.stringify(dr0.model))
+  const setDr = await call('doc:set', { model: mDr, where: dirDr })
+  ok('写锚点后 doc:set 成功', setDr && setDr.ok !== false)
+  ok('落盘顺手记了锚点指纹表 anchors.json', files.has(drStore))
+  const storeObj = JSON.parse(files.get(drStore))
+  ok('指纹表是合法 JSON 且按图文件名分格', !!storeObj['architecture.mmd'] && !!storeObj['architecture.mmd'].refs)
+  ok('指纹表里记的是那条引用的内容指纹',
+    typeof storeObj['architecture.mmd'].refs['src/host/mermaid.ts#parseMermaid'] === 'string' &&
+    storeObj['architecture.mmd'].refs['src/host/mermaid.ts#parseMermaid'].length > 0)
+  eq('刚落完基线 → 一条 stale 都没有', (setDr.drift && setDr.drift.stale.length) || 0, 0)
+  ok('落完盘 baseline 为真', !!(setDr.drift && setDr.drift.baseline), setDr.drift)
+
+  // 3. 只读一次、内容没变：不许报 stale（否则这条信号每天都会喊）
+  const drSame = await call('doc:get', { where: dirDr })
+  eq('内容没变 → 不报 stale', drSame.drift.stale.length, 0, drSame.drift.stale)
+
+  // 4. 代码动了、符号还在：fileStatus 仍是 ok，但 drift 必须报出来
+  files.set(srcHost, 'function parseMermaid(t) { return t }\n// 重构过：这已经不是图上说的那个东西了\n')
+  const dr1 = await call('doc:get', { where: dirDr })
+  eq('文件内容变过 → 报一条 stale', dr1.drift.stale.length, 1, dr1.drift.stale)
+  eq('并且指到「哪个节点 · 哪条引用」', dr1.drift.stale[0].node + '|' + dr1.drift.stale[0].ref,
+    'd1|src/host/mermaid.ts#parseMermaid')
+  eq('负向对照：fileStatus 还是 ok —— 这正是 drift 要多看的那一层',
+    (dr1.fileStatus.d1 || {})['src/host/mermaid.ts#parseMermaid'], 'ok')
+
+  // 5. 漏画：有源码却没锚点的目录要报；测试与 node_modules 不许混进来
+  const unc = (dr1.drift.uncovered || []).map((x) => x.dir)
+  ok('报出没被画到的目录（tools / src/client）', unc.indexOf('tools') >= 0 && unc.indexOf('src/client') >= 0, unc)
+  ok('被锚点覆盖的目录不算漏画', unc.indexOf('src/host') < 0, unc)
+  ok('测试目录不算漏画（图本来就不画测试）', unc.indexOf('test') < 0, unc)
+  ok('node_modules 不算漏画', unc.indexOf('node_modules') < 0, unc)
+  const toolsRow = (dr1.drift.uncovered || []).find((x) => x.dir === 'tools')
+  eq('漏画的目录带上文件数', toolsRow && toolsRow.files, 1)
+
+  // 6. 提示词：过期时说清楚「别照着这些锚点走」，并且逐条标出是哪条
+  const tp = prompts[0].text()
+  ok('提示词里点出保鲜状态', tp.indexOf('图的保鲜状态') >= 0)
+  ok('提示词里逐条标明哪条锚点的文件在图之后改过',
+    tp.indexOf('这些锚点的文件改过了') >= 0 && tp.indexOf('src/host/mermaid.ts#parseMermaid') >= 0)
+  ok('提示词里给出「别照着走」的处置', tp.indexOf('别照着上面这些锚点走') >= 0,
+    tp.slice(tp.indexOf('图的保鲜状态'), tp.indexOf('图的保鲜状态') + 400))
+  ok('提示词把「还没画」和「图上错了」分开说（不是一律喊过期）',
+    tp.indexOf('这只是「还没画」，**不是**图上写错了') >= 0)
+
+  // 7. 代码再没动过 + 图自己落一次盘 → 过期就该消失（基线是「图上一次动过」那一版）
+  const again = await call('doc:set', { model: JSON.parse(JSON.stringify(mDr)), where: dirDr })
+  eq('再落一次盘 = 重新确认 → stale 清空', (again.drift && again.drift.stale.length) || 0, 0, again.drift)
+  const tp2 = prompts[0].text()
+  ok('重新确认之后，「文件改过了」这条从提示词里消失',
+    tp2.indexOf('这些锚点的文件改过了') < 0 && tp2.indexOf('别照着上面这些锚点走') < 0)
+  // 但**漏画**是属性不是过期：没画就是没画，重新落盘不会让它消失 —— 这条一起钉住，
+  // 免得以后有人把「过期」和「没画到」揉成一件事。
+  ok('漏画那条仍然留在提示词里（它不是「过期」，是「还缺」）',
+    tp2.indexOf('没有任何锚点指向') >= 0 && tp2.indexOf('tools') >= 0,
+    tp2.slice(tp2.indexOf('图的保鲜状态'), tp2.indexOf('图的保鲜状态') + 300))
+
+  // 8. 落盘失败不记基线：这张图根本没写进文件，就不能声称「图描述的就是这一版代码」
+  files.set(srcHost, 'function parseMermaid(t) { return t }\n// 又改了一次\n')
+  files.delete(drStore)
+  const wasFailing = failWritePaths.has(drFile)
+  failWritePaths.add(drFile)
+  const failedSet = await call('doc:set', { model: JSON.parse(JSON.stringify(mDr)), where: dirDr })
+  failWritePaths.delete(drFile)
+  if (wasFailing) failWritePaths.add(drFile)
+  ok('落盘失败如实回报', failedSet && failedSet.saved === false, failedSet && failedSet.saved)
+  ok('落盘失败 → 不记基线（没写进文件就别声称描述了这一版）', !files.has(drStore))
+
+  // 9. 旁路表坏了不许崩：**换一个没被缓存过的图库**（旁路表按路径缓存，同一个路径读不到第二遍）
+  const dirBad = '/tmp/proj-drift-bad'
+  const badFile = dirBad + '/.arch-canvas/architecture.mmd'
+  const badStore = dirBad + '/.arch-canvas/anchors.json'
+  files.set(badFile, 'flowchart TD\n  b1["甲"]\n')
+  files.set(dirBad + '/src/host/mermaid.ts', 'function f() {}\n')
+  files.set(badStore, '这不是 JSON')
+  const drBad = await call('doc:get', { where: dirBad })
+  ok('指纹表坏掉时当作没有基线（不崩、不误报）', !!(drBad.drift && drBad.drift.baseline === false), drBad.drift)
+  eq('坏表也不报 stale', (drBad.drift && drBad.drift.stale.length) || 0, 0)
+  // 而且**不许盖上别人的东西**：与留言表共用同一套闸门，坏表要拒写（并记一条能指路的日志）。
+  const mBad = JSON.parse(JSON.stringify(drBad.model))
+  mBad.nodes.find((n) => n.id === 'b1').files = ['src/host/mermaid.ts#f']
+  const badSet = await call('doc:set', { model: mBad, where: dirBad })
+  ok('坏表之下 doc:set 本身仍然成功（图照旧能存）', badSet && badSet.ok !== false)
+  eq('但坏表没有被覆盖（拒绝写别人的东西）', files.get(badStore), '这不是 JSON')
+  const refusedLog = (logStorage.get(todayLogKey) || '').trim().split('\n')
+    .map((l) => { try { return JSON.parse(l) } catch (e) { return null } })
+    .reverse().find((row) => row && row.ev === 'drift.save.refused')
+  ok('并且记了一条 drift.save.refused（不静默）', !!refusedLog && refusedLog.reason === 'foreign-content', refusedLog)
+}
+
 // ---------- [17] 整张图的一句话总结 %% @summary ----------
 console.log('【一句话总结 %% @summary】')
 const dirSum = '/tmp/proj-sum'

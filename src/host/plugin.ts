@@ -110,6 +110,14 @@ function promptText() {
   // 代码锚点：用户给节点标的源码文件。价值在于「中文标签 ↔ 英文路径」这个映射 grep 不出来，
   // 所以能省掉一次定位；但它会腐烂 —— 失效的必须显式标出来，并且明说别照着用。
   // 状态取 doc.fileStatus 这份缓存（加载/切库、doc:get、doc:set 之后会重算）。
+  //
+  // 除了「文件/符号还在不在」，还要看**保鲜**（drift.ts）：文件还在、符号还在，但内容在图上
+  // 一次落盘之后改过 —— 那是最常见的那种腐烂（函数还在，只是已经不是图上说的那个东西了）。
+  var staleRefs: Record<string, number> = {}
+  var drift = doc.drift || null
+  if (drift && Array.isArray(drift.stale)) {
+    for (var ds = 0; ds < drift.stale.length; ds++) staleRefs[drift.stale[ds].ref] = 1
+  }
   var refLines = []
   for (var ri = 0; ri < doc.nodes.length; ri++) {
     var rn = doc.nodes[ri]
@@ -120,7 +128,8 @@ function promptText() {
     var bad = []
     for (var rj = 0; rj < rfs.length; rj++) {
       var rsc = rst[rfs[rj]]
-      if (rsc === 'ok') good.push('`' + rfs[rj] + '`')
+      if (rsc === 'ok' && !staleRefs[rfs[rj]]) good.push('`' + rfs[rj] + '`')
+      else if (rsc === 'ok') bad.push('`' + rfs[rj] + '`（文件在图之后改过）')
       else bad.push('`' + rfs[rj] + '`（' + (rsc === 'missing' ? '文件不在' : rsc === 'symbol-missing' ? '符号不在' : '未能校验') + '）')
     }
     refLines.push('- `' + rn.id + '`（' + labelTitle(rn.label) + '）：' + (good.length ? good.join('、') : '') +
@@ -128,11 +137,38 @@ function promptText() {
   }
   if (refLines.length > 0) {
     head.push('', '**图元素上标的代码锚点**（文件里写作 `%% @file`）：用户给的「这个节点对应哪些源码文件」，' +
-      '可以先按它去读，省掉一次 grep 定位。动手前先确认文件在；标了 ⚠ 的**已经失效，不要照着用** —— ' +
-      '重新定位后告诉用户锚点该改成什么。')
+      '可以先按它去读，省掉一次 grep 定位。动手前先确认文件在；标了 ⚠ 的**要么已经失效、要么在图之后被改过，' +
+      '都不要照着用** —— 重新定位后告诉用户锚点该改成什么。')
     for (var rk2 = 0; rk2 < refLines.length && rk2 < 20; rk2++) head.push(refLines[rk2])
     if (refLines.length > 20) head.push('- …还有 ' + (refLines.length - 20) + ' 个节点带锚点，完整内容见文件。')
     head.push('- 锚点是**部分**节点的指路牌，不代表图与代码一致 —— 别据此认为图漏了或多了什么。')
+  }
+  // 保鲜报告本身只写「状态」，并且**只有非空才注入** —— 一张新鲜的图不该为它多付一行 token。
+  if (drift && (drift.stale.length > 0 || drift.uncovered.length > 0)) {
+    // 两件事分开说，**不许一律喊「过期」**：
+    //   stale     —— 代码先动了，这些锚点现在可能指向「已经不是图上说的那个东西」；
+    //   uncovered —— 只是「这几处还没画」，不是图上写错了。
+    // 混成一句「这张图过期了」，AI 会去重画一张没坏的图。
+    var dlines = ['', '**图的保鲜状态**（`drift`，宿主比对出来的，不是猜测）：']
+    if (drift.stale.length > 0) {
+      var top = []
+      for (var dt = 0; dt < drift.stale.length && dt < 5; dt++) top.push('`' + drift.stale[dt].ref + '`')
+      dlines.push('- 这条图上一次写进文件之后，这些锚点的文件改过了：' + top.join('、') +
+        (drift.stale.length > top.length ? ' 等' : '') + ' —— 它们可能已经不是图上说的那个东西。')
+    }
+    if (drift.uncovered.length > 0) {
+      var udirs = []
+      for (var du = 0; du < drift.uncovered.length && du < 6; du++) {
+        udirs.push('`' + drift.uncovered[du].dir + '`（' + drift.uncovered[du].files + ' 个源文件）')
+      }
+      dlines.push('- 另有这些目录里有源码、却没有任何锚点指向：' + udirs.join('、') +
+        (drift.truncated ? '（走目录的预算用完了，只看了前 ' + DRIFT_WALK_MAX_DIRS + ' 个目录）' : '') +
+        '。这只是「还没画」，**不是**图上写错了。')
+    }
+    if (drift.stale.length > 0) {
+      dlines.push('对着代码核对时**别照着上面这些锚点走**；要动图，先问用户这张图还准不准，或者重新定位一遍。')
+    }
+    for (var dl = 0; dl < dlines.length; dl++) head.push(dlines[dl])
   }
   if (doc.nodes.length === 0) {
     head.push('', '画布目前是空的。可以用 `arch_write` 画一版初稿，或用 `arch_edit` 逐块搭建。')
@@ -263,6 +299,9 @@ function summaryOf(): Record<string, any> {
     // 代码锚点的校验结果（派生数据，不落盘）：放在 summaryOf 里，所有 RPC 一起带上 ——
     // 界面靠它标失效的引用，只有 fullOf 有的话 doc:get/doc:set 这两条主路径就收不到。
     fileStatus: doc.fileStatus || {},
+    // 锚点保鲜（派生数据，见 drift.ts）：界面拿它标「文件在图之后改过」的角标，
+    // 提示词拿它说「别照着这些锚点走」。
+    drift: doc.drift || null,
     // 检查点条数：面板顶栏那个「历史 N」显示它（清单本身走 doc:history）
     historyCount: historyOf(doc.file).length,
     lastChange: lastChange,

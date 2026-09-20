@@ -73,6 +73,20 @@ function resolveLiveNode(ref) {
 }
 
 /**
+ * drift.stale 里那一串 { node, ref } 摊平成 `{ 引用: 1 }`。
+ * 角标与检查器都要按**引用**判，而宿主的报告是按**节点**列的 —— 在这里摊一次，别在渲染里摊 N 次。
+ */
+function staleRefSet(drift) {
+  var out = {}
+  if (!drift || !drift.stale || !drift.stale.length) return out
+  for (var i = 0; i < drift.stale.length; i++) {
+    var r = drift.stale[i] && drift.stale[i].ref
+    if (r) out[r] = 1
+  }
+  return out
+}
+
+/**
  * 「你摆到哪儿了」的跨页记忆。画布是主窗口的一个子页，而那个槽**一次只渲染一个**：
  * 切到「对话」等于卸载整个 ArchStudio，组件里的一切随之归零 —— 缩放/平移、当前子页、
  * 甚至内存里那 60 步撤销历史。于是「看一眼 AI 说了什么 → 回画布接着摆」这个来回，
@@ -295,6 +309,11 @@ function ArchStudio(props) {
   var fileStatusRef = React.useRef({})
   var fileStatusTickState = React.useState(0)
   var setFileStatusTick = fileStatusTickState[1]
+  // 锚点保鲜报告（宿主算，见 drift.ts）：stale = 文件在图之后改过；uncovered = 有源码却没画到的目录。
+  // 它和 fileStatus 一样是**派生数据**，随每条响应回来，界面只读。
+  var driftRef = React.useRef(null)
+  var driftTickState = React.useState(0)
+  var setDriftTick = driftTickState[1]
 
   var linkPtState = React.useState(null)
   var linkPt = linkPtState[0]
@@ -478,6 +497,10 @@ function ArchStudio(props) {
           fileStatusRef.current = r.fileStatus || {}
           setFileStatusTick(function (n) { return n + 1 })
         }
+        // 自己刚改完图 = 刚记了一次基线，drift 该是干净的；清掉旧的那份，
+        // 免得角标继续挂着「文件改过」而其实是你自己刚确认过的状态。
+        driftRef.current = r.drift || null
+        setDriftTick(function (n) { return n + 1 })
         setStatus(r.saved === false ? '已改图，但写盘失败' : '已同步给 AI')
       } else {
         setStatus('同步被拒绝：' + String(r && r.error))
@@ -585,6 +608,8 @@ function ArchStudio(props) {
     setExternal(r.external || null)
     fileStatusRef.current = r.fileStatus || {}
     setFileStatusTick(function (n) { return n + 1 })
+    driftRef.current = r.drift || null
+    setDriftTick(function (n) { return n + 1 })
     // 检查点条数：顶栏「历史 N」显示它。清单本身打开面板时才拉（可能刚好有新的一次 AI 改动）。
     if (typeof r.historyCount === 'number') setHistoryCount(r.historyCount)
     if (typeof r.libraryRev === 'number') libRevRef.current = r.libraryRev
@@ -1901,14 +1926,19 @@ function ArchStudio(props) {
         node.files && node.files.length > 0 ? (function () {
           var nStatus = (fileStatusRef.current && fileStatusRef.current[node.id]) || {}
           var isBroken = false
+          var isStale = false
+          var staleSet = staleRefSet(driftRef.current)
           for (var fi2 = 0; fi2 < node.files.length; fi2++) {
             var fRef = node.files[fi2]
             var fSt = nStatus[fRef] || 'unknown'
             if (fSt !== 'ok') { isBroken = true; break }
+            if (staleSet[fRef]) isStale = true
           }
           return React.createElement('g', {
             key: 'file-badge',
-            className: 'ac-file-badge' + (isBroken ? ' broken' : ''),
+            // 三态：ok（品牌蓝）/ 文件在图之后改过（琥珀：还指得到，但内容可能已经不是图上说的了）/
+            // 失效（红：文件或符号找不到了）。中间那档是 drift 带来的 —— 从前它和 ok 长得一模一样。
+            className: 'ac-file-badge' + (isBroken ? ' broken' : (isStale ? ' stale' : '')),
             transform: 'translate(' + (gm.x + gm.w / 2 - 9) + ',' + (y0 + gm.h - 9) + ')',
           },
             React.createElement('circle', { r: 8.5 }),
@@ -2005,6 +2035,43 @@ function ArchStudio(props) {
     }),
     warnings.length > 12 ? React.createElement('div', { className: 'ac-warn-i' }, '…还有 ' + (warnings.length - 12) + ' 条，全部在日志里') : null,
   ) : null
+
+  // 锚点保鲜横幅：图还在，但代码先动了 —— 这是「这张图可能不准了」的**唯一**显式出口。
+  // 刻意不塞进上面那个「解析警告」框：那条说的是「图坏了」，这条说的是「图还活着，但可能过期了」，
+  // 两种话混在一起，用户就一条都不看了。只在非空时渲染。
+  var driftBox = (function () {
+    var dr = driftRef.current
+    if (!dr) return null
+    var staleN = dr.stale ? dr.stale.length : 0
+    var unN = dr.uncovered ? dr.uncovered.length : 0
+    if (staleN === 0 && unN === 0) return null
+    var rows = []
+    for (var di = 0; di < staleN && di < 5; di++) {
+      rows.push(React.createElement('div', { key: 'ds' + di, className: 'ac-drift-i' },
+        '▤ ' + dr.stale[di].node + ' · ' + dr.stale[di].ref + ' —— 文件在图之后改过'))
+    }
+    if (staleN > 5) rows.push(React.createElement('div', { key: 'ds-more', className: 'ac-drift-i' }, '…还有 ' + (staleN - 5) + ' 条'))
+    if (unN > 0) {
+      var names = []
+      for (var ui = 0; ui < unN && ui < 6; ui++) names.push(dr.uncovered[ui].dir + '（' + dr.uncovered[ui].files + ' 个源文件）')
+      rows.push(React.createElement('div', { key: 'du', className: 'ac-drift-i' },
+        '没有锚点指向的目录：' + names.join('、') + (unN > 6 ? ' 等' : '')))
+    }
+    // 两档语气，**不许一律喊「过期」**：
+    //   有 stale → 琥珀（代码先动了，这张图现在可能说的是错的）
+    //   只有 uncovered → 更淡的 hint（只是「这几处你还没画」，不是「图上错了」）
+    // 一律用警告色，用户三天就会学会无视它 —— 那这条信号就白做了。
+    var hasStale = staleN > 0
+    return React.createElement('div', { className: 'ac-drift' + (hasStale ? '' : ' hint') },
+      React.createElement('div', { className: 'ac-drift-h' },
+        hasStale ? ('▤ 这张图可能已经过期：' + staleN + ' 条锚点的文件在图之后改过') : '▤ 有源码没画到'),
+      rows,
+      React.createElement('div', { className: 'ac-drift-i' },
+        hasStale
+          ? '在对应的方块上写留言说清楚哪里变了，或者重新标一遍锚点 —— AI 那边也会看到这条。'
+          : '这不是说图上错了：要画就给它补个锚点，不画就忽略这一条。'),
+    )
+  })()
 
   // 源码页：两层都不滚动，滚动口是 .ac-textwrap（见 runtime.ts 的 STUDIO_CSS）。
   // 从前这里挂着一个 onScroll 把 textarea 的 scrollTop 灌给 <pre> —— 两个滚动口互相同步，
@@ -2257,11 +2324,14 @@ function ArchStudio(props) {
                   var ref = rawLines[fi].trim()
                   if (!ref) continue
                   var st = nodeStatus[ref] || 'unknown'
-                  var isOk = st === 'ok'
-                  var reason = isOk ? '' : (st === 'missing' ? '文件不在' : (st === 'symbol-missing' ? '符号不在' : '无法判定'))
+                  var drStale = !!staleRefSet(driftRef.current)[ref]
+                  var isOk = st === 'ok' && !drStale
+                  var reason = isOk ? ''
+                    : (drStale ? '文件在图之后改过 —— 内容可能已经不是图上说的那个了'
+                      : (st === 'missing' ? '文件不在' : (st === 'symbol-missing' ? '符号不在' : '无法判定')))
                   rows.push(React.createElement('div', {
                     key: 'ref-' + fi + '-' + ref,
-                    className: isOk ? undefined : 'ac-ref-bad',
+                    className: isOk ? undefined : (st === 'ok' ? 'ac-ref-stale' : 'ac-ref-bad'),
                   }, (isOk ? '✓ ' : '⚠ ') + ref + (reason ? ' (' + reason + ')' : '')))
                 }
                 return rows.length > 0 ? React.createElement('div', { className: 'ac-ref-status' }, rows) : null
@@ -2462,6 +2532,9 @@ function ArchStudio(props) {
     ) : null,
     notePanel,
     histPanel,
+    // 保鲜横幅挂在**画布页**（不是源码页）：人看着这张图的时候，才最容易判断「它是不是过期了」。
+    // 单开一条，不并进 `ac-warn`（那条说「图坏了」，这条说「图还活着、但可能过期了」）。
+    tab === 'canvas' ? driftBox : null,
     React.createElement('div', { className: 'ac-body' },
       tab === 'canvas' ? stage : tab === 'text' ? textPane : previewPane,
     ),
