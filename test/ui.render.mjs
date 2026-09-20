@@ -278,7 +278,7 @@ console.log('\n[4c] 元素注释：带注释渲染、角标、清单已解决切
   ok('点击工具条按钮展开 .ac-notes 面板', !!notesPanel())
 
   const headText = notesPanel()?.querySelector('.ac-lib-head')?.textContent || ''
-  ok('面板头部文案含总量、未解决与已解决三条数', headText.indexOf('节点留言：共 3 条') >= 0 && headText.indexOf('2 条待办') >= 0 && headText.indexOf('1 条已解决') >= 0, headText)
+  ok('面板头部文案含总量、待递与历史三条数', headText.indexOf('节点留言：共 3 条') >= 0 && headText.indexOf('2 条待递') >= 0 && headText.indexOf('历史 1 条') >= 0, headText)
 
   // 3b. 头部批量按钮：**一个动作把这一批交出去**（不是「填进输入框等你回车」）
   const batchSendBtn = () => Array.from(notesPanel()?.querySelectorAll('.ac-lib-head button') || []).find((b) => b.textContent.includes('交给 AI'))
@@ -342,12 +342,12 @@ console.log('\n[4c] 元素注释：带注释渲染、角标、清单已解决切
   const n1ItemBtn = () => n1Row()?.querySelector('button.ac-lib-item')
   ok('未解决行：含 ✎、节点 id、label 与注释文本', !!n1ItemBtn() && n1ItemBtn().textContent.indexOf('✎ n1') >= 0 && n1ItemBtn().textContent.indexOf('节点甲') >= 0 && n1ItemBtn().textContent.indexOf('这里为什么不用队列？') >= 0, n1ItemBtn()?.textContent)
   const n1ResolveBtn = () => n1Row()?.querySelector('button.ac-btn')
-  eq('未解决行操作按钮为「已解决」', n1ResolveBtn()?.textContent.trim(), '已解决')
+  eq('待递行操作按钮为「不发了」', n1ResolveBtn()?.textContent.trim(), '不发了')
 
   const n3ItemBtn = () => n3Row()?.querySelector('button.ac-lib-item')
   ok('已解决行：class 含 done 且文案以 ✓ 开头', !!n3ItemBtn() && n3ItemBtn().classList.contains('done') && n3ItemBtn().textContent.indexOf('✓ n3') >= 0, n3ItemBtn()?.className)
   const n3ReopenBtn = () => n3Row()?.querySelector('button.ac-btn')
-  eq('已解决行操作按钮为「重开」', n3ReopenBtn()?.textContent.trim(), '重开')
+  eq('历史行操作按钮为「再送一次」', n3ReopenBtn()?.textContent.trim(), '再送一次')
 
   // 4. 在 .ac-notes 里点击「已解决」
   rpcCalls.length = 0
@@ -378,7 +378,7 @@ console.log('\n[4c] 元素注释：带注释渲染、角标、清单已解决切
   eq('注释 textarea 内容为当前节点注释', noteArea()?.value, '这里需要限流')
 
   const markBtn = () => dock()?.querySelector('.ac-note-actions button')
-  eq('有未解决注释时按钮文案为「标记已解决」', markBtn()?.textContent.trim(), '标记已解决')
+  eq('有待递留言时按钮文案为「不发了」', markBtn()?.textContent.trim(), '不发了')
 
   const sendAiBtn = () => Array.from(dock()?.querySelectorAll('.ac-note-actions button') || []).find((b) => b.textContent.trim() === '发送给 AI')
   ok('检查器内出现「发送给 AI」按钮', !!sendAiBtn())
@@ -394,10 +394,10 @@ console.log('\n[4c] 元素注释：带注释渲染、角标、清单已解决切
   await flush()
 
   const setCall2 = rpcCalls.find((c) => c.method === 'doc:set')
-  ok('检查器点「标记已解决」发出 doc:set', !!setCall2)
+  ok('检查器点「不发了」发出 doc:set', !!setCall2)
   const setNode2 = setCall2?.args?.model?.nodes?.find((n) => n.id === 'n2')
   ok('doc:set 提交的模型里 n2.noteDone 为 true', setNode2 && setNode2.noteDone === true, setNode2)
-  eq('标记已解决后检查器按钮文案变为「重新打开」', markBtn()?.textContent.trim(), '重新打开')
+  eq('收起之后检查器按钮文案变为「再送一次」', markBtn()?.textContent.trim(), '再送一次')
 
   // 6. 全部解决后的工具条与提示文案
   //    旧契约是「全部解决后变回『留言』」—— 那正是用户报的「总量统计漏了已解决的」：
@@ -406,19 +406,19 @@ console.log('\n[4c] 元素注释：带注释渲染、角标、清单已解决切
   ok('全部解决后按钮不再高亮（未解决时才是 primary）',
     !noteToolBtn()?.classList.contains('primary'), noteToolBtn()?.className)
   ok('提示里说清「共几条、其中几条待办」',
-    (noteToolBtn()?.getAttribute('title') || '').indexOf('共 3 条，其中 0 条待办') >= 0,
+    (noteToolBtn()?.getAttribute('title') || '').indexOf('共 3 条，其中 0 条待递') >= 0,
     noteToolBtn()?.getAttribute('title'))
-  ok('没有未解决注释时面板提示「没有未解决的留言」', notesPanel()?.textContent.indexOf('没有未解决的留言') >= 0)
+  ok('没有待递留言时面板提示「没有待递的留言」', notesPanel()?.textContent.indexOf('没有待递的留言') >= 0)
 
   // 7. 检查器点「重新打开」
   rpcCalls.length = 0
   await act(async () => { markBtn().click() })
   await flush()
   const setCall3 = rpcCalls.find((c) => c.method === 'doc:set')
-  ok('检查器点「重新打开」发出 doc:set', !!setCall3)
+  ok('检查器点「再送一次」发出 doc:set', !!setCall3)
   const setNode3 = setCall3?.args?.model?.nodes?.find((n) => n.id === 'n2')
   ok('doc:set 提交的模型里 n2.noteDone 为 false', setNode3 && setNode3.noteDone === false, setNode3)
-  eq('重新打开后检查器按钮文案变回「标记已解决」', markBtn()?.textContent.trim(), '标记已解决')
+  eq('放回待递后检查器按钮文案变回「不发了」', markBtn()?.textContent.trim(), '不发了')
   eq('重新打开后工具条待办数恢复为 1', noteToolBtn()?.textContent.trim(), '留言 1 · 共 3')
 
   // 8. 改一条**已解决**留言的正文 → 自动重新打开（用户报的「留言区被编辑后应该自动重新打开」）。
@@ -428,7 +428,7 @@ console.log('\n[4c] 元素注释：带注释渲染、角标、清单已解决切
     clickEl(n3ElSel)
   })
   await flush()
-  eq('选中本来就是「已解决」的节点丙，检查器按钮为「重新打开」', markBtn()?.textContent.trim(), '重新打开')
+  eq('选中一条历史里的留言，检查器按钮为「再送一次」', markBtn()?.textContent.trim(), '再送一次')
 
   rpcCalls.length = 0
   const n3Area = () => dock()?.querySelector('textarea[placeholder*="这里为什么不用队列"]')
@@ -448,7 +448,7 @@ console.log('\n[4c] 元素注释：带注释渲染、角标、清单已解决切
   const setNode4 = setCall4?.args?.model?.nodes?.find((n) => n.id === 'n3')
   eq('改过正文后 n3.note 是新文本', setNode4?.note, '已确认链路，但我又改了一下')
   ok('改过正文后 n3.noteDone 自动变回 false（重新打开）', setNode4 && setNode4.noteDone === false, setNode4)
-  eq('检查器按钮随之变回「标记已解决」', markBtn()?.textContent.trim(), '标记已解决')
+  eq('检查器按钮随之变回「不发了」', markBtn()?.textContent.trim(), '不发了')
   eq('工具条待办数把它算回来了', noteToolBtn()?.textContent.trim(), '留言 2 · 共 3')
 
   // 负向对照：只点「标记已解决」、不动正文时**不许**被自动重开
@@ -459,7 +459,7 @@ console.log('\n[4c] 元素注释：带注释渲染、角标、清单已解决切
   const setCall5 = rpcCalls.find((c) => c.method === 'doc:set')
   const setNode5 = setCall5?.args?.model?.nodes?.find((n) => n.id === 'n3')
   ok('负向对照：只改状态、不改正文 → 仍是已解决', setNode5 && setNode5.noteDone === true, setNode5)
-  eq('负向对照：按钮变回「重新打开」', markBtn()?.textContent.trim(), '重新打开')
+  eq('负向对照：按钮变回「再送一次」', markBtn()?.textContent.trim(), '再送一次')
 
   await act(async () => { noteRoot.unmount() })
   noteHost.remove()
@@ -1759,8 +1759,8 @@ console.log('\n[4n] 输入框再也不被留言碰：挂载 / 写新留言 / 标
 
   // b. 标记已解决
   const doneBtn = Array.from(host.querySelectorAll('.ac-note-actions button'))
-    .find((b) => b.textContent.indexOf('标记已解决') === 0)
-  ok('找得到「标记已解决」按钮（否则下面那条是空转）', !!doneBtn)
+    .find((b) => b.textContent.indexOf('不发了') === 0)
+  ok('找得到「不发了」按钮（否则下面那条是空转）', !!doneBtn)
   const before = sets.length
   if (doneBtn) {
     await act(async () => { doneBtn.click() })
@@ -1770,7 +1770,7 @@ console.log('\n[4n] 输入框再也不被留言碰：挂载 / 写新留言 / 标
   ok('已解决确实写进去了（正向对照）',
     sets.length > before && sets[sets.length - 1].nodes.some((n) => n.id === 'x1' && n.noteDone === true),
     { before: before, after: sets.length })
-  eq('标记已解决也不碰输入框', drafts.length, 0)
+  eq('收起留言也不碰输入框', drafts.length, 0)
 
   await act(async () => { root.unmount() })
   host.remove()

@@ -278,7 +278,7 @@ function ArchStudio(props) {
   var edgeDraft = elabState[0]
   var setEdgeDraft = elabState[1]
 
-  // 节点留言：草稿与「已解决」标记分开存。留言不走拖拽路径，不需要 committedRef 那一套。
+  // 节点留言：草稿与「已投递」标记分开存。留言不走拖拽路径，不需要 committedRef 那一套。
   var noteState = React.useState('')
   var noteDraft = noteState[0]
   var setNoteDraft = noteState[1]
@@ -1287,12 +1287,12 @@ function ArchStudio(props) {
     var node = null
     for (var i = 0; i < next.nodes.length; i++) if (next.nodes[i].id === s.id) node = next.nodes[i]
     if (!node) return
-    // 没有正文时「已解决」不成立（宿主侧也这么归一），别把半截状态写进文件
+    // 没有正文时「已投递」不成立（宿主侧也这么归一），别把半截状态写进文件
     var changed = (node.note || '') !== text
     var done = text !== '' && noteDoneDraft === true
-    // 改过正文 = 这条留言重新变成**待办**：用户花力气改了它，就是为了让我重新看到它。
-    // 不改的话，一条被标成「已解决」的留言被编辑后仍然不进上下文 —— 用户改的话 AI 永远读不到，
-    // 而界面上它还是「已解决」，看不出任何异常（用户报的「编辑后应该自动重新打开」）。
+    // 改过正文 = 这条留言重新变成**待递**：用户花力气改了它，就是为了让我重新看到它。
+    // 不改的话，一条已投递的留言被编辑后仍然不进上下文 —— 用户改的话 AI 永远读不到，
+    // 而界面上它躺在历史里，看不出任何异常（用户报的「编辑后应该自动重新打开」）。
     var reopened = changed && done
     if (reopened) done = false
     if ((node.note || '') === text && (node.noteDone === true) === done) return
@@ -1303,9 +1303,8 @@ function ArchStudio(props) {
     setStatus(text === ''
       ? '已清除留言'
       : (reopened
-        ? '留言已改动，自动重新打开（会随每一步进入 AI 的上下文）'
-        : (done ? '留言已保存（已解决，不再注入给 AI）' : '留言已保存，会随每一步进入 AI 的上下文')))
-    // 「自动进输入框」不在这里做：那条 effect 盯着**待办集合**，写完留言它会自己补上。
+        ? '留言已改动，自动放回待递（会再送一次）'
+        : (done ? '留言已保存（已投递，在历史里）' : '留言已保存，AI 读一次就消失')))
     // 两处都写就会互相打架（一个用签名去重、一个用 `@id` 去重，删了又被另一个加回来）。
   }
 
@@ -1341,7 +1340,7 @@ function ArchStudio(props) {
     setStatus(list.length === 0 ? '已清除代码锚点' : '已保存代码锚点 (' + list.length + ' 个引用)')
   }
 
-  /** 标记已解决 / 重新打开。`id` 省略时作用于当前选中的节点（留言清单里按 id 调用）。 */
+  /** 收起（挪进历史）/ 再送一次（放回待递）。`id` 省略时作用于当前选中的节点（留言清单里按 id 调用）。 */
   function markNote(done, id?) {
     var cur = modelRef.current
     if (!cur) return
@@ -1353,8 +1352,8 @@ function ArchStudio(props) {
     if (!found || !found.note) return
     found.noteDone = done === true
     if (!id) setNoteDoneDraft(done === true)
-    push(next, done ? '用户标记留言已解决' : '用户重新打开了留言')
-    setStatus(done ? '已标记为已解决（不再注入给 AI）' : '留言已重新打开')
+    push(next, done ? '用户收起了留言（挪进历史）' : '用户把留言放回待递')
+    setStatus(done ? '已挪进历史，不会再投递' : '已放回待递，会再送一次')
   }
 
   /** 从留言清单跳到某个节点：选中它（检查器随之出现），并把它挪到视口中央。 */
@@ -1921,7 +1920,7 @@ function ArchStudio(props) {
           React.createElement('circle', { r: 8.5 }),
           React.createElement('text', { y: 3.6 }, '↗'),
         ) : null,
-        // 留言角标：没留言的节点什么都不画。未解决=琥珀色笔，已解决=灰底勾（和清单里的两区一致）。
+        // 留言角标：没留言的节点什么都不画。待递=琥珀色笔，已投递=灰底勾（和清单里的两区一致）。
         node.note ? React.createElement('g', {
           key: 'note',
           className: 'ac-note-badge' + (node.noteDone ? ' done' : ''),
@@ -2112,7 +2111,7 @@ function ArchStudio(props) {
     React.createElement('div', { className: 'ac-preview', dangerouslySetInnerHTML: { __html: svg || '<div style="color:#666;font-family:system-ui">正在加载 Mermaid 渲染器…</div>' } }),
   )
 
-  // ---------- 节点留言清单（未解决在前，已解决在后） ----------
+  // ---------- 节点留言清单（待递在前，历史在后） ----------
   // 派生值必须在这里算完：下面的 return 是一个整体表达式，声明晚一步就是 undefined
   // （面板渲染崩溃的老坑，见 AGENTS.md「stage 这类 JSX 在 return 之前就构造好了」）。
   var noteListOpen = []
@@ -2124,7 +2123,7 @@ function ArchStudio(props) {
       if (nnode.noteDone) noteListDone.push(nnode); else noteListOpen.push(nnode)
     }
   }
-  // 总量（含已解决）：按钮上那个数字以前只有待办数，读起来像「统计漏了已解决的」。
+  // 总量（含历史）：按钮上那个数字以前只有待递数，读起来像「统计漏了历史里的」。
   var noteTotal = noteListOpen.length + noteListDone.length
   var noteBatch = function () {
     var diagName = (external ? externalName : (libKey || currentDiagramRef.current)) || 'architecture'
@@ -2145,7 +2144,7 @@ function ArchStudio(props) {
   var canSubmitNote = !!(inputActions && typeof inputActions.submit === 'function')
 
   /**
-   * 把这一批未解决的留言**交给 AI**，用户一个字都不用打。
+   * 把这一批待递的留言**交给 AI**，用户一个字都不用打。
    *
    * 为什么不能只是「放进输入框让用户回车」：DSH 的输入框对**空草稿**是拒绝的 —— Enter 那条路
    * 明确判了 `!empty`，而 `inputActions.submit()` 落到同一台状态机上，空草稿＋无附件是 no-op。
@@ -2176,20 +2175,20 @@ function ArchStudio(props) {
       React.createElement('button', {
         className: 'ac-btn',
         onClick: function () { markNote(!isDone, nd.id) },
-      }, isDone ? '重开' : '已解决'),
+      }, isDone ? '再送一次' : '不发了'),
     )
   }
   var notePanel = notesOpen ? React.createElement('div', { className: 'ac-lib ac-notes' },
     React.createElement('div', { className: 'ac-lib-head' },
       React.createElement('span', { className: 'grow' },
-        '节点留言：共 ' + noteTotal + ' 条 —— ' + noteListOpen.length + ' 条待办'
-        + (noteListDone.length ? '，' + noteListDone.length + ' 条已解决' : '')
-        + '　·　未解决的每一步都会进入 AI 的上下文，已解决的不会'),
+        '节点留言：共 ' + noteTotal + ' 条 —— ' + noteListOpen.length + ' 条待递'
+        + (noteListDone.length ? '，历史 ' + noteListDone.length + ' 条' : '')
+        + '　·　待递的会被 AI 读一次就消失；历史里的不会再送（最多留 6 条）'),
       (inputActions && typeof inputActions.setDraft === 'function' && noteListOpen.length > 0)
         ? React.createElement('button', {
             className: 'ac-btn primary',
             title: canSubmitNote
-              ? '把这一批未解决的留言交给 AI —— 输入框空着也行（它会替你把这一批写成一条消息发出去）'
+              ? '把这一批待递的留言交给 AI —— 输入框空着也行（它会替你把这一批写成一条消息发出去）'
               : '把所有未完成留言打包填入聊天输入框',
             onClick: canSubmitNote
               ? sendNotes
@@ -2204,11 +2203,11 @@ function ArchStudio(props) {
       React.createElement('button', { className: 'ac-btn', onClick: function () { setNotesOpen(false) } }, '收起'),
     ),
     noteListOpen.length === 0
-      ? React.createElement('div', { className: 'ac-hint' }, '没有未解决的留言。点一个节点，在下方检查器里就能写。')
+      ? React.createElement('div', { className: 'ac-hint' }, '没有待递的留言。点一个节点，在下方检查器里就能写。')
       : null,
     noteListOpen.map(function (nd) { return noteRow(nd, false) }),
     noteListDone.length > 0
-      ? React.createElement('div', { className: 'ac-hint' }, '已解决（不再注入给 AI）：')
+      ? React.createElement('div', { className: 'ac-hint' }, '历史（已投递，最多留 6 条）：')
       : null,
     noteListDone.map(function (nd) { return noteRow(nd, true) }),
   ) : null
@@ -2347,7 +2346,7 @@ function ArchStudio(props) {
         ) : null,
         React.createElement('div', { className: 'ac-field full' },
           React.createElement('label', null, noteDraft
-            ? (noteDoneDraft ? '留言（已解决 —— 不再注入给 AI）' : '留言（会随每一步进入 AI 的上下文）')
+            ? (noteDoneDraft ? '留言（已投递，在历史里 —— 不会再进上下文）' : '留言（AI 读一次就消失）')
             : '留言（写给 AI：这里的疑问 / 要求 / 背景）'),
           React.createElement('textarea', {
             className: 'ac-input', style: { height: 54, resize: 'vertical', fontFamily: 'inherit' },
@@ -2361,9 +2360,9 @@ function ArchStudio(props) {
             ? React.createElement('div', { className: 'ac-note-actions' },
                 React.createElement('button', {
                   className: 'ac-btn' + (noteDoneDraft ? '' : ' primary'),
-                  title: noteDoneDraft ? '重新打开：又会被注入给 AI' : '标记已解决：不再注入给 AI',
+                  title: noteDoneDraft ? '再送一次：放回待递，AI 会再读一次' : '不发了：挪进历史，不再投递',
                   onClick: function () { markNote(!noteDoneDraft) },
-                }, noteDoneDraft ? '重新打开' : '标记已解决'),
+                }, noteDoneDraft ? '再送一次' : '不发了'),
                 (inputActions && typeof inputActions.setDraft === 'function')
                   ? React.createElement('button', {
                       className: 'ac-btn',
@@ -2510,11 +2509,11 @@ function ArchStudio(props) {
       }, external ? '文件 ' + externalName : '图库 ' + (libKey || '')) : null,
       tab === 'canvas' ? React.createElement('button', {
         className: 'ac-btn' + (noteListOpen.length ? ' primary' : ''),
-        // 这个数字从前只数**未解决**的，于是把一个「留言」按钮读成了「留言总量」的人会
-        // 觉得统计有 bug —— 画布上一共 7 条留言（含 4 条已解决），按钮却写着「留言 3」。
-        // 现在两个都给：左边是待办数（会进 AI 的上下文），右边是总量。没有待办时只报总量。
-        title: '节点留言清单：未解决的待办会随每一步进入 AI 的上下文，已解决的不进'
-          + '（共 ' + noteTotal + ' 条，其中 ' + noteListOpen.length + ' 条待办）',
+        // 这个数字从前只数**待递**的，于是把一个「留言」按钮读成了「留言总量」的人会
+        // 觉得统计有 bug —— 画布上一共 7 条留言（含 4 条已投递），按钮却写着「留言 3」。
+        // 现在两个都给：左边是待递数（会被投递一次），右边是总量。没有待递时只报总量。
+        title: '节点留言清单：待递的会被 AI 读一次（读后就消失，历史最多留 6 条）'
+          + '（共 ' + noteTotal + ' 条，其中 ' + noteListOpen.length + ' 条待递）',
         onClick: function () { setNotesOpen(!notesOpen) },
       }, noteTotal === 0 ? '留言'
         : (noteListOpen.length ? '留言 ' + noteListOpen.length + ' · 共 ' + noteTotal : '留言 · 共 ' + noteTotal)) : null,

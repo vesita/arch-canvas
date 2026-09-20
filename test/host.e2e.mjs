@@ -908,7 +908,7 @@ ok('测试桩捕获到了 systemPrompt.context 注册的 text 函数', typeof pr
 if (typeof promptFn === 'function') {
   const pText = promptFn()
   ok('未解决的出现在 text 列表里', pText.indexOf('- `n1`（' + (pn1.label || '') + '）：未解决：检查鉴权') >= 0, pText)
-  ok('提示词含「另有 1 条留言已完成」', pText.indexOf('另有 1 条留言已完成') >= 0, pText)
+  ok('提示词含「另有 1 条留言已经投递过」', pText.indexOf('另有 1 条留言已经投递过') >= 0, pText)
   // 僵尸驻守的修法：责任从「提醒用户去点」翻成「AI 干完自己标」
   ok('提示词说明了「读一次即送达」（一次性消耗）', pText.indexOf('读一次即送达') >= 0, pText)
   ok('提示词要求本轮一次处理完', pText.indexOf('本轮一次处理完') >= 0, pText)

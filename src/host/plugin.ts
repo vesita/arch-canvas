@@ -113,7 +113,7 @@ function promptText() {
     for (var dn = 0; dn < openNotes.length; dn++) openNotes[dn].noteDone = true
   }
   if (nc.done > 0) {
-    head.push('- 另有 ' + nc.done + ' 条留言已完成：**没有列出来，也不要据此行动**；需要看全部用 `arch_read`。')
+    head.push('- 另有 ' + nc.done + ' 条留言已经投递过（在历史里）：**没有列出来，也不要据此行动**；需要回看用 `arch_read`。')
   }
   // 代码锚点：用户给节点标的源码文件。价值在于「中文标签 ↔ 英文路径」这个映射 grep 不出来，
   // 所以能省掉一次定位；但它会腐烂 —— 失效的必须显式标出来，并且明说别照着用。
