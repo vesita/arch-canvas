@@ -99,6 +99,7 @@ function adopt(parsed) {
   for (var i = 0; i < parsedWarnings.length; i++) {
     if (doc.warnings.length < 50) doc.warnings.push(parsedWarnings[i])
   }
+  applyNoteStore(doc.file, doc.nodes, parsed.legacyNotes)
 }
 
 function emptyDoc() {
@@ -211,6 +212,12 @@ async function persist(policy?, site?) {
     if (doc.tombstoned) body = TOMBSTONE + '\n' + body
     await fs.writeText(await fs.resolve(doc.file), body, undefined, undefined, policy)
     doc.absent = false
+    harvestNoteStore(doc.file, doc.nodes)
+    var noteErr = await saveNoteStoreFor(doc.file, policy)
+    if (noteErr) {
+      logEvent('warn', 'notes.persist.fail', { file: doc.file, error: noteErr })
+      doc.warnings.push('留言表保存失败: ' + noteErr)
+    }
     pushHistory(body, site)
     return null
   } catch (e) {
@@ -466,6 +473,7 @@ async function openExternal(path, create, policy?) {
   doc.absent = false
   doc.warnings = []
   doc.notes = []
+  await loadNoteStoreFor(doc.file)
   if (text !== null) {
     adopt(parseMermaid(text))
   } else {
@@ -688,6 +696,7 @@ async function loadInto(name, create, target, policy?) {
   if (text !== null) {
     doc.absent = false
     doc.tombstoned = hasTombstone(text)
+    await loadNoteStoreFor(doc.file)
     adopt(parseMermaid(text))
     // 打开也是一个检查点：这是「AI 第一次动手之前」那个状态，最常被退回到的就是它。
     pushHistory(text, 'open', 'open')
@@ -701,6 +710,7 @@ async function loadInto(name, create, target, policy?) {
         if (inherited) doc.notes.push(inherited)
         await ensureDir(target.dir, policy)
       }
+      await loadNoteStoreFor(doc.file)
       adopt(emptyDoc())
       doc.absent = false
       var err = await persist(policy, 'doc:new')
@@ -708,6 +718,7 @@ async function loadInto(name, create, target, policy?) {
     } else if (target.scope === 'global' && clean === DEFAULT_DIAGRAM) {
       var items = await listDiagrams(target.dir)
       var seed = items.length === 0
+      await loadNoteStoreFor(doc.file)
       adopt(seed ? seedDoc() : emptyDoc())
       doc.absent = false
       var errG = await persist(policy, 'seed')

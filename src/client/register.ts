@@ -44,6 +44,100 @@ function ArchFoot(props) {
   )
 }
 
+// ==================== @ 引用触发源 ====================
+// 让用户在输入框输入 @ 时能看到并引用画布节点。
+// 选中后插入 chip，提交时序列化为模型可理解的结构化文本。
+function formatNodeForModel(node) {
+  if (!node) return ''
+  var sp = splitLabel(node.label)
+  var title = sp.title || node.id
+  var desc = sp.desc ? sp.desc.replace(/\r?\n/g, ' ｜ ') : ''
+  var parts = []
+  parts.push('[画布节点 ' + node.id + '「' + title + '」]')
+  if (desc) parts.push(desc)
+  if (node.files && node.files.length > 0) {
+    parts.push('源码锚点：' + node.files.join(', '))
+  }
+  if (node.note) {
+    var noteStatus = node.noteDone ? '已解决' : '待办'
+    var noteText = String(node.note).replace(/\r?\n/g, ' / ')
+    parts.push('用户留言（' + noteStatus + '）：' + noteText)
+  }
+  return parts.join(' ｜ ')
+}
+
+function registerArchInputTrigger(ctx, disposers) {
+  var inputTriggers = ctx.get('inputTriggers')
+  if (!inputTriggers || typeof inputTriggers.registerSource !== 'function') return
+
+  var source = {
+    trigger: '@',
+    name: 'arch-canvas',
+    showGroupTitle: true,
+    candidates: function (session, req) {
+      var query = String(req && req.query != null ? req.query : '').trim().toLowerCase()
+      var nodes = Array.isArray(studioLiveNodes) ? studioLiveNodes : []
+      var results = []
+      for (var i = 0; i < nodes.length; i++) {
+        var n = nodes[i]
+        if (!n || !n.id) continue
+        var sp = splitLabel(n.label)
+        var title = sp.title || n.id
+        var desc = sp.desc ? sp.desc.replace(/\r?\n/g, ' ') : ''
+        var matchId = n.id.toLowerCase().indexOf(query) >= 0
+        var matchTitle = title.toLowerCase().indexOf(query) >= 0
+        var matchDesc = desc.toLowerCase().indexOf(query) >= 0
+        if (!query || matchId || matchTitle || matchDesc) {
+          results.push({
+            name: n.id,
+            label: title,
+            description: desc || undefined,
+            icon: ArchIcon,
+            hint: n.id,
+            value: n.id,
+          })
+        }
+      }
+      return Promise.resolve(results)
+    },
+    onPick: function (pick) {
+      var id = pick && pick.candidate ? (pick.candidate.value || pick.candidate.name) : ''
+      var label = (pick && pick.candidate && pick.candidate.label) || id
+      return {
+        insert: {
+          source: 'arch-canvas',
+          ref: id,
+          label: label,
+          clipboardText: '@' + id,
+        }
+      }
+    },
+    codec: {
+      clipboardText: function (ref) {
+        return '@' + ref
+      },
+      serialize: function (ref, signal) {
+        var nodes = Array.isArray(studioLiveNodes) ? studioLiveNodes : []
+        var target = null
+        for (var i = 0; i < nodes.length; i++) {
+          if (nodes[i].id === ref) { target = nodes[i]; break }
+        }
+        if (!target) {
+          return Promise.resolve('[画布节点 ' + ref + '（当前画布中已不存在该节点）]')
+        }
+        return Promise.resolve(formatNodeForModel(target))
+      }
+    }
+  }
+
+  try {
+    var unreg = inputTriggers.registerSource(source)
+    if (typeof unreg === 'function') {
+      disposers.push(unreg)
+    }
+  } catch (e) {}
+}
+
 // ==================== 注册 ====================
 // 做完整注册，返回一个卸载函数。
 //
@@ -82,6 +176,8 @@ function registerAll(ctx) {
       }],
     }))
   }
+
+  registerArchInputTrigger(ctx, disposers)
 
   return function dispose() {
     for (var i = disposers.length - 1; i >= 0; i--) {

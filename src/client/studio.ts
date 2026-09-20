@@ -5,6 +5,17 @@ var PLUGIN_CTX = null
 var TAB_KIND = 'arch'
 var TAB_ID = 'arch-canvas'
 
+// 当前画布的实时节点快照，供 register.ts 里的 @ 引用 trigger source 消费
+var studioLiveNodes = []
+
+function syncLiveNodes(m) {
+  if (!m || !m.nodes || !Array.isArray(m.nodes)) {
+    studioLiveNodes = []
+  } else {
+    studioLiveNodes = m.nodes.slice()
+  }
+}
+
 function ArchStudio(props) {
   var cwd = props && props.cwd
   var cwdRef = React.useRef(cwd)
@@ -118,6 +129,19 @@ function ArchStudio(props) {
   var descDraft = descState[0]
   var setDescDraft = descState[1]
 
+  // 组折叠：**视图状态，不落盘**。它只改变「怎么画」，不动模型、不进文件 ——
+  // 所以重开面板就复原，也不需要动解析器与 normalizeModel 的白名单。
+  // 将来若要落盘，得走 `%% @collapsed` 那条完整的链（解析 / 白名单 / 快照 / 提示词），一处都不能漏。
+  var collState = React.useState({})
+  var collapsed = collState[0]
+  var setCollapsed = collState[1]
+
+  // 拖拽时的吸附参考线：{ gx, gy }，null = 没有吸上任何一条线。
+  // 它只是**反馈**，不进模型、不进文件 —— 松手即消失。
+  var hintState = React.useState(null)
+  var dragHint = hintState[0]
+  var setDragHint = hintState[1]
+
   var grpState = React.useState('')
   var groupDraft = grpState[0]
   var setGroupDraft = grpState[1]
@@ -126,7 +150,7 @@ function ArchStudio(props) {
   var edgeDraft = elabState[0]
   var setEdgeDraft = elabState[1]
 
-  // 元素注释：草稿与「已解决」标记分开存。注释不走拖拽路径，不需要 committedRef 那一套。
+  // 节点留言：草稿与「已解决」标记分开存。留言不走拖拽路径，不需要 committedRef 那一套。
   var noteState = React.useState('')
   var noteDraft = noteState[0]
   var setNoteDraft = noteState[1]
@@ -202,6 +226,58 @@ function ArchStudio(props) {
     return out
   }, [model, sel])
 
+  // 折叠后每个节点落在哪个「可见单元」上：普通节点是它自己，被收起来的组内节点合到组块上。
+  // 边只有经过这张映射，才会从「连到节点」正确改接到「连到折叠块」。
+  var foldMap = React.useMemo(function () {
+    var m = {}
+    if (!model || !model.groups) return m
+    for (var i = 0; i < model.groups.length; i++) {
+      var g = model.groups[i]
+      if (!collapsed[g.id]) continue
+      for (var j = 0; j < model.nodes.length; j++) {
+        if (model.nodes[j].group === g.id) m[model.nodes[j].id] = g.id
+      }
+    }
+    return m
+  }, [model, collapsed])
+
+  // 折叠块自身的几何：位置取该组原本的包围盒中心 —— **成员节点的坐标一个字节都不动**，
+  // 展开时原样回来。折叠是渲染视图，不是「删掉再放回」。尺寸与节点共用 nodeSize。
+  var foldGeom = React.useMemo(function () {
+    var out = {}
+    if (!model || !model.groups) return out
+    for (var i = 0; i < model.groups.length; i++) {
+      var g = model.groups[i]
+      if (!collapsed[g.id]) continue
+      var members = 0
+      var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+      for (var j = 0; j < model.nodes.length; j++) {
+        var n = model.nodes[j]
+        if (n.group !== g.id) continue
+        var gm = gstate[n.id]
+        if (!gm) continue
+        members++
+        minX = Math.min(minX, gm.x - gm.w / 2); maxX = Math.max(maxX, gm.x + gm.w / 2)
+        minY = Math.min(minY, gm.y - gm.h / 2); maxY = Math.max(maxY, gm.y + gm.h / 2)
+      }
+      if (!members || !isFinite(minX)) continue
+      var lbl = String(g.label == null ? g.id : g.label) + '（' + members + '）'
+      var s = nodeSize(lbl, 0)
+      out[g.id] = {
+        x: Math.round((minX + maxX) / 2), y: Math.round((minY + maxY) / 2),
+        w: s.w, h: s.h, label: lbl, members: members,
+      }
+    }
+    return out
+  }, [model, gstate, collapsed])
+
+  // 给边用的几何：折叠组内的节点，一律换成它所属的那个折叠块。
+  var visGeom = function (id) {
+    var fid = foldMap[id]
+    if (fid && foldGeom[fid]) return foldGeom[fid]
+    return gstate[id]
+  }
+
   var groups = React.useMemo(function () {
     if (!model || !model.groups) return []
     var res = []
@@ -222,8 +298,19 @@ function ArchStudio(props) {
     return res
   }, [model, gstate])
 
+  // 组折叠的开关（视图状态）。整份重建而不是原地改：React 要看到新对象才会重渲染。
+  function toggleGroup(gid) {
+    setCollapsed(function (m) {
+      var next = {}
+      for (var k in m) if (m[k]) next[k] = true
+      if (next[gid]) delete next[gid]; else next[gid] = true
+      return next
+    })
+  }
+
   function setLocal(next) {
     modelRef.current = next
+    syncLiveNodes(next)
     setModel(next)
   }
 
@@ -323,6 +410,7 @@ function ArchStudio(props) {
       remember(cloneModel(prev))
     }
     if (diagKey) currentDiagramRef.current = diagKey
+    syncLiveNodes(m)
     setLocal(m)
     committedRef.current = cloneModel(m)
     revRef.current = r.revision
@@ -387,6 +475,7 @@ function ArchStudio(props) {
     fittedRef.current = false
     rpc('doc:get', { where: cwd, session: sessionId }).then(function (r) {
       if (!alive || !r || !r.ok) { if (alive) setStatus('加载失败'); return }
+      if (r.model) syncLiveNodes(r.model)
       applyServer(r, 'init')
       setStatus(needsLayout(r.model) ? '已按依赖关系自动布局' : '已就绪')
       // 起始页要列出项目里已有的图，所以清单不等用户点「图库」就先读一次
@@ -559,6 +648,27 @@ function ArchStudio(props) {
     dragRef.current = { kind: 'node', id: node.id, dx: g.x - pt.x, dy: g.y - pt.y, moved: false }
   }
 
+  /**
+   * 拖折叠起来的组。组**没有自己的坐标** —— 它就是成员节点的包围盒，
+   * 所以「把组拖到哪」唯一真实的含义是「把它里面的人一起挪到哪」。
+   * 这里只记起点与成员的初始坐标；位移在 move 里用**起点差值**算，避免逐帧累加磨偏坐标。
+   */
+  function onGroupDown(e, gid) {
+    if (e.button !== 0) return
+    e.stopPropagation()
+    var cur = modelRef.current
+    if (!cur) return
+    var members = []
+    for (var i = 0; i < cur.nodes.length; i++) {
+      var n = cur.nodes[i]
+      if (n.group !== gid) continue
+      members.push({ id: n.id, x: n.x == null ? 0 : n.x, y: n.y == null ? 0 : n.y })
+    }
+    if (!members.length) return
+    capture(e)
+    dragRef.current = { kind: 'group', gid: gid, start: toModelPt(e), members: members, moved: false }
+  }
+
   function onHandleDown(e, node) {
     if (e.button !== 0) return
     e.stopPropagation()
@@ -598,14 +708,38 @@ function ArchStudio(props) {
       var cur = modelRef.current
       if (!cur) return
       d.moved = true
-      var nx = Math.round(pt.x + d.dx)
-      var ny = Math.round(pt.y + d.dy)
+      // 吸附：接近别的节点的中心线就贴上去，并留一条参考线说明「贴的是哪一条」。
+      var sn = snapToPeers(cur.nodes, d.id, Math.round(pt.x + d.dx), Math.round(pt.y + d.dy))
+      setDragHint(sn.gx == null && sn.gy == null ? null : sn)
+      var nx = sn.x
+      var ny = sn.y
       var nodes = []
       for (var i = 0; i < cur.nodes.length; i++) {
         var n = cur.nodes[i]
-        nodes.push(n.id === d.id ? { id: n.id, label: n.label, shape: n.shape, group: n.group, x: nx, y: ny } : n)
+        // 用 Object.assign 保留**所有**字段：原先显式列 {id,label,shape,group,x,y} 会把
+        // note / noteDone / files / link 悄悄丢掉 —— 拖一下，留言和锚点就没了（而且不报错）。
+        nodes.push(n.id === d.id ? Object.assign({}, n, { x: nx, y: ny }) : n)
       }
       setLocal({ nodes: nodes, edges: cur.edges, groups: cur.groups, direction: cur.direction, extras: cur.extras })
+      return
+    }
+    if (d.kind === 'group') {
+      var curG = modelRef.current
+      if (!curG) return
+      d.moved = true
+      // 组**没有自己的坐标** —— 它就是成员节点的包围盒。所以「拖动组」唯一真实的含义
+      // 是把成员一起挪。位移用**起点差值**而不是逐帧累加，免得浮点误差把坐标磨偏。
+      var gdx = Math.round(pt.x - d.start.x)
+      var gdy = Math.round(pt.y - d.start.y)
+      var startPos = {}
+      for (var mk = 0; mk < d.members.length; mk++) startPos[d.members[mk].id] = d.members[mk]
+      var gNodes = []
+      for (var gk = 0; gk < curG.nodes.length; gk++) {
+        var gn = curG.nodes[gk]
+        var base = startPos[gn.id]
+        gNodes.push(base ? Object.assign({}, gn, { x: base.x + gdx, y: base.y + gdy }) : gn)
+      }
+      setLocal({ nodes: gNodes, edges: curG.edges, groups: curG.groups, direction: curG.direction, extras: curG.extras })
       return
     }
     if (d.kind === 'link') setLinkPt(pt)
@@ -615,10 +749,16 @@ function ArchStudio(props) {
     var d = dragRef.current
     dragRef.current = null
     release(e)
+    setDragHint(null)
     if (!d) return
     if (d.kind === 'node' && d.moved) {
       push(modelRef.current, '用户移动了节点')
       setStatus('已移动节点并同步')
+      return
+    }
+    if (d.kind === 'group' && d.moved) {
+      push(modelRef.current, '用户移动了分组')
+      setStatus('已移动分组里的 ' + d.members.length + ' 个节点')
       return
     }
     if (d.kind === 'link') {
@@ -643,12 +783,47 @@ function ArchStudio(props) {
   }
 
   function onKeyDown(e) {
+    var tag = e.target && e.target.tagName ? String(e.target.tagName).toLowerCase() : ''
+    var inField = tag === 'input' || tag === 'textarea' || tag === 'select'
     if (e.key === 'Delete' || e.key === 'Backspace') {
-      var tag = e.target && e.target.tagName ? String(e.target.tagName).toLowerCase() : ''
-      if (tag === 'input' || tag === 'textarea' || tag === 'select') return
+      if (inField) return
       e.preventDefault()
       deleteSel()
+      return
     }
+    if (e.key === 'Escape') {
+      if (inField) return
+      // 取消选中，连带收掉还没落下的连线预览
+      setSel(null)
+      setLinkPt(null)
+      setDragHint(null)
+      return
+    }
+    // 方向键微调选中节点：1px；按住 Shift 是 10px。
+    // 「改优先」里这是最省力的一条 —— 手摆的坐标是用户的劳动成果，
+    // 用键盘能一次对准到像素，不必靠鼠标抖。
+    var step = e.key === 'ArrowLeft' ? [-1, 0] : e.key === 'ArrowRight' ? [1, 0]
+      : e.key === 'ArrowUp' ? [0, -1] : e.key === 'ArrowDown' ? [0, 1] : null
+    if (!step || inField) return
+    var s = selRef.current
+    if (!s || s.kind !== 'node') return
+    e.preventDefault()
+    var k = e.shiftKey ? 10 : 1
+    nudgeSel(step[0] * k, step[1] * k)
+  }
+
+  /** 把选中节点平移 (dx, dy)：方向键走这里，拖拽吸附落定后也走这里。 */
+  function nudgeSel(dx, dy) {
+    var s = selRef.current
+    var cur = modelRef.current
+    if (!s || s.kind !== 'node' || !cur) return
+    var next = cloneModel(cur)
+    for (var i = 0; i < next.nodes.length; i++) {
+      if (next.nodes[i].id !== s.id) continue
+      next.nodes[i].x = (next.nodes[i].x == null ? 0 : next.nodes[i].x) + dx
+      next.nodes[i].y = (next.nodes[i].y == null ? 0 : next.nodes[i].y) + dy
+    }
+    push(next, '用户微调了节点位置')
   }
 
   function deleteSel() {
@@ -760,8 +935,8 @@ function ArchStudio(props) {
   }
 
   /**
-   * 提交元素注释。空文本 = 删除注释（文件里那一行也不再写出）。
-   * 注释只存在节点上、经 `doc:set` 整份回传落盘，所以不需要新的 RPC。
+   * 提交节点留言。空文本 = 删除留言（文件里那一行也不再写出）。
+   * 留言只存在节点上、经 `doc:set` 整份回传落盘，所以不需要新的 RPC。
    */
   function commitNote() {
     var s = selRef.current
@@ -778,8 +953,8 @@ function ArchStudio(props) {
     node.note = text
     node.noteDone = done
     if (text === '') setNoteDoneDraft(false)
-    push(next, text === '' ? '用户清除了元素注释' : '用户写了元素注释')
-    setStatus(text === '' ? '已清除注释' : (done ? '注释已保存（已解决，不再注入给 AI）' : '注释已保存，会随每一步进入 AI 的上下文'))
+    push(next, text === '' ? '用户清除了节点留言' : '用户写了节点留言')
+    setStatus(text === '' ? '已清除留言' : (done ? '留言已保存（已解决，不再注入给 AI）' : '留言已保存，会随每一步进入 AI 的上下文'))
   }
 
   /**
@@ -814,7 +989,7 @@ function ArchStudio(props) {
     setStatus(list.length === 0 ? '已清除代码锚点' : '已保存代码锚点 (' + list.length + ' 个引用)')
   }
 
-  /** 标记已解决 / 重新打开。`id` 省略时作用于当前选中的节点（注释清单里按 id 调用）。 */
+  /** 标记已解决 / 重新打开。`id` 省略时作用于当前选中的节点（留言清单里按 id 调用）。 */
   function markNote(done, id?) {
     var cur = modelRef.current
     if (!cur) return
@@ -826,11 +1001,11 @@ function ArchStudio(props) {
     if (!found || !found.note) return
     found.noteDone = done === true
     if (!id) setNoteDoneDraft(done === true)
-    push(next, done ? '用户标记注释已解决' : '用户重新打开了注释')
-    setStatus(done ? '已标记为已解决（留在文件里，但不再注入给 AI）' : '注释已重新打开')
+    push(next, done ? '用户标记留言已解决' : '用户重新打开了留言')
+    setStatus(done ? '已标记为已解决（不再注入给 AI）' : '留言已重新打开')
   }
 
-  /** 从注释清单跳到某个节点：选中它（检查器随之出现），并把它挪到视口中央。 */
+  /** 从留言清单跳到某个节点：选中它（检查器随之出现），并把它挪到视口中央。 */
   function focusNode(id) {
     var cur = modelRef.current
     if (!cur) return
@@ -1153,16 +1328,51 @@ function ArchStudio(props) {
   var inner = []
   for (var gi = 0; gi < groups.length; gi++) {
     var gb = groups[gi]
-    inner.push(React.createElement('g', { key: 'g' + gb.id },
-      React.createElement('rect', { className: 'ac-group-box', x: gb.x, y: gb.y, width: gb.w, height: gb.h, rx: 12 }),
-      React.createElement('text', { className: 'ac-group-lbl', x: gb.x + 12, y: gb.y + 17 }, String(gb.label == null ? gb.id : gb.label)),
-    ))
+    var fg = foldGeom[gb.id]
+    var openFold = (function (gid) { return function (ev) { ev.stopPropagation(); toggleGroup(gid) } })(gb.id)
+    if (fg) {
+      // 折叠态：一个块 + 一个**独立的**展开按钮。
+      // 折叠/展开只挂在按钮上，块本体不响应 —— 组块长得像个节点，点它多半是想选中或拖它，
+      // 顺手把它弹开是最烦的那种误触。
+      inner.push(React.createElement('g', {
+        key: 'g' + gb.id, className: 'ac-fold',
+        // 折叠块整块可拖（拖的是组内所有人）—— 但**拖不等于展开**，展开只认右边那个按钮。
+        onPointerDown: (function (gid) { return function (ev) { onGroupDown(ev, gid) } })(gb.id),
+      },
+        React.createElement('rect', { className: 'ac-fold-box', x: fg.x - fg.w / 2, y: fg.y - fg.h / 2, width: fg.w, height: fg.h, rx: 10 }),
+        React.createElement('text', { className: 'ac-fold-lbl', x: fg.x, y: fg.y }, fg.label),
+        React.createElement('g', {
+          className: 'ac-fold-btn',
+          transform: 'translate(' + (fg.x + fg.w / 2 - 13) + ',' + fg.y + ')',
+          onPointerDown: openFold,
+        },
+          React.createElement('circle', { r: 9 }),
+          React.createElement('text', { y: 3.6 }, '▸')),
+      ))
+    } else {
+      inner.push(React.createElement('g', { key: 'g' + gb.id },
+        React.createElement('rect', { className: 'ac-group-box', x: gb.x, y: gb.y, width: gb.w, height: gb.h, rx: 12 }),
+        React.createElement('text', { className: 'ac-group-lbl', x: gb.x + 12, y: gb.y + 17 },
+          String(gb.label == null ? gb.id : gb.label)),
+        // 收起按钮：同样只挂在按钮上 —— 点组名、点组内空白都不动。
+        React.createElement('g', {
+          className: 'ac-group-btn',
+          transform: 'translate(' + (gb.x + gb.w - 14) + ',' + (gb.y + 14) + ')',
+          onPointerDown: openFold,
+        },
+          React.createElement('circle', { r: 9 }),
+          React.createElement('text', { y: 3.6 }, '▾')),
+      ))
+    }
   }
 
   if (model) {
     for (var ei = 0; ei < model.edges.length; ei++) {
       var ed = model.edges[ei]
-      var geo = edgeGeometry(gstate[ed.from], gstate[ed.to])
+      // 两端落在同一个折叠组里 → 那是组内的内部关系，收起来就该一起收掉。
+      // 留一条穿进块里的线会把「有东西被藏起来了」变成误导。
+      if (foldMap[ed.from] && foldMap[ed.from] === foldMap[ed.to]) continue
+      var geo = edgeGeometry(visGeom(ed.from), visGeom(ed.to))
       if (!geo) continue
       var dashed = ed.arrow === '-.->'
       var isEdgeSel = sel && sel.kind === 'edge' && sel.from === ed.from && sel.to === ed.to
@@ -1179,6 +1389,8 @@ function ArchStudio(props) {
     }
     for (var ni = 0; ni < model.nodes.length; ni++) {
       var node = model.nodes[ni]
+      // 被收起来的组，成员节点整个不画（几何仍在 gstate 里，展开时立刻回来）。
+      if (foldMap[node.id]) continue
       var gm = gstate[node.id]
       if (!gm) continue
       var isSel = sel && sel.kind === 'node' && sel.id === node.id
@@ -1245,7 +1457,7 @@ function ArchStudio(props) {
           React.createElement('circle', { r: 8.5 }),
           React.createElement('text', { y: 3.6 }, '↗'),
         ) : null,
-        // 注释角标：没注释的节点什么都不画。未解决=琥珀色笔，已解决=灰底勾（和清单里的两区一致）。
+        // 留言角标：没留言的节点什么都不画。未解决=琥珀色笔，已解决=灰底勾（和清单里的两区一致）。
         node.note ? React.createElement('g', {
           key: 'note',
           className: 'ac-note-badge' + (node.noteDone ? ' done' : ''),
@@ -1282,6 +1494,17 @@ function ArchStudio(props) {
 
   if (linkPt) {
     inner.push(React.createElement('circle', { key: 'lp', className: 'ac-link-preview', cx: linkPt.x, cy: linkPt.y, r: 7 }))
+  }
+
+  // 吸附参考线画在最上层：只在拖拽且真吸上时出现，是「你正贴到这条线」的即时反馈。
+  // 它不进模型也不进文件，松手就没了。
+  if (dragHint) {
+    if (dragHint.gx != null) {
+      inner.push(React.createElement('line', { key: 'snapline-x', className: 'ac-snapline', x1: dragHint.gx, y1: -99999, x2: dragHint.gx, y2: 99999 }))
+    }
+    if (dragHint.gy != null) {
+      inner.push(React.createElement('line', { key: 'snapline-y', className: 'ac-snapline', x1: -99999, y1: dragHint.gy, x2: 99999, y2: dragHint.gy }))
+    }
   }
 
   canvasKids.push(React.createElement('g', {
@@ -1388,7 +1611,7 @@ function ArchStudio(props) {
     React.createElement('div', { className: 'ac-preview', dangerouslySetInnerHTML: { __html: svg || '<div style="color:#666;font-family:system-ui">正在加载 Mermaid 渲染器…</div>' } }),
   )
 
-  // ---------- 元素注释清单（未解决在前，已解决在后） ----------
+  // ---------- 节点留言清单（未解决在前，已解决在后） ----------
   // 派生值必须在这里算完：下面的 return 是一个整体表达式，声明晚一步就是 undefined
   // （面板渲染崩溃的老坑，见 AGENTS.md「stage 这类 JSX 在 return 之前就构造好了」）。
   var noteListOpen = []
@@ -1417,23 +1640,23 @@ function ArchStudio(props) {
   var notePanel = notesOpen ? React.createElement('div', { className: 'ac-lib ac-notes' },
     React.createElement('div', { className: 'ac-lib-head' },
       React.createElement('span', { className: 'grow' },
-        '元素注释：' + noteListOpen.length + ' 条未解决'
+        '节点留言：' + noteListOpen.length + ' 条待办'
         + (noteListDone.length ? '，' + noteListDone.length + ' 条已解决' : '')
         + '　·　未解决的每一步都会进入 AI 的上下文，已解决的不会'),
       React.createElement('button', { className: 'ac-btn', onClick: function () { setNotesOpen(false) } }, '收起'),
     ),
     noteListOpen.length === 0
-      ? React.createElement('div', { className: 'ac-hint' }, '没有未解决的注释。点一个节点，在下方检查器里就能写。')
+      ? React.createElement('div', { className: 'ac-hint' }, '没有未解决的留言。点一个节点，在下方检查器里就能写。')
       : null,
     noteListOpen.map(function (nd) { return noteRow(nd, false) }),
     noteListDone.length > 0
-      ? React.createElement('div', { className: 'ac-hint' }, '已解决（仍留在文件里，只是不再注入给 AI）：')
+      ? React.createElement('div', { className: 'ac-hint' }, '已解决（不再注入给 AI）：')
       : null,
     noteListDone.map(function (nd) { return noteRow(nd, true) }),
   ) : null
 
   // ---------- 检查点清单（每次落盘一份，点一下退回） ----------
-  // 与注释清单同一套 .ac-lib 外壳；区别是这里的数据来自 doc:history（宿主内存里的快照），
+  // 与留言清单同一套 .ac-lib 外壳；区别是这里的数据来自 doc:history（宿主内存里的快照），
   // 不是从模型派生的 —— 所以有 busy / 拉取失败这两个状态要如实显示。
   var histByLabel = { ai: 'AI', user: '用户', open: '打开', switch: '切换', init: '初始' }
   function histTime(at) {
@@ -1519,8 +1742,8 @@ function ArchStudio(props) {
         ),
         React.createElement('div', { className: 'ac-field full' },
           React.createElement('label', null, noteDraft
-            ? (noteDoneDraft ? '注释（已解决 —— 留在文件里，但不再注入给 AI）' : '注释（会随每一步进入 AI 的上下文）')
-            : '注释（写给 AI：这里的疑问 / 要求 / 背景）'),
+            ? (noteDoneDraft ? '留言（已解决 —— 不再注入给 AI）' : '留言（会随每一步进入 AI 的上下文）')
+            : '留言（写给 AI：这里的疑问 / 要求 / 背景）'),
           React.createElement('textarea', {
             className: 'ac-input', style: { height: 54, resize: 'vertical', fontFamily: 'inherit' },
             placeholder: '例如：这里为什么不用队列？　/　这条链路还没定，先别改',
@@ -1533,7 +1756,7 @@ function ArchStudio(props) {
             ? React.createElement('div', { className: 'ac-note-actions' },
                 React.createElement('button', {
                   className: 'ac-btn' + (noteDoneDraft ? '' : ' primary'),
-                  title: noteDoneDraft ? '重新打开：又会被注入给 AI' : '标记已解决：不再注入给 AI，但留在文件里可追溯',
+                  title: noteDoneDraft ? '重新打开：又会被注入给 AI' : '标记已解决：不再注入给 AI',
                   onClick: function () { markNote(!noteDoneDraft) },
                 }, noteDoneDraft ? '重新打开' : '标记已解决'),
               )
@@ -1654,9 +1877,9 @@ function ArchStudio(props) {
       }, external ? '文件 ' + externalName : '图库 ' + (libKey || '')) : null,
       tab === 'canvas' ? React.createElement('button', {
         className: 'ac-btn' + (noteListOpen.length ? ' primary' : ''),
-        title: '元素注释清单：未解决的会随每一步进入 AI 的上下文，已解决的不进',
+        title: '节点留言清单：未解决的待办会随每一步进入 AI 的上下文，已解决的不进',
         onClick: function () { setNotesOpen(!notesOpen) },
-      }, noteListOpen.length ? '注释 ' + noteListOpen.length : '注释') : null,
+      }, noteListOpen.length ? '留言 ' + noteListOpen.length : '留言') : null,
       tab === 'text' ? React.createElement('button', { className: 'ac-btn primary', onClick: applyDraft }, '应用回画布') : null,
       tab === 'text' ? React.createElement('button', { className: 'ac-btn', onClick: function () { setDraft(mermaidText) } }, '还原') : null,
     ),

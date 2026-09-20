@@ -4,79 +4,104 @@
 %%! @note <节点id> <文本> 是用户留给 AI 的注释，@done 是同一件事但已解决
 %%! @file <节点id> <路径> 是这个节点对应的源码文件（可带 #符号），一个节点可多条
 %%! 以上对 Mermaid 渲染都无任何影响，可忽略或手改
-%% @summary "架构画布（AC）的逻辑框架：三侧协作（Client 交互 / Host 状态管理 / AI 读写）与核心不变式"
-%% @pos canvas 463 -447
-%% @pos picker 772 -513
-%% @pos exp 454 -290
-%% @pos rpc 1149 -204
-%% @pos doc 1044 -67
-%% @pos parser 737 -36
-%% @pos lib 892 170
-%% @pos file 752 76
-%% @pos alog 1330 60
-%% @pos prompt 1378 227
-%% @pos tools 1141 312
-%% @pos i1 422 10
-%% @pos i2 420 -118
-%% @pos i3 431 155
-%% @pos human 65 -147
-%% @pos bootC 62 -327
-%% @pos bootH 1159 -442
-%% @note human "你能看到这里吗，我们先测试一下功能"
-%% @file canvas "src/client/studio.ts"
-%% @file picker "src/client/runtime.ts"
-%% @file exp "src/client/register.ts"
-%% @file rpc "src/package/host.ts#35;apply"
-%% @file doc "src/host/document.ts"
-%% @file lib "."
-%% @file file "src/host/document.ts#35;persist"
-%% @file alog "src/host/log.ts"
-%% @file prompt "src/host/plugin.ts#35;promptText"
-%% @file tools "src/host/plugin.ts#35;onTool"
-%% @file bootC "src/bootstrap/client.ts"
-%% @file bootH "src/bootstrap/host.ts"
+%% @summary "ArchCanvas 的逻辑框架：源文本是唯一真相 —— 它渲染成画布给人、注入成上下文给 AI、用锚点连到代码"
+%% @pos n5 560 -204
+%% @pos p1 344 -204
+%% @pos p2 776 -204
+%% @pos p3 344 -83
+%% @pos p4 560 -83
+%% @pos p5 776 -83
+%% @pos p6 344 37
+%% @pos n4 77 -99
+%% @pos c1 310 97
+%% @pos c2 58 253
+%% @pos c3 -269 20
+%% @pos c4 -269 190
+%% @pos c5 -298 -136
+%% @pos n2 589 -299
+%% @pos a2 851 -299
+%% @pos a3 351 -368
+%% @pos u1 -316 -458
+%% @pos u2 -106 -458
+%% @pos u3 104 -458
+%% @pos u4 -316 -568
+%% @pos u5 -106 -568
+%% @pos u6 104 -568
+%% @pos n3 617 290
+%% @note u1 "现在这个折叠按钮看起来像一个黑块，不太符合当前的UI画风"
+%% @note u4 "然后现在我觉得有一个不舒服的点，就是输入注释后，上下文处的发送键还是灰的"
+%% @file p1 "src/host/mermaid.ts"
+%% @file p2 "src/host/document.ts#35;applyOps"
+%% @file p3 "src/host/history.ts"
+%% @file p4 "src/host/document.ts#35;scanProject"
+%% @file p5 "src/host/document.ts#35;verifyFileRefs"
+%% @file p6 "src/host/plugin.ts"
+%% @file c1 "src/client/studio.ts#35;onNodeDown"
+%% @file c2 "src/client/studio.ts"
+%% @file c3 "src/client/studio.ts"
+%% @file c3 "src/client/runtime.ts#35;tokenizeMermaidLine"
+%% @file c4 "src/client/runtime.ts#35;buildExportSvg"
+%% @file c5 "src/client/studio.ts"
+%% @file n2 "src/host/plugin.ts#35;promptText"
+%% @file a2 "src/host/plugin.ts#35;onTool"
+%% @file a3 "skills/arch-canvas/SKILL.md"
+%% @file u1 "src/client/studio.ts"
+%% @file u2 "src/client/studio.ts#35;onNodeDown"
+%% @file u3 "src/client/studio.ts#35;commitLabel"
+%% @file u4 "src/host/document.ts"
+%% @file u5 "src/host/document.ts#35;verifyFileRefs"
+%% @file u6 "src/host/history.ts"
 flowchart TD
-  subgraph cl["👤 Client 侧 · 与人的交互层"]
-    canvas["所见即所得的画布<br/>意图：不写代码也能把结构直接摆出来<br/>原理：图形只是文本的一种视图，改动最终都落回文本"]
-    picker["图库管理入口<br/>列图 · 切图 · 改名 · 删除 · 恢复"]
-    exp["导出与分享<br/>SVG / PNG / Mermaid 源码"]
+  subgraph 解析端["解析端"]
+    n5["源文本<br/>意图：人与 AI 共读同一份真相<br/>原理：坐标与锚点寄生在 %% 注释里，所以它到哪都是合法 Mermaid"]
+    p1("编解码器<br/>意图：让源文本既是给人看的图、又是可编辑的数据<br/>原理：坐标与锚点寄生在 %% 注释里，文件到哪都仍是合法 Mermaid")
+    p2["状态与 op<br/>意图：AI 只发增量，用户摆好的布局不动<br/>原理：normalizeModel 逐字段重建，白名单漏一个字段就被静默清空"]
+    p3[("落盘与检查点<br/>意图：安全靠「退得回去」，不靠「拦得住」<br/>原理：每次写入留一份内存快照，真相永远是那个 .mmd 文件")]
+    p4("图库扫描<br/>意图：换项目就换图，不需要任何配置<br/>原理：只走目录 + 比指纹，指纹没变就不读文件、不解析")
+    p5("锚点校验<br/>意图：一条过期锚点比没有锚点更坏<br/>原理：文件会改名，注释不会自己更新，所以每次加载都重算")
+    p6{{"对外接口<br/>意图：人和 AI 走同一个状态源，不各存一份<br/>原理：RPC 与工具注册统一走 onRpc / onTool，现场记录挂在那一层"}}
   end
-  subgraph hs["⚙️ Host 侧 · 真相与持久化层"]
-    rpc["浏览器 #60;-> 宿主的通道<br/>~12 个私有 RPC 方法"]
-    doc["文档状态管理中心<br/>图模型 · revision 追踪 · 变更通知"]
-    parser["Mermaid 编解码器<br/>意图：让「给人看的图」同时是「可编辑的数据」<br/>原理：坐标等元数据寄生在 %% 注释里，文件仍是合法 Mermaid"]
-    lib[("图库仓库<br/>项目目录下的 .arch-canvas/")]
-    file[("单图文件存储<br/>每张一个 .mmd，坐标与下钻以注释保留")]
-    alog[["文件变更日志<br/>按天滚动，保留 3 天"]]
+  subgraph 画布端["画布端"]
+    n4["画布<br/>意图：把源文本画成人能直接摆弄的样子<br/>原理：图形只是源文本的一种视图，任何改动最终都落回源文本"]
+    c1("拖拽与连线<br/>意图：摆位置靠手感，不绕道表单<br/>原理：交互都绑在 pointerdown，拖动中只改内存、松手才落一步历史")
+    c2["检查器<br/>意图：改内容都在这一个地方<br/>原理：它下挂在「选中」上 —— 所以改任何内容都得先选中（这正是「改优先」要优化的点）"]
+    c3("源码页<br/>意图：图形表达不了的东西，允许直接改文本<br/>原理：双层叠放 —— 底层高亮 pre 与顶层透明 textarea 共用一套排版")
+    c4("导出<br/>意图：把图带出去（贴进文档、发给人）<br/>原理：导出用独立字面色板 —— 导出的 SVG 里没有主题上下文")
+    c5{{"图库选择器<br/>意图：不用记住路径也能换图<br/>原理：清单来自解析端的自动扫描，界面只负责列出来"}}
   end
-  subgraph ai["🤖 AI 侧 · 读写接口层"]
-    prompt["每步注入画布上下文<br/>AI 知道这张图并据此调整行为"]
-    tools["AI 操作工具集<br/>arch_read · arch_edit · arch_write · arch_switch"]
+  subgraph AI端["AI 端"]
+    n2["上下文注入<br/>意图：AI 不用问就知道当前状态<br/>原理：全量注入而不是增量 —— 图是慢变量，而增量一旦与真相分叉不会报错"]
+    a2["四个工具<br/>意图：AI 只发增量 op，不动用户摆好的布局<br/>原理：arch_edit 是默认，arch_write 只用于初稿与结构性重画"]
+    a3[["用法 skill<br/>意图：把「工具怎么用」与「当前状态」分开<br/>原理：promptText 每步注入只写状态，教材归 skill 按需加载"]]
   end
-  subgraph inv["🧱 不变式 · 任何改动都不应违反"]
-    i1["文本是唯一真相源<br/>图形只是文本的一种渲染视图"]
-    i2["图不承诺与代码一致<br/>它是辅助讨论的画布，不是代码的镜像"]
-    i3["AI 只能增量改图<br/>用户手动摆好的布局不会被冲掉"]
+  subgraph 用户端["用户端"]
+    u1("读图<br/>意图：先看标题，需要细节再点开<br/>原理：默认只画标题、组可折叠 —— 把信息密度和空间留出来")
+    u2("摆结构<br/>意图：用鼠标把结构摆出来，不写代码<br/>原理：坐标是用户的劳动成果，所以 AI 的增量改动不许冲掉它")
+    u3["写文本<br/>意图：把「这是什么」与「为什么」写在方块上<br/>原理：标题 / 意图 / 原理三段 —— 技术名走锚点，不进正文"]
+    u4["给 AI 留言<br/>意图：在具体的方块上提问、或交待背景<br/>原理：@note 未解决 / @done 已解决；已解决的不再注入，免得反复讨论旧事"]
+    u5["标锚点<br/>意图：把这个方块钉到具体源码上<br/>原理：@file 会腐烂，所以每次加载都重算它还在不在"]
+    u6[("退回<br/>意图：AI 或自己改坏了，能一步退回去<br/>原理：每次落盘留一份内存快照，并标明是谁改的")]
   end
-  human(["使用者"])
-  bootC[["Client 引导层"]]
-  bootH[["Host 引导层"]]
-  human -->|"左侧栏点开入口"| bootC
-  bootC -->|"初始化时加载 dist/ui.js"| canvas
-  bootH -->|"启动时加载 dist/host.js"| rpc
-  canvas -->|"每次存图发整份模型"| rpc
-  rpc -->|"轻量轮询 revision 同步"| canvas
-  picker -->|"列出 / 打开 / 改名 / 删除 / 恢复"| rpc
-  exp -->|"读取当前画布内容"| canvas
-  rpc --> doc
-  doc --> parser
-  parser -->|"坐标以 %% @pos 注释写入"| file
-  file --> lib
-  lib -.->|"周期扫描文件系统发现外部修改"| doc
-  rpc -.->|"RPC 异常写日志"| alog
-  doc -.->|"保存失败写日志"| alog
-  doc -->|"每步 AI 循环注入"| prompt
-  tools -->|"只发送增量 op，不动节点布局"| doc
-  i1 -.-> parser
-  i2 -.-> doc
-  i3 -.-> tools
+  n3["代码<br/>意图：图上的意图能落到具体的文件与符号<br/>原理：锚点会腐烂，所以每次加载都重算它还在不在"]
+  n5 -->|"锚点"| n3
+  n5 -->|"上下文"| n2
+  n5 -->|"渲染"| n4
+  n5 -->|"编解码"| p1
+  p1 -->|"图模型"| p2
+  p2 -->|"持久化"| p3
+  p2 -->|"发现图"| p4
+  p2 -->|"校验结果"| p5
+  p6 -->|"RPC / 工具"| p2
+  a2 -->|"经 RPC 读写"| n5
+  a3 -->|"约束用法"| a2
+  n4 -->|"直接操作"| c1
+  n4 -->|"选中后下挂"| c2
+  n4 -->|"文本视图"| c3
+  n4 -->|"带出去"| c4
+  c5 -->|"切图"| n4
+  n4 -->|"展示"| u1
+  u2 -->|"拖拽与连线"| n4
+  u3 -->|"改内容"| n5
+  u4 -->|"留话"| n5
+  u5 -->|"标代码"| n3
+  u6 -->|"重放快照"| n5

@@ -1,10 +1,11 @@
 // Mermaid flowchart ⇄ 图模型 的双向转换（纯函数，不碰服务、不碰状态）。
-// 关键约定：坐标存 `%% @pos <id> <x> <y>`、下钻存 `%% @link`、用户注释存 `%% @note`
-// （已解决的写 `%% @done`）、代码锚点存 `%% @file <id> <路径>`（可带 `#符号`）、
+// 关键约定：坐标存 `%% @pos <id> <x> <y>`、下钻存 `%% @link`、
+// 代码锚点存 `%% @file <id> <路径>`（可带 `#符号`）、
 // 整张图的一句话总结存 `%% @summary`（图级，不挂节点）
 // —— 全是注释行，对 Mermaid 渲染零影响，
 // 所以这份文本既是给 AI 看的图，也是能直接贴进任何 Markdown 的合法 Mermaid。
-// 只有头部那些**格式说明**行是 `%%!` 前缀：它们也是注释，但明确不是数据。
+// 元素留言存旁路表（notes.json）；正文里的老式 %% @note / %% @done 仅作为迁移兜底解析。
+// 头部那些**格式说明**行是 `%%!` 前缀：它们也是注释，但明确不是数据。
 // Mermaid flowchart <-> 图模型 双向转换（host 侧使用；此处独立测试）
 var ARROWS = ['<==>', '<-->', '==>', '-.->', '-->', '---', '~~~', '==='];
 var SHAPE_OPENERS = [
@@ -243,16 +244,15 @@ function scanStatements(line, doc, byId, group, warn) {
 }
 
 function parseMermaid(text) {
-  var doc = { nodes: [], edges: [], groups: [], extras: [], direction: 'TD', warnings: [], summary: '' };
+  var doc = { nodes: [], edges: [], groups: [], extras: [], direction: 'TD', warnings: [], summary: '', legacyNotes: {} };
   var byId = {};
   var stack = [];
   // 坐标与下钻先存着，等图体读完再挂到真有的节点上。
   // 读到注释就 ensureNode 的后果是：节点删了、注释忘了删，节点会凭注释复活写回图里。
   var posMap = {};
   var linkMap = {};
-  // 注释也先存着，同样等图体读完再挂到真有的节点上（理由与坐标一致：不能让注释把节点复活）。
-  // 一个节点只有一条注释，`@note` / `@done` 谁在后面谁说了算。
-  var noteMap = {};
+  // 老式注释（%% @note / %% @done）收进 legacyNotes 供迁移，不再挂到节点上。
+  var legacyNotes = {};
   // 代码锚点（%% @file）与注释不同：**一个节点可以有多条**，所以存成数组、按出现顺序保留。
   var filesMap = {};
   function warn(message) {
@@ -284,12 +284,10 @@ function parseMermaid(text) {
       if (lm) {
         linkMap[cleanId(lm[1])] = unquote(lm[2]);
       }
-      // %% @note <节点id> <文本>：用户留给 AI 的注释；%% @done 是同一件事但已解决。
-      // 拆成两种注释而不是加一个状态字段，是为了让提示词能用一行过滤掉已解决的：
-      // 已解决的留在文件里可追溯，但不该再进上下文（否则注释会累积成噪音）。
+      // 老式 %% @note / %% @done 行收进 legacyNotes，供迁移期兜底
       var nm = /^%%\s*@(note|done)\s+(\S+)\s+(.*)$/.exec(line);
       if (nm) {
-        noteMap[cleanId(nm[2])] = { text: unquote(nm[3]), done: nm[1] === 'done' };
+        legacyNotes[cleanId(nm[2])] = { text: unquote(nm[3]), done: nm[1] === 'done' };
       }
       // %% @file <节点id> "<项目相对路径>[#符号]"：这个节点对应哪段源码。
       // 同一个节点可以写多条 —— 一个「模块」常常落在好几个文件里。
@@ -336,14 +334,12 @@ function parseMermaid(text) {
     var pn = doc.nodes[pi];
     if (posMap[pn.id]) { pn.x = posMap[pn.id].x; pn.y = posMap[pn.id].y }
     if (linkMap[pn.id]) pn.link = linkMap[pn.id];
-    var pnote = noteMap[pn.id];
-    if (pnote && pnote.text) { pn.note = pnote.text; pn.noteDone = pnote.done === true }
     if (filesMap[pn.id]) pn.files = filesMap[pn.id].slice();
   }
   for (var pid in posMap) if (!byId[pid]) warn('坐标注释 @pos ' + pid + ' 指向图里不存在的节点，已丢弃');
   for (var lid in linkMap) if (!byId[lid]) warn('下钻注释 @link ' + lid + ' 指向图里不存在的节点，已丢弃');
-  for (var nid2 in noteMap) if (!byId[nid2]) warn('注释 @note ' + nid2 + ' 指向图里不存在的节点，已丢弃');
   for (var fid3 in filesMap) if (!byId[fid3]) warn('代码锚点 @file ' + fid3 + ' 指向图里不存在的节点，已丢弃');
+  doc.legacyNotes = legacyNotes;
   var cleanNodes = [];
   for (var i = 0; i < doc.nodes.length; i++) {
     var nd = doc.nodes[i];
@@ -396,7 +392,6 @@ function serializeDoc(doc) {
   out.push('%% arch-canvas —— 由「架构画布」面板与 AI 共同维护（`%%!` 开头的是格式说明，不是图的内容）');
   out.push('%%! @summary <一句话> 这张图讲的是什么 —— 会随每一步注入给 AI');
   out.push('%%! @pos <节点id> <x> <y> 是画布坐标注释，@link <节点id> <图名> 是下钻到另一张图');
-  out.push('%%! @note <节点id> <文本> 是用户留给 AI 的注释，@done 是同一件事但已解决');
   out.push('%%! @file <节点id> <路径> 是这个节点对应的源码文件（可带 #符号），一个节点可多条');
   out.push('%%! 以上对 Mermaid 渲染都无任何影响，可忽略或手改');
   // 一句话总结紧跟头部：它描述整张图，所以写在所有节点级注释**之前**（人一眼就看到这张图是干嘛的）。
@@ -411,14 +406,6 @@ function serializeDoc(doc) {
   // 下钻链接也走注释 —— 对 Mermaid 渲染同样零影响，文件仍是合法 Mermaid
   for (var lk = 0; lk < seq.length; lk++) {
     if (seq[lk].link) out.push('%% @link ' + seq[lk].id + ' ' + q(seq[lk].link));
-  }
-  // 用户注释：未解决的写 @note、已解决的写 @done。块顺序与 @pos / @link 共用同一个 seq，
-  // 两处不一致的话同一份文件每往返一次就会重排一次。
-  for (var nto = 0; nto < seq.length; nto++) {
-    if (seq[nto].note && !seq[nto].noteDone) out.push('%% @note ' + seq[nto].id + ' ' + q(seq[nto].note));
-  }
-  for (var ndn = 0; ndn < seq.length; ndn++) {
-    if (seq[ndn].note && seq[ndn].noteDone) out.push('%% @done ' + seq[ndn].id + ' ' + q(seq[ndn].note));
   }
   // 代码锚点：一个节点可多条，按「节点顺序 + 引用自身顺序」写出（顺序稳定，往返才幂等）。
   for (var ft = 0; ft < seq.length; ft++) {

@@ -777,7 +777,7 @@ eq('换项目根后 external 被清空', getOther.external, null)
 eq('换项目根后切到默认图 architecture', getOther.diagram, 'architecture')
 ok('内容是该项目的默认图', getOther.mermaid.includes('其他项目主图'), getOther.mermaid)
 
-console.log('【元素注释 %% @note / @done】')
+console.log('【元素留言旁路表存储 notes.json】')
 const dirNote = '/tmp/proj-note'
 files.set(dirNote + '/.arch-canvas/architecture.mmd', 'flowchart TD\n  n1["入口"] --> n2["核心"]\n')
 const docN0 = await call('doc:get', { where: dirNote })
@@ -785,32 +785,38 @@ ok('进入测试图库成功', docN0 && docN0.ok === true)
 eq('初始 noteCount = 0', docN0.noteCount, 0)
 eq('初始 resolvedNoteCount = 0', docN0.resolvedNoteCount, 0)
 
-// 1. 写一条注释
+// 1. 写一条留言
 const mNote1 = JSON.parse(JSON.stringify(docN0.model))
 const node1_1 = mNote1.nodes.find((n) => n.id === 'n1')
 node1_1.note = '请确认重试逻辑 "retry" & 校验'
 node1_1.noteDone = false
 const setNote1 = await call('doc:set', { model: mNote1, where: dirNote })
-ok('写注释后 doc:set 成功', setNote1 && setNote1.ok !== false)
+ok('写留言后 doc:set 成功', setNote1 && setNote1.ok !== false)
 const fileContent1 = files.get(dirNote + '/.arch-canvas/architecture.mmd')
-ok('落盘文件里出现 %% @note n1', fileContent1.indexOf('%% @note n1') >= 0, fileContent1)
-ok('落盘文件里转义正确', fileContent1.indexOf('#quot;retry#quot;') >= 0 && fileContent1.indexOf('&amp;') >= 0, fileContent1)
+ok('.mmd 落盘文件里没有 %% @note n1', fileContent1.indexOf('@note') < 0, fileContent1)
+const notesJson1Raw = files.get(dirNote + '/.arch-canvas/notes.json')
+ok('同目录生成了 notes.json', !!notesJson1Raw, notesJson1Raw)
+const notesJson1 = JSON.parse(notesJson1Raw || '{}')
+const n1Stored1 = notesJson1['architecture.mmd'] && notesJson1['architecture.mmd']['n1']
+ok('notes.json 里存有 n1 留言', !!n1Stored1 && n1Stored1.text === '请确认重试逻辑 "retry" & 校验' && n1Stored1.done === false, n1Stored1)
 
 const getNote1 = await call('doc:get', { where: dirNote })
-eq('写注释后 noteCount = 1', getNote1.noteCount, 1)
-eq('写注释后 resolvedNoteCount = 0', getNote1.resolvedNoteCount, 0)
+eq('写留言后 noteCount = 1', getNote1.noteCount, 1)
+eq('写留言后 resolvedNoteCount = 0', getNote1.resolvedNoteCount, 0)
 const gn1_1 = getNote1.model.nodes.find((n) => n.id === 'n1')
 eq('model 里 note 正确且反转义还原', gn1_1 && gn1_1.note, '请确认重试逻辑 "retry" & 校验')
 eq('model 里 noteDone 为 false', gn1_1 && gn1_1.noteDone, false)
 
-// 2. 标记已解决（改成 noteDone:true 再 doc:set）
+// 2. 标记已完成（改成 noteDone:true 再 doc:set）
 const mNote2 = JSON.parse(JSON.stringify(getNote1.model))
 mNote2.nodes.find((n) => n.id === 'n1').noteDone = true
 const setNote2 = await call('doc:set', { model: mNote2, where: dirNote })
-ok('标记已解决后 doc:set 成功', setNote2 && setNote2.ok !== false)
+ok('标记已完成后 doc:set 成功', setNote2 && setNote2.ok !== false)
 const fileContent2 = files.get(dirNote + '/.arch-canvas/architecture.mmd')
-ok('落盘文件里变成 %% @done n1', fileContent2.indexOf('%% @done n1') >= 0, fileContent2)
-ok('落盘文件里不再有 %% @note n1', fileContent2.indexOf('%% @note n1') < 0, fileContent2)
+ok('.mmd 文件里依然不写 @done', fileContent2.indexOf('@done') < 0 && fileContent2.indexOf('@note') < 0, fileContent2)
+const notesJson2 = JSON.parse(files.get(dirNote + '/.arch-canvas/notes.json') || '{}')
+const n1Stored2 = notesJson2['architecture.mmd'] && notesJson2['architecture.mmd']['n1']
+ok('notes.json 里 n1.done 变为 true', !!n1Stored2 && n1Stored2.done === true, n1Stored2)
 
 const getNote2 = await call('doc:get', { where: dirNote })
 eq('标记已解决后 noteCount 变 0', getNote2.noteCount, 0)
@@ -824,10 +830,9 @@ const node1_3 = mNote3.nodes.find((n) => n.id === 'n1')
 node1_3.note = ''
 node1_3.noteDone = false
 const setNote3 = await call('doc:set', { model: mNote3, where: dirNote })
-ok('清空注释后 doc:set 成功', setNote3 && setNote3.ok !== false)
-const fileContent3 = files.get(dirNote + '/.arch-canvas/architecture.mmd')
-ok('落盘文件里无 @note n1', fileContent3.indexOf('@note n1') < 0, fileContent3)
-ok('落盘文件里无 @done n1', fileContent3.indexOf('@done n1') < 0, fileContent3)
+ok('清空留言后 doc:set 成功', setNote3 && setNote3.ok !== false)
+const notesJson3 = JSON.parse(files.get(dirNote + '/.arch-canvas/notes.json') || '{}')
+ok('notes.json 里 n1 条目被删除', !(notesJson3['architecture.mmd'] && notesJson3['architecture.mmd']['n1']), notesJson3)
 
 const getNote3 = await call('doc:get', { where: dirNote })
 eq('清空后 noteCount 为 0', getNote3.noteCount, 0)
@@ -851,12 +856,12 @@ ok('测试桩捕获到了 systemPrompt.context 注册的 text 函数', typeof pr
 if (typeof promptFn === 'function') {
   const pText = promptFn()
   ok('未解决的出现在 text 列表里', pText.indexOf('- `n1`（' + (pn1.label || '') + '）：未解决：检查鉴权') >= 0, pText)
-  ok('提示词含「另有 1 条注释已被标记为已解决」', pText.indexOf('另有 1 条注释已被标记为已解决') >= 0, pText)
-  ok('内联 mermaid 代码块里 %% @done 那一行不在 text 里', pText.indexOf('%% @done n2') < 0, pText)
-  ok('内联 mermaid 代码块里保留 %% @note 行', pText.indexOf('%% @note n1') >= 0, pText)
+  ok('提示词含「另有 1 条留言已完成」', pText.indexOf('另有 1 条留言已完成') >= 0, pText)
+  ok('源文本里不含 %% @done', pText.indexOf('%% @done n2') < 0, pText)
+  ok('源文本里也不含 %% @note', pText.indexOf('%% @note n1') < 0, pText)
 }
 
-// 5. arch_write 继承 vs doc:applyText 不继承
+// 5. arch_write 继承 vs doc:applyText 手改纯源码（表内留言依然由 applyNoteStore 投影）
 const writeRes = await tool('arch_write').execute({
   mermaid: 'flowchart TD\n  n1["入口重画"] --> n3["新下游"]\n',
 }, {})
@@ -865,10 +870,10 @@ ok('arch_write 返回 keptNotes >= 1', writeRes && writeRes.keptNotes >= 1, writ
 
 const getAfterWrite = await call('doc:get', { where: dirNote })
 const n1AfterWrite = getAfterWrite.model.nodes.find((n) => n.id === 'n1')
-eq('arch_write 后同 id 节点 n1 继承了注释文本', n1AfterWrite && n1AfterWrite.note, '未解决：检查鉴权')
+eq('arch_write 后同 id 节点 n1 继承了留言文本', n1AfterWrite && n1AfterWrite.note, '未解决：检查鉴权')
 eq('arch_write 后 n1 继承了 noteDone 状态', n1AfterWrite && n1AfterWrite.noteDone, false)
-const fileAfterWrite = files.get(dirNote + '/.arch-canvas/architecture.mmd')
-ok('落盘文件里 n1 的 %% @note 注释还在', fileAfterWrite.indexOf('%% @note n1') >= 0, fileAfterWrite)
+const notesAfterWrite = JSON.parse(files.get(dirNote + '/.arch-canvas/notes.json') || '{}')
+ok('notes.json 里 n1 留言还在', notesAfterWrite['architecture.mmd'] && notesAfterWrite['architecture.mmd']['n1'])
 
 const applyRes = await call('doc:applyText', {
   text: 'flowchart TD\n  n1["入口手改"] --> n3["新下游"]\n',
@@ -878,22 +883,21 @@ ok('doc:applyText 成功', applyRes && applyRes.ok !== false)
 
 const getAfterApply = await call('doc:get', { where: dirNote })
 const n1AfterApply = getAfterApply.model.nodes.find((n) => n.id === 'n1')
-eq('doc:applyText 不继承注释，note 变为空串', n1AfterApply && n1AfterApply.note, '')
-eq('doc:applyText 不继承注释，noteDone 为 false', n1AfterApply && n1AfterApply.noteDone, false)
-const fileAfterApply = files.get(dirNote + '/.arch-canvas/architecture.mmd')
-ok('落盘文件里注释已消失（无 @note n1）', fileAfterApply.indexOf('@note n1') < 0, fileAfterApply)
-ok('落盘文件里注释已消失（无 @done n1）', fileAfterApply.indexOf('@done n1') < 0, fileAfterApply)
-eq('doc:applyText 后 noteCount 为 0', getAfterApply.noteCount, 0)
+eq('doc:applyText 后同 id 节点通过 applyNoteStore 保留留言', n1AfterApply && n1AfterApply.note, '未解决：检查鉴权')
+eq('doc:applyText 后 noteDone 为 false', n1AfterApply && n1AfterApply.noteDone, false)
+const notesAfterApply = JSON.parse(files.get(dirNote + '/.arch-canvas/notes.json') || '{}')
+ok('notes.json 里 n1 留言依然存在', !!(notesAfterApply['architecture.mmd'] && notesAfterApply['architecture.mmd']['n1']), notesAfterApply)
+eq('doc:applyText 后 noteCount 依然为 1', getAfterApply.noteCount, 1)
 eq('doc:applyText 后 resolvedNoteCount 为 0', getAfterApply.resolvedNoteCount, 0)
 
-// 6. 删节点：remove_node 掉带注释的节点
+// 6. 删节点：remove_node 掉带留言的节点（孤儿留在表里）
 const mDel = JSON.parse(JSON.stringify(getAfterApply.model))
 const n3Node = mDel.nodes.find((n) => n.id === 'n3')
 n3Node.note = 'n3 待处理'
 n3Node.noteDone = false
 await call('doc:set', { model: mDel, where: dirNote })
-const fileBeforeDel = files.get(dirNote + '/.arch-canvas/architecture.mmd')
-ok('删节点前文件里存在 %% @note n3', fileBeforeDel.indexOf('%% @note n3') >= 0, fileBeforeDel)
+const notesBeforeDel = JSON.parse(files.get(dirNote + '/.arch-canvas/notes.json') || '{}')
+ok('删节点前表里存在 n3 留言', !!(notesBeforeDel['architecture.mmd'] && notesBeforeDel['architecture.mmd']['n3']))
 
 const delRes = await tool('arch_edit').execute({
   ops: [
@@ -903,13 +907,13 @@ const delRes = await tool('arch_edit').execute({
 ok('remove_node 成功执行', delRes && delRes.appliedCount === 1)
 eq('remove_node 无 problems', delRes && delRes.problems.length, 0)
 
-const fileAfterDel = files.get(dirNote + '/.arch-canvas/architecture.mmd')
-ok('删节点后文件里不再有 %% @note n3', fileAfterDel.indexOf('@note n3') < 0, fileAfterDel)
-ok('删节点后文件里不再有 %% @done n3', fileAfterDel.indexOf('@done n3') < 0, fileAfterDel)
+const notesAfterDel = JSON.parse(files.get(dirNote + '/.arch-canvas/notes.json') || '{}')
+// 孤儿规则反转：删节点不碰孤儿，n3 仍可留在表里
+ok('删节点后孤儿留言仍可保留在 notes.json 中', !!(notesAfterDel['architecture.mmd'] && notesAfterDel['architecture.mmd']['n3']), notesAfterDel)
 
 const getAfterDel = await call('doc:get', { where: dirNote })
 ok('模型中已无节点 n3', !getAfterDel.model.nodes.some((n) => n.id === 'n3'))
-eq('删节点后 noteCount 为 0', getAfterDel.noteCount, 0)
+eq('删节点后当前图 noteCount 为 1（仅剩 n1，n3 已成孤儿）', getAfterDel.noteCount, 1)
 eq('删节点后 resolvedNoteCount 为 0', getAfterDel.resolvedNoteCount, 0)
 eq('删节点后 warnings 为空（不报错）', getAfterDel.warnings.length, 0)
 
@@ -1056,7 +1060,10 @@ eq('当前这张图的 summary 也在清单里', itemArch && itemArch.summary, s
 const pSum = promptFn()
 ok('提示词里有「这张图讲的是」那一行', pSum.indexOf('**这张图讲的是**') >= 0)
 ok('提示词里带上了那句话', pSum.indexOf(sumWant) >= 0)
-ok('提示词里交代了 @summary 是元数据', pSum.indexOf('`@summary` 是这张图的一句话总结') >= 0)
+// 提示词不再逐一解释 `@pos` / `@link` / `@summary`（那是 skill 的活），
+// 但必须交代「`%%` 行是元数据、不要当图的内容讨论」—— 这是防 AI 拿元数据当内容的关键一句。
+// 断言跟着改成检查这句：覆盖所有 `%%` 行，比原来只点名 @summary 更宽。
+ok('提示词里交代了 %% 行是元数据、不要讨论', pSum.indexOf('`%%` 开头的行是元数据') >= 0)
 ok('同一图库里别的图的总结也顺带告知', pSum.indexOf('「other」：另一张图：对账时序') >= 0,
   pSum.split('\n').filter((l) => l.indexOf('同一图库里还有') >= 0))
 ok('注入的源码里保留 %% @summary 行', pSum.indexOf('%% @summary ') >= 0)
@@ -1307,6 +1314,24 @@ const writeAllowed = await tool('arch_write').execute({
   mermaid: 'flowchart TD\n  x["入口"] --> y["出口"]\n',
 }, {})
 eq('建库后 arch_write 成功 (ok !== false)', writeAllowed && writeAllowed.ok !== false, true)
+
+// ---------- 提示词模板注入防护 ----------
+// 放在**最后**：这一节要真的往图里加一个 hex 节点再删掉，会推进修订号与节点数，
+// 夹在中间会污染后续所有「doc:set 后修订号 == N」这类断言（第一次就是这么撞的）。
+// Mermaid 的 hexagon 形状是 `id{{"标签"}}`，而 DSH 的 systemPrompt.context 会把 `{{...}}` 当变量引用，
+// 名字不匹配 `/^[a-z][a-z0-9_]*$/` 就直接抛错 —— 整条提示词注入失败、插件当场崩
+// （2026-09-20 实测：图上加了一个 hex 节点，会话就起不来了）。promptText 的最后一行的拆解就是那次事故的修复。
+console.log('【提示词模板注入防护】')
+{
+  const hexAdd = await tool('arch_edit').execute({ ops: [{ op: 'add_node', id: 'hexprobe', label: '探针', shape: 'hex', x: 0, y: 0 }] }, {})
+  ok('hex 探针节点加上了', hexAdd && hexAdd.ok !== false, hexAdd && hexAdd.problems)
+  const tHex = prompts[0].text()
+  ok('源文本里的 {{ 被拆开（否则模板注入会抛错）', tHex.indexOf('{{') < 0,
+    ((tHex.match(/\{\{/g) || []).length) + ' 处 {{')
+  ok('拆开后那个 hex 节点仍在上下文里', tHex.indexOf('hexprobe') >= 0)
+  const hexDel = await tool('arch_edit').execute({ ops: [{ op: 'remove_node', id: 'hexprobe' }] }, {})
+  ok('探针节点已清掉', hexDel && hexDel.ok !== false)
+}
 
 console.log('')
 console.log(fail === 0 ? `全部通过：${pass} / ${pass}` : `通过 ${pass}，失败 ${fail}`)

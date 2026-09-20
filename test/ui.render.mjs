@@ -238,10 +238,10 @@ console.log('\n[4c] 元素注释：带注释渲染、角标、清单已解决切
   })
   await flush()
 
-  // 1. 工具条找得到「注释」按钮，且带未解决数量
+  // 1. 工具条找得到「留言」按钮，且带未解决数量
   const toolBtns = () => Array.from(noteHost.querySelectorAll('.ac-tools button'))
-  const noteToolBtn = () => toolBtns().find((b) => b.textContent.startsWith('注释'))
-  ok('工具条：找得到注释按钮且文案为「注释 2」', !!noteToolBtn() && noteToolBtn().textContent.trim() === '注释 2')
+  const noteToolBtn = () => toolBtns().find((b) => b.textContent.startsWith('留言'))
+  ok('工具条：找得到留言按钮且文案为「留言 2」', !!noteToolBtn() && noteToolBtn().textContent.trim() === '留言 2')
 
   // 2. 画布节点角标
   const nodeEls = () => Array.from(noteHost.querySelectorAll('g.ac-node'))
@@ -264,7 +264,7 @@ console.log('\n[4c] 元素注释：带注释渲染、角标、清单已解决切
   ok('点击工具条按钮展开 .ac-notes 面板', !!notesPanel())
 
   const headText = notesPanel()?.querySelector('.ac-lib-head')?.textContent || ''
-  ok('面板头部文案含未解决与已解决条数', headText.indexOf('元素注释：2 条未解决') >= 0 && headText.indexOf('1 条已解决') >= 0, headText)
+  ok('面板头部文案含未解决与已解决条数', headText.indexOf('节点留言：2 条待办') >= 0 && headText.indexOf('1 条已解决') >= 0, headText)
 
   const rows = () => Array.from(notesPanel()?.querySelectorAll('.ac-lib-row') || [])
   const n1Row = () => rows().find((r) => r.textContent.indexOf('n1') >= 0)
@@ -292,7 +292,7 @@ console.log('\n[4c] 元素注释：带注释渲染、角标、清单已解决切
 
   const n1ItemAfter = rows().find((r) => r.textContent.indexOf('n1') >= 0)?.querySelector('button.ac-lib-item')
   ok('行变为已解决状态（class 含 done，文案以 ✓ 开头）', !!n1ItemAfter && n1ItemAfter.classList.contains('done') && n1ItemAfter.textContent.indexOf('✓ n1') >= 0)
-  eq('工具条未解决条数更新为 1', noteToolBtn()?.textContent.trim(), '注释 1')
+  eq('工具条未解决条数更新为 1', noteToolBtn()?.textContent.trim(), '留言 1')
 
   // 5. 选中节点乙（未解决）
   const n2El = findNodeEl('节点乙')
@@ -322,8 +322,8 @@ console.log('\n[4c] 元素注释：带注释渲染、角标、清单已解决切
   eq('标记已解决后检查器按钮文案变为「重新打开」', markBtn()?.textContent.trim(), '重新打开')
 
   // 6. 全部解决后的工具条与提示文案
-  eq('全部解决后工具条文案变回「注释」', noteToolBtn()?.textContent.trim(), '注释')
-  ok('没有未解决注释时面板提示「没有未解决的注释」', notesPanel()?.textContent.indexOf('没有未解决的注释') >= 0)
+  eq('全部解决后工具条文案变回「留言」', noteToolBtn()?.textContent.trim(), '留言')
+  ok('没有未解决注释时面板提示「没有未解决的留言」', notesPanel()?.textContent.indexOf('没有未解决的留言') >= 0)
 
   // 7. 检查器点「重新打开」
   rpcCalls.length = 0
@@ -334,7 +334,7 @@ console.log('\n[4c] 元素注释：带注释渲染、角标、清单已解决切
   const setNode3 = setCall3?.args?.model?.nodes?.find((n) => n.id === 'n2')
   ok('doc:set 提交的模型里 n2.noteDone 为 false', setNode3 && setNode3.noteDone === false, setNode3)
   eq('重新打开后检查器按钮文案变回「标记已解决」', markBtn()?.textContent.trim(), '标记已解决')
-  eq('重新打开后工具条未解决条数恢复为 1', noteToolBtn()?.textContent.trim(), '注释 1')
+  eq('重新打开后工具条未解决条数恢复为 1', noteToolBtn()?.textContent.trim(), '留言 1')
 
   await act(async () => { noteRoot.unmount() })
   noteHost.remove()
@@ -824,6 +824,277 @@ console.log('\n[4g] 源码页语法高亮')
 
   await act(async () => { hlRoot.unmount() })
   hlHost.remove()
+  respond = prevRespond
+}
+
+console.log('\n[4h] 组折叠')
+{
+  const FOLD_MODEL = {
+    nodes: [
+      { id: 'f1', label: '服务A', shape: 'rect', group: 'g1', x: 100, y: 100, note: '', noteDone: false, files: [] },
+      { id: 'f2', label: '服务B', shape: 'rect', group: 'g1', x: 100, y: 220, note: '', noteDone: false, files: [] },
+      { id: 'f3', label: '外部网关', shape: 'rect', group: null, x: 300, y: 160, note: '', noteDone: false, files: [] },
+    ],
+    edges: [
+      { from: 'f3', to: 'f1', arrow: '-->', label: '' },
+    ],
+    groups: [
+      { id: 'g1', label: '核心组' },
+    ],
+    direction: 'TD', extras: [], summary: '',
+  }
+
+  const prevRespond = respond
+  let currentModel = JSON.parse(JSON.stringify(FOLD_MODEL))
+  respond = function (method, args) {
+    if (method === 'doc:get') {
+      return fullDoc({
+        model: currentModel,
+        nodeCount: currentModel.nodes.length,
+        edgeCount: currentModel.edges.length,
+        groupCount: currentModel.groups.length,
+      })
+    }
+    return prevRespond(method, args)
+  }
+
+  const foldHost = document.createElement('div')
+  document.body.appendChild(foldHost)
+  const foldRoot = createRoot(foldHost)
+  await act(async () => {
+    foldRoot.render(React.createElement(captured['sidebar.right.pane.tab'], {
+      cwd: UI, sessionId: 's1', useSessions: () => UI,
+    }))
+  })
+  await flush()
+
+  // a. 默认（未折叠）存在 .ac-group-box 与 .ac-group-lbl；标签是**纯组名**，箭头在独立按钮上
+  const groupBox = foldHost.querySelector('rect.ac-group-box')
+  const groupLbl = foldHost.querySelector('text.ac-group-lbl')
+  ok('默认存在 .ac-group-box 组大框', !!groupBox)
+  ok('默认存在 .ac-group-lbl 组标签', !!groupLbl)
+  eq('组标签是纯组名（箭头已挪到按钮上）', groupLbl?.textContent, '核心组')
+  const groupBtn = foldHost.querySelector('g.ac-group-btn')
+  ok('默认存在收起按钮 .ac-group-btn', !!groupBtn)
+  eq('收起按钮的文字是 ▾', groupBtn?.querySelector('text')?.textContent, '▾')
+
+  // b. 负向对照：默认不存在 .ac-fold
+  ok('默认不存在 .ac-fold 折叠块', !foldHost.querySelector('.ac-fold'))
+
+  const edgesBefore = Array.from(foldHost.querySelectorAll('path.ac-edge'))
+  eq('默认跨组边渲染且条数为 1', edgesBefore.length, 1)
+  const edgeD1 = edgesBefore[0]?.getAttribute('d')
+
+  // c1. **负向对照**：点组名、点组框都**不**折叠 —— 收起/展开只认按钮。
+  //     这是刻意的：组块长得像个节点，点它多半是想选中或拖它，顺手把它弹开是最烦的误触。
+  const clickGroup = async (el) => {
+    await act(async () => {
+      el.dispatchEvent(new dom.window.PointerEvent('pointerdown', { bubbles: true, button: 0 }))
+    })
+    await flush()
+  }
+  await clickGroup(groupLbl)
+  ok('点组名不会折叠', !foldHost.querySelector('.ac-fold'))
+  await clickGroup(groupBox)
+  ok('点组框不会折叠', !foldHost.querySelector('.ac-fold'))
+
+  // c2. 点那个按钮才会折叠
+  await clickGroup(groupBtn)
+
+  const foldEl = foldHost.querySelector('.ac-fold')
+  ok('点收起按钮后出现 .ac-fold 折叠块', !!foldEl)
+  ok('点收起按钮后 .ac-group-box 消失', !foldHost.querySelector('rect.ac-group-box'))
+
+  // d. .ac-fold-lbl 的文字是「组名（N）」—— 箭头同样在独立按钮上
+  const foldLbl = foldHost.querySelector('text.ac-fold-lbl')
+  const memberCount = FOLD_MODEL.nodes.filter((n) => n.group === 'g1').length
+  eq('.ac-fold-lbl 文字为 组名（N）且 N 等于成员数', foldLbl?.textContent, `核心组（${memberCount}）`)
+  eq('展开按钮的文字是 ▸', foldHost.querySelector('g.ac-fold-btn text')?.textContent, '▸')
+
+  // e. 负向对照：折叠后，该组内的成员节点不再出现在 g.ac-node 列表中
+  const nodeLabelsAfterFold = Array.from(foldHost.querySelectorAll('g.ac-node .ac-lbl')).map((el) => el.textContent.trim())
+  ok('折叠后组内成员节点不再出现在 g.ac-node 中', !nodeLabelsAfterFold.includes('服务A') && !nodeLabelsAfterFold.includes('服务B'))
+  ok('外部节点仍然在 g.ac-node 中渲染', nodeLabelsAfterFold.includes('外部网关'))
+
+  // g. 跨组边仍保留：折叠后 path.ac-edge 的条数与折叠前相同（边改接到折叠块，不是被删掉）
+  const edgesAfterFold = Array.from(foldHost.querySelectorAll('path.ac-edge'))
+  eq('跨组边仍保留：折叠后 path.ac-edge 条数与折叠前相同', edgesAfterFold.length, edgesBefore.length)
+  const edgeD2 = edgesAfterFold[0]?.getAttribute('d')
+  ok('跨组边端点改接至折叠块（连线路径重新计算）', !!edgeD1 && !!edgeD2 && edgeD1 !== edgeD2)
+
+  // f. 负向对照：点折叠块本体不展开；点它的按钮才复原
+  await clickGroup(foldHost.querySelector('rect.ac-fold-box'))
+  ok('点折叠块本体不会展开', !!foldHost.querySelector('.ac-fold'))
+  await clickGroup(foldHost.querySelector('g.ac-fold-btn'))
+
+  ok('点展开按钮后 .ac-group-box 回来', !!foldHost.querySelector('rect.ac-group-box'))
+  ok('点展开按钮后 .ac-fold 消失', !foldHost.querySelector('.ac-fold'))
+  const restoredNodeLabels = Array.from(foldHost.querySelectorAll('g.ac-node .ac-lbl')).map((el) => el.textContent.trim())
+  ok('复原后成员节点全部回到 g.ac-node', restoredNodeLabels.includes('服务A') && restoredNodeLabels.includes('服务B'))
+
+  await act(async () => { foldRoot.unmount() })
+  foldHost.remove()
+
+  // h. 组内边不渲染：桩模型里放一条两端同组的边，折叠后 path.ac-edge 条数比折叠前少 1
+  const INTRA_MODEL = {
+    nodes: [
+      { id: 'm1', label: '组内A', shape: 'rect', group: 'g2', x: 100, y: 100, note: '', noteDone: false, files: [] },
+      { id: 'm2', label: '组内B', shape: 'rect', group: 'g2', x: 100, y: 220, note: '', noteDone: false, files: [] },
+      { id: 'm3', label: '外部C', shape: 'rect', group: null, x: 300, y: 160, note: '', noteDone: false, files: [] },
+    ],
+    edges: [
+      { from: 'm1', to: 'm2', arrow: '-->', label: '' }, // 组内边（两端同组）
+      { from: 'm3', to: 'm1', arrow: '-->', label: '' }, // 跨组边
+    ],
+    groups: [
+      { id: 'g2', label: '数据组' },
+    ],
+    direction: 'TD', extras: [], summary: '',
+  }
+
+  currentModel = JSON.parse(JSON.stringify(INTRA_MODEL))
+
+  const intraHost = document.createElement('div')
+  document.body.appendChild(intraHost)
+  const intraRoot = createRoot(intraHost)
+  await act(async () => {
+    intraRoot.render(React.createElement(captured['sidebar.right.pane.tab'], {
+      cwd: UI, sessionId: 's1', useSessions: () => UI,
+    }))
+  })
+  await flush()
+
+  const intraEdgesBefore = Array.from(intraHost.querySelectorAll('path.ac-edge'))
+  eq('折叠前共有 2 条边（1 跨组 + 1 组内）', intraEdgesBefore.length, 2)
+
+  await act(async () => {
+    intraHost.querySelector('g.ac-group-btn').dispatchEvent(new dom.window.PointerEvent('pointerdown', { bubbles: true, button: 0 }))
+  })
+  await flush()
+
+  const intraEdgesAfter = Array.from(intraHost.querySelectorAll('path.ac-edge'))
+  eq('组内边不渲染：折叠后 path.ac-edge 条数比折叠前少 1', intraEdgesAfter.length, intraEdgesBefore.length - 1)
+
+  await act(async () => { intraRoot.unmount() })
+  intraHost.remove()
+
+  respond = prevRespond
+}
+
+console.log('\n[4i] 组拖动与拖拽不丢字段')
+{
+  const TEST_MODEL = {
+    nodes: [
+      { id: 'g_n1', label: '组内节点1', shape: 'rect', group: 'g1', x: 100, y: 100, note: '', noteDone: false, files: [] },
+      { id: 'g_n2', label: '组内节点2', shape: 'rect', group: 'g1', x: 200, y: 120, note: '', noteDone: false, files: [] },
+      { id: 'n_field', label: '带字段节点', shape: 'rect', group: null, x: 400, y: 300, note: '待办事项', noteDone: false, files: ['src/core.ts'] },
+    ],
+    edges: [],
+    groups: [
+      { id: 'g1', label: '拖拽组' },
+    ],
+    direction: 'TD', extras: [], summary: '',
+  }
+
+  const prevRespond = respond
+  let currentModel = JSON.parse(JSON.stringify(TEST_MODEL))
+  respond = function (method, args) {
+    if (method === 'doc:get') {
+      return fullDoc({
+        model: currentModel,
+        nodeCount: currentModel.nodes.length,
+        edgeCount: currentModel.edges.length,
+        groupCount: currentModel.groups.length,
+      })
+    }
+    if (method === 'doc:set') {
+      currentModel = args.model
+      return fullDoc({
+        model: currentModel,
+        nodeCount: currentModel.nodes.length,
+        revision: 2,
+        updatedBy: 'user',
+      })
+    }
+    return prevRespond(method, args)
+  }
+
+  const dragHost = document.createElement('div')
+  document.body.appendChild(dragHost)
+  const dragRoot = createRoot(dragHost)
+  await act(async () => {
+    dragRoot.render(React.createElement(captured['sidebar.right.pane.tab'], {
+      cwd: UI, sessionId: 's1', useSessions: () => UI,
+    }))
+  })
+  await flush()
+
+  const svgEl = dragHost.querySelector('svg.ac-svg')
+  ok('渲染出画布 svg.ac-svg', !!svgEl)
+
+  // 先折叠组 g1
+  const groupBtn = dragHost.querySelector('g.ac-group-btn')
+  ok('存在收起按钮 g.ac-group-btn', !!groupBtn)
+  await act(async () => {
+    groupBtn.dispatchEvent(new dom.window.PointerEvent('pointerdown', { bubbles: true, button: 0 }))
+  })
+  await flush()
+
+  const foldEl = dragHost.querySelector('g.ac-fold')
+  ok('折叠后存在 g.ac-fold', !!foldEl)
+  const foldBox = dragHost.querySelector('rect.ac-fold-box')
+  ok('折叠后存在 rect.ac-fold-box', !!foldBox)
+  const initialFoldX = foldBox?.getAttribute('x')
+
+  // c. 负向对照：只按下不移动，什么都不变 —— pointerdown 后直接 pointerup（中途没有位移），
+  //    断言折叠块位置不变、且仍是折叠态。
+  await act(async () => {
+    foldEl.dispatchEvent(new dom.window.PointerEvent('pointerdown', { bubbles: true, button: 0, clientX: 150, clientY: 110 }))
+    svgEl.dispatchEvent(new dom.window.PointerEvent('pointerup', { bubbles: true, button: 0, clientX: 150, clientY: 110 }))
+  })
+  await flush()
+  eq('负向对照：只按下不移动，折叠块位置不变', dragHost.querySelector('rect.ac-fold-box')?.getAttribute('x'), initialFoldX)
+  ok('负向对照：只按下不移动，仍是折叠态（.ac-fold 仍存在）', !!dragHost.querySelector('g.ac-fold'))
+
+  // a. 拖折叠块会带走整个组：先折叠一个组，记下 rect.ac-fold-box 的 x；
+  //    对 g.ac-fold 派发 pointerdown，再对 svg.ac-svg 派发 pointermove（带位移），最后 pointerup；
+  //    断言 rect.ac-fold-box 的 x 变了（成员被一起挪了，块才跟着动）。
+  const foldElBeforeDrag = dragHost.querySelector('g.ac-fold')
+  await act(async () => {
+    foldElBeforeDrag.dispatchEvent(new dom.window.PointerEvent('pointerdown', { bubbles: true, button: 0, clientX: 150, clientY: 110 }))
+    svgEl.dispatchEvent(new dom.window.PointerEvent('pointermove', { bubbles: true, clientX: 210, clientY: 170 }))
+    svgEl.dispatchEvent(new dom.window.PointerEvent('pointerup', { bubbles: true, button: 0, clientX: 210, clientY: 170 }))
+  })
+  await flush()
+
+  const movedFoldBox = dragHost.querySelector('rect.ac-fold-box')
+  const movedFoldX = movedFoldBox?.getAttribute('x')
+  ok('拖折叠块会带走整个组（rect.ac-fold-box 的 x 改变）', !!movedFoldX && movedFoldX !== initialFoldX, { initialFoldX, movedFoldX })
+
+  // b. 负向对照：拖动不会误展开 —— 上面那串操作之后，.ac-fold 仍然存在。
+  ok('负向对照：拖动不会误展开（.ac-fold 仍然存在）', !!dragHost.querySelector('g.ac-fold'))
+
+  // d. 拖拽不丢字段：构造一个带 note（未解决）与 files 的节点，对它派发
+  //    pointerdown → pointermove（带位移）→ pointerup，断言它的 .ac-note-badge 与 .ac-file-badge
+  //    都还在（旧实现下这两个角标会在拖动后消失）。
+  const findFieldNode = () => Array.from(dragHost.querySelectorAll('g.ac-node')).find((el) => el.querySelector('.ac-lbl')?.textContent.trim() === '带字段节点')
+  const nodeElBefore = findFieldNode()
+  ok('拖拽前带字段节点存在 .ac-note-badge', !!nodeElBefore?.querySelector('.ac-note-badge'))
+  ok('拖拽前带字段节点存在 .ac-file-badge', !!nodeElBefore?.querySelector('.ac-file-badge'))
+
+  await act(async () => {
+    nodeElBefore.dispatchEvent(new dom.window.PointerEvent('pointerdown', { bubbles: true, button: 0, clientX: 400, clientY: 300 }))
+    svgEl.dispatchEvent(new dom.window.PointerEvent('pointermove', { bubbles: true, clientX: 480, clientY: 360 }))
+    svgEl.dispatchEvent(new dom.window.PointerEvent('pointerup', { bubbles: true, button: 0, clientX: 480, clientY: 360 }))
+  })
+  await flush()
+
+  const nodeElAfter = findFieldNode()
+  ok('拖拽不丢字段：拖拽后 .ac-note-badge 依然存在', !!nodeElAfter?.querySelector('.ac-note-badge'))
+  ok('拖拽不丢字段：拖拽后 .ac-file-badge 依然存在', !!nodeElAfter?.querySelector('.ac-file-badge'))
+
+  await act(async () => { dragRoot.unmount() })
+  dragHost.remove()
   respond = prevRespond
 }
 

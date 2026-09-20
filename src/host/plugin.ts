@@ -36,29 +36,45 @@ function toolReject(tool, reason, t0) {
 }
 
 // ==================== AI 侧提示词上下文 ====================
+// 只取标签第一段（标题）。host 与 client 是两个独立作用域，不能共用 client 的 splitLabel，
+// 所以就地取一份 —— 规则只有一条：第一个 `\n` 之前是标题。
+// 多行 label 直接插进清单会把一个条目撑成三行，把清单读成散文。
+function labelTitle(label) {
+  var s = String(label == null ? '' : label)
+  var i = s.indexOf('\n')
+  return i < 0 ? s : s.slice(0, i)
+}
+
 function promptText() {
   var curKey = doc.external || keyOf(doc.name)
   var where = doc.external ? '项目里的文件 ' : (lib.scope === 'project' ? '项目图库 ' : '全局图库 ')
   var loc = doc.external ? doc.external : lib.dir
+  // 「最后改的人 + 动了哪几个节点」是这条「上下文自动同步」通道里最该同步的东西：
+  // 只写 updatedBy 的话，AI 知道有人改过，却不知道改的是什么。
+  // lastChange 是 document.ts 的模块级变量（不是 doc 的属性）：只有 rev 与当前修订一致时，
+  // 它才描述「这一次修订改了什么」。对不上就当没有 —— history.ts 用的是同一条判据。
+  var lc0 = lastChange && lastChange.rev === doc.revision ? lastChange : null
+  var touched = (lc0 && lc0.nodes && lc0.nodes.length) ? lc0.nodes.slice(0, 6) : []
+  var byWho = doc.updatedBy === 'ai' ? 'AI' : (doc.updatedBy === 'user' ? '用户' : String(doc.updatedBy || '未知'))
+  var touchedTxt = touched.length
+    ? ('，动的节点：' + touched.map(function (x) { return '`' + String(x) + '`' }).join('、'))
+    : ''
+  // 这一节只回答两件事：**当前状态是什么**、**用户要什么**。
+  // 「工具怎么用、图库怎么组织、`%%` 各字段什么意思」是 skill（skills/arch-canvas/SKILL.md）的职责 ——
+  // 抄在这里等于每一步都重复一遍教材，而且会与 SKILL.md 形成两份各自漂移的真相。
+  // 只留真正属于「读这份数据」的注意事项：图不保证与代码一致、共享画布的边界、元数据不要讨论。
   var head = [
     '## 逻辑框架画布（arch-canvas）',
-    '你和用户在看同一张图。当前这张的引用名是「' + curKey + '」，在' + where + loc + '（修订 ' + doc.revision + '，最后修改者：' + doc.updatedBy + '）。',
-    '- 这张图表达的是**讨论中的逻辑框架**，不保证与代码一致 —— 不要拿代码去「纠正」它，也不要因为图上没有某个模块就断定它漏了。它是讨论的画布，不是代码的镜像。',
-    doc.external
-      ? '- 这张图不是图库里的图，而是项目里的一个 mermaid 文件（' + doc.external + '）：用户是按路径把它打开的，你的改动落盘就写回这个文件。'
-      : '- 图库跟着项目走：每个项目目录下有一个 .arch-canvas/，里面每张图一个 .mmd 文件。同一个图库可以有多张图。',
-    '- 图引用一律用「相对项目根的 key」：`架构` 指根图库里的图，`支付/对账` 指子项目「支付」的图库里的图。`arch_switch` / `arch_read` / `set_link` 都用这个写法。',
-    '- 用户的手动改动会立即反映到下一步的你。回答图相关内容时以下面这份为准，不要凭记忆。',
-    // 没有写图闸门了：安全性由**检查点**兜底，而不是靠拦人（见 history.ts）。
-    // 所以这里要写清「放手改」的边界 —— 改的是用户眼前的画布，别未经要求大改。
-    '这是一张**共享画布**：你改完用户立刻看见。放手用 `arch_edit` 做增量修改（add_node / add_edge / set_label / set_link / move_node / remove_node / add_group / set_files / set_summary ...），这样用户已摆好的布局不会被清掉；只有整体重画时才用 `arch_write`。',
-    '- 每次落盘都会留一份**检查点**（标明是 AI 改的还是用户改的），用户能在面板里一键退回 —— 不必因为「怕改坏」而不敢动手；但也别拿它当借口一次大改：改动越小，用户越容易看懂你做了什么。',
-    '- `%%` 开头的行是元数据：`@pos` 是画布坐标、`@link` 是下钻到另一张图、`@summary` 是这张图的一句话总结，原样保留、不要当成图的内容来讨论；`@note` / `@done` / `@file` 不一样 —— 那是**用户写在元素上的东西**（注释与代码锚点），见下面的清单。`%%!` 开头的只是给人看的格式说明（已从下面这份里滤掉，文件里还在）。',
-    '- 你改动过的节点会在用户画布上短暂高亮 —— 用户能直接看到你动了哪里，所以说明里点名节点 id 会很有用。',
+    '当前：`' + curKey + '` · ' + where + loc + ' · 修订 ' + doc.revision + ' · 最后改的人是' + byWho + touchedTxt + '。',
+    '这张图是**讨论中的逻辑框架**，不保证与代码一致（别拿代码去「纠正」它，也别因为图上没画就断定漏了）；' +
+      '它同时是你和用户的共享画布 —— 你改完用户立刻看得见，用户手动改的下一步你也看得见。',
   ]
-  // 一句话总结（`%% @summary`）：这是「读这张图之前先知道它讲的是什么」的那一行，
-  // 作用与 skill 的描述行一样 —— 所以放在最上面，而且不截断（它本身有 500 字上限）。
-  if (doc.summary) head.push('**这张图讲的是**（文件里的 `%% @summary`）：' + doc.summary)
+  if (doc.external) {
+    head.push('它是按路径打开的项目文件（不属于任何图库），你的改动落盘写回它本身。')
+  }
+  // 一句话总结：这是「读这张图之前先知道它讲的是什么」的那一行，作用与 skill 的描述行一样 ——
+  // 所以紧跟定位行，且不截断（它本身有 500 字上限）。
+  if (doc.summary) head.push('', '**这张图讲的是**：' + doc.summary)
   var others = []
   for (var i = 0; i < libraryCache.length; i++) {
     var it = libraryCache[i]
@@ -68,11 +84,8 @@ function promptText() {
     others.push('「' + it.key + '」' + (itSum ? '：' + itSum : '') + '(' + it.nodes + ' 节点' + (it.links ? '、' + it.links + ' 处下钻' : '') + ')')
   }
   if (others.length > 0) {
-    head.push('- 同一图库里还有：' + others.join('、') + '。要一起看另一张就用 `arch_switch`（用户画布会跟着切），只读不改则用 `arch_read` 带 `diagram`。')
-  } else {
-    head.push('- 这个图库里目前只有这一张图。想另起一张（换个视角/换个层次）可以用 `arch_switch` 带 `create` 新建。')
+    head.push('', '同图库还有：' + others.join('、') + '。切过去用 `arch_switch`（用户画布会跟着切），只看不改用 `arch_read` 带 `diagram`。')
   }
-  head.push('- 只读当前图时用 `arch_read`。')
   // 用户注释：只有**未解决**的那些进上下文。已解决的留在文件里可追溯，但不注入 ——
   // 注释会单调累积，全都灌进来的话，AI 会开始重新讨论早就定下来的事（那是负的表达力）。
   var openNotes = []
@@ -82,17 +95,17 @@ function promptText() {
   }
   var nc = noteCounts()
   if (openNotes.length > 0) {
-    head.push('', '**用户在这些元素上留了注释**（文件里写作 `%% @note`）—— 它们是待处理的疑问或要求，' +
-      '逐条回应，点名节点 id；处理完提醒用户可以在检查器里标成「已解决」（标记后就不再出现在你的上下文里，但会留在文件里）。')
+    head.push('', '**用户在这些元素上留了留言**——它们是待处理的疑问或要求，' +
+      '逐条回应，点名节点 id；处理完提醒用户可以在检查器里标成「已解决」（标记后就不再出现在你的上下文里，但会留在表里）。')
     for (var on = 0; on < openNotes.length && on < 20; on++) {
       var ot = String(openNotes[on].note)
       if (ot.length > 400) ot = ot.slice(0, 400) + '…（已截断，完整内容见文件）'
-      head.push('- `' + openNotes[on].id + '`（' + String(openNotes[on].label || '') + '）：' + ot.replace(/\r?\n/g, ' / '))
+      head.push('- `' + openNotes[on].id + '`（' + labelTitle(openNotes[on].label) + '）：' + ot.replace(/\r?\n/g, ' / '))
     }
-    if (openNotes.length > 20) head.push('- …还有 ' + (openNotes.length - 20) + ' 条未解决的注释，完整内容见文件。')
+    if (openNotes.length > 20) head.push('- …还有 ' + (openNotes.length - 20) + ' 条未解决的留言，完整内容见文件。')
   }
   if (nc.done > 0) {
-    head.push('- 另有 ' + nc.done + ' 条注释已被标记为已解决（文件里写作 `%% @done`）：**没有列出来，也不要据此行动**；需要看全部用 `arch_read`。')
+    head.push('- 另有 ' + nc.done + ' 条留言已完成：**没有列出来，也不要据此行动**；需要看全部用 `arch_read`。')
   }
   // 代码锚点：用户给节点标的源码文件。价值在于「中文标签 ↔ 英文路径」这个映射 grep 不出来，
   // 所以能省掉一次定位；但它会腐烂 —— 失效的必须显式标出来，并且明说别照着用。
@@ -110,7 +123,7 @@ function promptText() {
       if (rsc === 'ok') good.push('`' + rfs[rj] + '`')
       else bad.push('`' + rfs[rj] + '`（' + (rsc === 'missing' ? '文件不在' : rsc === 'symbol-missing' ? '符号不在' : '未能校验') + '）')
     }
-    refLines.push('- `' + rn.id + '`（' + String(rn.label || '') + '）：' + (good.length ? good.join('、') : '') +
+    refLines.push('- `' + rn.id + '`（' + labelTitle(rn.label) + '）：' + (good.length ? good.join('、') : '') +
       (bad.length ? (good.length ? '；' : '') + '⚠ ' + bad.join('、') : ''))
   }
   if (refLines.length > 0) {
@@ -126,14 +139,34 @@ function promptText() {
     return head.join('\n')
   }
   var src = serializeDoc(doc).replace(/\n+$/, '')
-  // 两处「注入用的视图」与文件不再逐字相同，都是为了别把噪音灌给 AI：
-  // 1. 已解决的注释（`%% @done`）—— 留在文件里可追溯，但全灌进去 AI 会重新讨论早就定下来的事；
-  // 2. 头部 `%%!` 格式说明 —— 每张图逐字相同，格式上面已经讲清了，而且里面有 `<节点id>` 这类模板。
-  // 所以上面明说了「另有 N 条已解决」「%%! 已滤掉」，要看原文用 arch_read。
+  // 「注入用的视图」与文件不逐字相同，为的都是别把噪音灌给 AI（文件里一切都在，要看原文用 `arch_read`）：
+  // 1. 头部 `%%!` 格式说明 —— 每张图逐字相同，而且里面有 `<节点id>` 这类模板；
+  // 2. `%% @pos` 坐标 —— 纯布局数据，AI 不消费它（改坐标走 move_node，整体重画按 id 继承旧坐标），
+  //    而它是每节点一行：17 个节点的图里占了源码块近三分之一。
+  // 过滤 @done 主要是给老文件兜底：老文件中可能仍带有行首 %% @done
   src = src.split('\n').filter(function (l) {
-    return l.indexOf('%% @done ') !== 0 && l.slice(0, 3) !== '%%!'
+    return l.indexOf('%% @done ') !== 0 && l.slice(0, 3) !== '%%!' && l.indexOf('%% @pos ') !== 0
   }).join('\n')
-  return head.concat(['', '```mermaid', src, '```']).join('\n')
+  var out = head.concat([
+    '',
+    '下面是**源文本**（这份图文件的全文；已滤掉 `@pos` 坐标行、`%%!` 格式说明，要看原文用 `arch_read`）。' +
+      '`%%` 开头的行是元数据，原样保留、不要当成图的内容来讨论。',
+    '```mermaid', src, '```',
+    '',
+    '工具用法与图库规则见 `arch-canvas` skill（用 `skill` 工具加载）。',
+  ]).join('\n')
+  // ==================== 最后一道关：把 `{{` 拆开 ====================
+  // DSH 的 `systemPrompt.context` 会把这段文本当 `{{变量}}` 模板渲染，而**这条通道没有关掉插值的开关**：
+  // `dsh-system-prompt/lib/index.js:150` 对 context 一律 interpolate，
+  // 只有 `:115` 的 section 通道认 `interpolate: false`（README:66 说的是后者）。
+  // 而 AC 注入的是**用户的源文本**，里面完全可能合法地出现 `{{` ——
+  // Mermaid 的 hexagon 形状就是 `id{{"标签"}}`。变量名不匹配 `/^[a-z][a-z0-9_]*$/` 就直接抛错，
+  // 于是整条提示词注入失败、插件当场崩（2026-09-20 实测：图上加了一个 hex 节点，会话就起不来了）。
+  //
+  // 所以这里是**唯一一处必须改动用户文本**的地方。选「`{{` → `{ {`」而不是删字符或塞零宽，
+  // 是因为它可读、看得见、可解释；而 AI 改图走的是 op（`add_node` 自带 shape），
+  // 不会照抄这里的写法去拼语法。改动收口在这一行，别在别处再开第二个口子。
+  return out.split('{{').join('{ {')
 }
 
 // ==================== 静态资源路由 ====================
@@ -643,7 +676,7 @@ var writeTool = harness.defineTool({
       try {
         var v = value || {}
         if (!v.ok) return [{ type: 'text', text: 'arch_write 未生效: ' + String(v.error || v.problems || '') }]
-        var kept = v.keptNotes ? '（保留了用户在该图元素上的 ' + v.keptNotes + ' 条注释）' : ''
+        var kept = v.keptNotes ? '（保留了用户在该图元素上的 ' + v.keptNotes + ' 条留言）' : ''
         return [{ type: 'text', text: '已更新「' + String(v.diagram || '') + '」（修订 ' + v.revision + '）：' + v.nodeCount + ' 个节点、' + v.edgeCount + ' 条连线。用户现在看到的图形已同步。' + kept }]
       } catch (e) {
         return [{ type: 'text', text: 'arch_write 已完成' }]

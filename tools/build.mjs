@@ -67,6 +67,7 @@ const HOST_PARTS = [
   'src/host/mermaid.js',
   'src/host/log.js',
   'src/host/document.js',
+  'src/host/notes.js',
   // history 排在 document 之后：它读 doc / lastChange / serializeDoc，同属这一段作用域。
   'src/host/history.js',
   'src/host/plugin.js',

@@ -41,9 +41,24 @@ var STUDIO_CSS = [
   '.ac-elbl{fill:var(--dsw-alias-label-secondary,#9aa3af);font-size:11.5px;text-anchor:middle;dominant-baseline:central;pointer-events:none;user-select:none}',
   '.ac-elbl-bg{fill:var(--dsw-alias-bg-base,#14161a)}',
   '.ac-group-box{fill:var(--dsw-alias-bg-layer-1,#1b1e23);fill-opacity:.5;stroke:var(--dsw-alias-border-l1,#2a2e35);stroke-dasharray:5 5;stroke-width:1.2}',
-  '.ac-group-lbl{fill:var(--dsw-alias-label-secondary,#9aa3af);font-size:11.5px;font-weight:600}',
+  '.ac-group-lbl{fill:var(--dsw-alias-label-secondary,#9aa3af);font-size:11.5px;font-weight:600;cursor:pointer}',
+  // 折叠块：被收起来的组（视图状态，不落盘）。点一下展开 —— 与「点节点展开描述」同一个心智模型。
+  // 块本体**可拖**（拖的是组内所有人），但不可点开 —— 展开只认右边那个按钮。
+  // 所以光标是 move 而不是 pointer：给的是「能搬动它」的暗示，不是「点了会发生什么」。
+  '.ac-fold{cursor:move}',
+  '.ac-fold-box{fill:var(--dsw-alias-bg-layer-2,#232830);stroke:var(--dsw-alias-brand-primary,#4c8dff);stroke-width:1.5}',
+  '.ac-fold-lbl{fill:var(--dsw-alias-label-primary,#e8eaed);font-size:12.5px;text-anchor:middle;dominant-baseline:central;pointer-events:none;user-select:none}',
+  '.ac-fold-btn,.ac-group-btn{cursor:pointer}',
+  // 底色写死品牌蓝，**不要**用 --dsw-alias-brand-primary：那个变量在浅色主题下是近黑的
+  // （neutral-bluish-1000），实心圆 + 白字就成了一坨黑块；深色主题下它又近乎纯白，白字看不见。
+  // 它适合做描边/文字色，不适合做「填充底 + 白字」。AC 里其他角标（留言 ✎ / 锚点 ▤ / 下钻 ↗）
+  // 用的也都是写死的语义色 —— 按钮跟着它们走，别自成一套。
+  '.ac-fold-btn circle,.ac-group-btn circle{fill:#4c8dff;stroke:var(--dsw-alias-bg-base,#14161a);stroke-width:1.5}',
+  '.ac-fold-btn text,.ac-group-btn text{fill:#fff;font-size:10px;text-anchor:middle;pointer-events:none;user-select:none}',
   '.ac-handle{fill:var(--dsw-alias-brand-primary,#4c8dff);stroke:var(--dsw-alias-bg-base,#14161a);stroke-width:2;cursor:crosshair}',
   '.ac-link-preview{stroke:var(--dsw-alias-brand-primary,#4c8dff);stroke-width:2;stroke-dasharray:5 4;fill:none}',
+  // 拖拽吸附的参考线：拖拽时才出现，松手即消失（不进模型、不进文件、也不导出）。
+  '.ac-snapline{stroke:var(--dsw-alias-brand-primary,#4c8dff);stroke-width:1;stroke-dasharray:4 4;pointer-events:none;opacity:.9}',
   // 选中后才出现的底部检查器（窄栏放不下右侧栏，改成下挂）
   '.ac-dock{flex:0 0 auto;max-height:46%;overflow:auto;border-top:1px solid var(--dsw-alias-border-l1,#2a2e35);background:var(--dsw-alias-bg-layer-1,#1b1e23);padding:9px 10px}',
   '.ac-dock h4{margin:0 0 8px;font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--dsw-alias-label-secondary,#9aa3af)}',
@@ -112,7 +127,7 @@ var STUDIO_CSS = [
   '.ac-jump{cursor:pointer}',
   '.ac-jump circle{fill:var(--dsw-alias-brand-primary,#4c8dff);stroke:var(--dsw-alias-bg-base,#14161a);stroke-width:1.5}',
   '.ac-jump text{fill:#fff;font-size:11px;text-anchor:middle;pointer-events:none;user-select:none}',
-  // 节点上的注释角标：未解决=琥珀色笔，已解决=灰底勾（与注释清单里的两区一致）
+  // 节点上的留言角标：未解决=琥珀色笔，已解决=灰底勾（与留言清单里的两区一致）
   '.ac-note-badge circle{fill:#e8a33d;stroke:var(--dsw-alias-bg-base,#14161a);stroke-width:1.5}',
   '.ac-note-badge.done circle{fill:var(--dsw-alias-label-secondary,#9aa3af)}',
   '.ac-note-badge text{fill:#14161a;font-size:11px;text-anchor:middle;pointer-events:none;user-select:none}',
@@ -262,6 +277,26 @@ function refRowText(files) {
 // 引用行占不占一行 —— nodeSize 与渲染必须用同一个判据，否则节点高度和文字对不上。
 function refRowCount(files) {
   return refRowText(files) ? 1 : 0
+}
+
+// 拖拽吸附：把候选坐标对齐到「其他节点的中心线」上，阈值内才吸。
+// **只做中心线对齐**，不做边缘、也不做网格 —— 网格会限制自由布局，
+// 而「这两个节点该不该排成一条线」才是摆整齐真正要回答的问题。
+// 返回吸附后的坐标，以及命中的参考线位置（gx / gy 为 null 表示那条轴没吸上）。
+var SNAP_PX = 8
+function snapToPeers(nodes, movingId, x, y) {
+  var bx = null, by = null
+  var dbx = SNAP_PX + 1, dby = SNAP_PX + 1
+  for (var i = 0; i < nodes.length; i++) {
+    var n = nodes[i]
+    if (!n || n.id === movingId) continue
+    if (n.x == null || n.y == null) continue
+    var ax = Math.abs(n.x - x)
+    if (ax <= SNAP_PX && ax < dbx) { dbx = ax; bx = n.x }
+    var ay = Math.abs(n.y - y)
+    if (ay <= SNAP_PX && ay < dby) { dby = ay; by = n.y }
+  }
+  return { x: bx == null ? x : bx, y: by == null ? y : by, gx: bx, gy: by }
 }
 
 // 标签 = 标题（第一段）+ 描述（其余段）。节点默认只画标题，点开（选中）才画描述 ——
@@ -484,6 +519,10 @@ var EXPORT_CSS = [
   '.ac-elbl-bg{fill:#ffffff}',
   '.ac-group-box{fill:#f7fafc;stroke:#cbd5e0;stroke-dasharray:5 5;stroke-width:1.2}',
   '.ac-group-lbl{fill:#4a5568;font-size:11.5px;font-weight:600}',
+  '.ac-fold-box{fill:#ebf4ff;stroke:#4c8dff;stroke-width:1.5}',
+  '.ac-fold-lbl{fill:#1a202c;font-size:12.5px;text-anchor:middle;dominant-baseline:central}',
+  '.ac-fold-btn circle,.ac-group-btn circle{fill:#4c8dff;stroke:#ffffff;stroke-width:1.5}',
+  '.ac-fold-btn text,.ac-group-btn text{fill:#fff;font-size:10px;text-anchor:middle}',
 ].join('')
 
 // 把画布内容做成一张独立的、自解释的 SVG。
@@ -492,7 +531,7 @@ var EXPORT_CSS = [
 // 必须自带 marker 定义的 <defs>，保证连线箭头独立自包含、不丢箭头。
 function buildExportSvg(worldNode, box) {
   var clone = worldNode.cloneNode(true)
-  var drop = ['.ac-handle', '.ac-link-preview', '.ac-hl']
+  var drop = ['.ac-handle', '.ac-link-preview', '.ac-hl', '.ac-snapline']
   for (var i = 0; i < drop.length; i++) {
     var hits = clone.querySelectorAll(drop[i])
     for (var j = 0; j < hits.length; j++) hits[j].parentNode.removeChild(hits[j])
