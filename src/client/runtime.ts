@@ -44,8 +44,10 @@ var STUDIO_CSS = [
   '.ac-arrowhead{fill:var(--ac-line)}',
   '.ac-elbl{fill:var(--dsw-alias-label-secondary,#9aa3af);font-size:11.5px;text-anchor:middle;dominant-baseline:central;pointer-events:none;user-select:none}',
   '.ac-elbl-bg{fill:var(--dsw-alias-bg-base,#14161a)}',
-  '.ac-group-box{fill:var(--dsw-alias-bg-layer-1,#1b1e23);fill-opacity:.5;stroke:var(--ac-line);stroke-dasharray:5 5;stroke-width:1.4}',
-  '.ac-group-lbl{fill:var(--ac-line);font-size:11.5px;font-weight:600;cursor:pointer}',
+  '.ac-group-box{fill:var(--dsw-alias-bg-layer-1,#1b1e23);fill-opacity:.5;stroke:var(--ac-line);stroke-dasharray:5 5;stroke-width:1.4;cursor:move}',
+  // 组名从前是 cursor:pointer —— 可点它**不**折叠（收起只认那个按钮），所以那个手型是在骗人。
+  // 现在它和组框一样，是「抓住整组」的意思。
+  '.ac-group-lbl{fill:var(--ac-line);font-size:11.5px;font-weight:600;cursor:move}',
   // ==================== 描边与组配色 ====================
   // 为什么不直接用 --dsw-alias-border-*：「边框」与「图形描边」在令牌体系里是两件事。
   // 实测（2026-09-21，把两个 token 的合成色算出来比对）：border-l2 = #ffffff1f（12% 白），

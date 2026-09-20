@@ -236,8 +236,10 @@ console.log('\n[4c] 元素注释：带注释渲染、角标、清单已解决切
   }
 
   let draftText = ''
+  let submitCount = 0
   const mockInputActions = {
     setDraft: (text) => { draftText = text },
+    submit: () => { submitCount++ },
   }
 
   const noteHost = document.createElement('div')
@@ -278,21 +280,60 @@ console.log('\n[4c] 元素注释：带注释渲染、角标、清单已解决切
   const headText = notesPanel()?.querySelector('.ac-lib-head')?.textContent || ''
   ok('面板头部文案含总量、未解决与已解决三条数', headText.indexOf('节点留言：共 3 条') >= 0 && headText.indexOf('2 条待办') >= 0 && headText.indexOf('1 条已解决') >= 0, headText)
 
-  // 3b. 头部批量「发送这一轮留言 (N)」按钮正面断言
-  const batchSendBtn = () => Array.from(notesPanel()?.querySelectorAll('.ac-lib-head button') || []).find((b) => b.textContent.includes('发送这一轮留言'))
-  ok('存在「发送这一轮留言 (2)」按钮', !!batchSendBtn() && batchSendBtn().textContent.trim() === '发送这一轮留言 (2)')
+  // 3b. 头部批量按钮：**一个动作把这一批交出去**（不是「填进输入框等你回车」）
+  const batchSendBtn = () => Array.from(notesPanel()?.querySelectorAll('.ac-lib-head button') || []).find((b) => b.textContent.includes('交给 AI'))
+  ok('存在「交给 AI (2)」按钮', !!batchSendBtn() && batchSendBtn().textContent.trim() === '交给 AI (2)',
+    batchSendBtn() && batchSendBtn().textContent)
 
+  // a. 输入框空着：AC 替用户把这一批写成一条消息，然后**直接发出去**
   draftText = ''
-  await act(async () => { batchSendBtn().click() })
+  submitCount = 0
+  await act(async () => { batchSendBtn()?.click() })
   await flush()
-
-  ok('批量发送调了 setDraft 且同时包含两条留言的节点 id 与正文',
+  ok('空输入框也能发：调了 setDraft 写进这一批',
     draftText.indexOf('`n1`（节点甲）：这里为什么不用队列？') >= 0 &&
     draftText.indexOf('`n2`（节点乙）：这里需要限流') >= 0 &&
     draftText.indexOf('关于画布「') >= 0 &&
     draftText.indexOf('3 条留言') < 0 &&
     draftText.indexOf('2 条留言') >= 0,
     draftText)
+  // 提交是隔一拍做的（setDraft 与 submit 读同一份投影），所以这里要真的等一拍
+  await act(async () => { await new Promise((r) => setTimeout(r, 0)) })
+  await flush()
+  eq('并且真的提交了（不是只填进输入框）', submitCount, 1)
+
+  // b. **负向对照**：用户自己打了字 → 不许顶掉他的字，直接发他那句。
+  //    这一格要单独挂一次：上面那个 mount 没给 `useInput`，草稿永远是空串，走不到这条分支。
+  {
+    let mySubmit = 0
+    let myDraft = null
+    let myDraftCalls = 0
+    const h = document.createElement('div')
+    document.body.appendChild(h)
+    const r = createRoot(h)
+    await act(async () => {
+      r.render(React.createElement(captured['conversation.view'], {
+        cwd: UI, sessionId: 's1', useSessions: () => UI,
+        inputActions: { setDraft: (t) => { myDraft = t; myDraftCalls++ }, submit: () => { mySubmit++ } },
+        useInput: (sel) => sel({ draft: '我自己的话' }),
+      }))
+    })
+    await flush()
+    const noteToolBtn = Array.from(h.querySelectorAll('.ac-tools button')).find((b) => b.textContent.indexOf('留言') === 0)
+    await act(async () => { noteToolBtn.click() })
+    await flush()
+    const btn = Array.from(h.querySelectorAll('.ac-lib-head button')).find((b) => b.textContent.includes('交给 AI'))
+    ok('第二次挂载里也有那个按钮（否则下面两条是空断言）', !!btn)
+    // 注意：自动补引用的 effect（见 [4n]）**已经**调过 setDraft 把 @n1 @n2 补进来了 ——
+    // 那是另一件事。这里只看「点这个按钮有没有再多写一次」，所以取点击前后的差值。
+    const callsBefore = myDraftCalls
+    await act(async () => { btn.click() })
+    await flush()
+    eq('已经打了字就不动它（这个按钮一次 setDraft 都没加）', myDraftCalls - callsBefore, 0)
+    eq('但照样提交', mySubmit, 1)
+    await act(async () => { r.unmount() })
+    h.remove()
+  }
 
   const rows = () => Array.from(notesPanel()?.querySelectorAll('.ac-lib-row') || [])
   const n1Row = () => rows().find((r) => r.textContent.indexOf('n1') >= 0)
@@ -1483,22 +1524,37 @@ console.log('\n[4k] 用户要求移除「放入输入框」的横条：不再占
     Object.keys(captured))
   ok('横条的样式也一并去掉', insertedCss.indexOf('.ac-pending') < 0)
 }
-console.log('\n[4l] 写完留言自动把上下文块放进输入框（无需点按钮）')
+console.log('\n[4l] 写完留言**不**动输入框：留言只走注入，要发给 AI 用清单那个按钮')
 {
+  // 这一节从前断言的是「写完留言自动把 @id 补进草稿」。那个机制已经移除（见 studio.ts 里
+  // 「留言不进输入框」那段注释）：它和 promptText 的注入在送同一件事，而且让「输入框是空的」
+  // 这个状态根本不存在。现在锁的是新契约：**留言不许碰草稿**，要发就用清单头部那个按钮。
   const AUTO_MODEL = {
     nodes: [
-      // 故意带一条已有留言：textarea 的 placeholder 就是它，选择器和 [4c] 一致
       { id: 'a1', label: '节点甲', shape: 'rect', group: null, x: 0, y: 0, note: '这里为什么不用队列？', noteDone: false },
     ],
     edges: [], groups: [], direction: 'TD', extras: [],
   }
   const prevRespondAuto = respond
   const autoModel = JSON.parse(JSON.stringify(AUTO_MODEL))
+  const autoSets = []
   respond = function (method, args) {
     if (method === 'doc:get') return fullDoc({ model: autoModel, nodeCount: autoModel.nodes.length })
+    if (method === 'doc:set') {
+      autoSets.push(args.model)
+      autoModel.nodes = args.model.nodes
+      return fullDoc({ model: args.model, nodeCount: args.model.nodes.length, revision: 2, updatedBy: 'user' })
+    }
     return prevRespondAuto(method, args)
   }
-  let autoDraft = null
+  const drafts = []
+  // 留言框只能按**标签**找：它的 placeholder 是一句固定的例句，不是留言内容
+  // （从前这条断言用 placeholder 找，靠的是例句里恰好有「这里为什么不用队列？」—— 运气好而已）
+  const noteArea = (h) => {
+    const f = Array.from(h.querySelectorAll('.ac-dock .ac-field'))
+      .find((el) => (el.querySelector('label')?.textContent || '').indexOf('留言') === 0)
+    return f && f.querySelector('textarea')
+  }
   const USER_TEXT = '我本来打了一半的话'
   const aHost = document.createElement('div')
   document.body.appendChild(aHost)
@@ -1506,8 +1562,8 @@ console.log('\n[4l] 写完留言自动把上下文块放进输入框（无需点
   await act(async () => {
     aRoot.render(React.createElement(captured['conversation.view'], {
       cwd: UI, sessionId: 's1', useSessions: () => UI,
-      inputActions: { setDraft: (t) => { autoDraft = t } },
-      // 草稿里已经有用户打的字 —— 自动追加必须**保住**它们
+      inputActions: { setDraft: (t) => { drafts.push(t) }, submit: () => {} },
+      // 草稿里已经有用户打的字 —— 新契约是「一个字都别动它」
       useInput: (sel) => sel({ draft: USER_TEXT }),
     }))
   })
@@ -1516,17 +1572,15 @@ console.log('\n[4l] 写完留言自动把上下文块放进输入框（无需点
   const aNodeEl = Array.from(aHost.querySelectorAll('g.ac-node'))
     .find((g) => (g.textContent || '').indexOf('节点甲') >= 0)
   ok('画布上找得到那个节点', !!aNodeEl)
-  await act(async () => {
-    clickEl(aNodeEl)
-  })
+  await act(async () => { clickEl(aNodeEl) })
   await flush()
 
-  const aArea = aHost.querySelector('textarea[placeholder*="这里为什么不用队列"]')
+  const aArea = noteArea(aHost)
   ok('检查器里出现留言输入框', !!aArea)
   if (aArea) {
     const setAreaValueAuto = Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, 'value').set
     await act(async () => {
-      setAreaValueAuto.call(aArea, '这条留言应该自动变成上下文块')
+      setAreaValueAuto.call(aArea, '这条留言应该只走注入')
       aArea.dispatchEvent(new dom.window.Event('input', { bubbles: true }))
     })
     await flush()
@@ -1535,14 +1589,24 @@ console.log('\n[4l] 写完留言自动把上下文块放进输入框（无需点
     })
     await flush()
   }
-  ok('写完留言**自动**调用了 setDraft（没点任何按钮）', autoDraft !== null, autoDraft)
-  // 分隔符是**空格**不是换行：这些 `@id` 在草稿里是行内文本节点，用 `\n` 就会
-  // 每写一条留言多占一行（用户报的「多个留言引用会自己换行」）。
-  eq('草稿 = 用户原本打的字 + 空格 + 一个 @节点id', autoDraft, USER_TEXT + ' @a1')
-  ok('负向对照：自动追加里一个换行都没有', String(autoDraft || '').indexOf('\n') < 0, autoDraft)
-  ok('用户原本打的字还在最前面（追加而非替换）', String(autoDraft || '').indexOf(USER_TEXT) === 0, autoDraft)
+  // 正向对照先立住：留言**真的**写进了模型 —— 否则下面那条「没动草稿」是空转
+  ok('留言确实写进了模型（正向对照）',
+    autoSets.length > 0 && autoSets[autoSets.length - 1].nodes.some((n) => n.id === 'a1' && n.note === '这条留言应该只走注入'),
+    autoSets.length)
+  eq('而输入框一个字符都没被碰', drafts.length, 0)
+
+  // 唯一一条「发给 AI」的路：清单头部的按钮（空输入框也能发，见 [4c] 3b）
+  const aNoteBtn = Array.from(aHost.querySelectorAll('.ac-tools button')).find((b) => b.textContent.indexOf('留言') === 0)
+  ok('工具条里有留言按钮（否则下面那条是空转）', !!aNoteBtn)
+  if (aNoteBtn) {
+    await act(async () => { aNoteBtn.click() })
+    await flush()
+  }
+  ok('留言清单里有「交给 AI」按钮 —— 那是唯一一条发出去的路',
+    !!Array.from(aHost.querySelectorAll('.ac-lib-head button')).find((b) => b.textContent.includes('交给 AI')))
 
   await act(async () => { aRoot.unmount() })
+  aHost.remove()
   respond = prevRespondAuto
 }
 
@@ -1619,145 +1683,98 @@ console.log('\n[4m] 端口的硬约束：绝不许越过方块边界（悬空连
   respond = prevRespondShort
 }
 
-console.log('\n[4n] 未办留言自动进输入框：一次补全、不重复、删了不追着加、已解决的不进')
+console.log('\n[4n] 输入框再也不被留言碰：挂载 / 写新留言 / 标记已解决，全程一次 setDraft 都不调')
 {
-  // 这批断言盯的是 studio.ts 里那条「待办集合变了就自动补引用」的 effect。
-  // 用户要的是：不再有按钮，未办留言**自己**就是输入框里的上下文块。
-  const AUTO_NOTE_MODEL = {
+  // 这一节原来盯的是「待办集合变了就自动补引用」那条 effect 的一堆边界（一次补全、
+  // 不重复、删了不追着加、已解决的不进）。那个机制整体移除了，所以这里反过来锁新契约：
+  // **留言相关的任何动作都不许碰草稿**。每一条负向断言前面都先立一个正向对照
+  // （留言真的写进去了），否则「没动草稿」在实现整个坏掉时照样能过。
+  const NOTE_MODEL = {
     nodes: [
       { id: 'x1', label: '甲', shape: 'rect', group: null, x: 0, y: 0, note: '未办一', noteDone: false },
-      { id: 'x2', label: '乙', shape: 'rect', group: null, x: 160, y: 0, note: '已办的', noteDone: true },
       { id: 'x3', label: '丙', shape: 'rect', group: null, x: 320, y: 0, note: '未办二', noteDone: false },
     ],
     edges: [], groups: [], direction: 'TD', extras: [],
   }
-  const prevRespondAutoNote = respond
-  const autoNoteModel = JSON.parse(JSON.stringify(AUTO_NOTE_MODEL))
+  const prevRespondNote = respond
+  let curNoteModel = JSON.parse(JSON.stringify(NOTE_MODEL))
+  const sets = []
   respond = function (method, args) {
-    if (method === 'doc:get') return fullDoc({ model: autoNoteModel, nodeCount: autoNoteModel.nodes.length })
-    return prevRespondAutoNote(method, args)
+    if (method === 'doc:get') return fullDoc({ model: curNoteModel, nodeCount: curNoteModel.nodes.length })
+    if (method === 'doc:set') {
+      sets.push(args.model)
+      curNoteModel = args.model
+      return fullDoc({ model: args.model, nodeCount: args.model.nodes.length, revision: 2, updatedBy: 'user' })
+    }
+    return prevRespondNote(method, args)
   }
 
-  const USER_TYPED = '我本来打了一半的话'
-  const mount = async (draftSeed) => {
-    const calls = []
-    const host = document.createElement('div')
-    document.body.appendChild(host)
-    const root = createRoot(host)
-    await act(async () => {
-      root.render(React.createElement(captured['conversation.view'], {
-        cwd: UI, sessionId: 's1', useSessions: () => UI,
-        inputActions: { setDraft: (t) => { calls.push(t) } },
-        useInput: (sel) => sel({ draft: draftSeed }),
-      }))
-    })
+  const drafts = []
+  // 留言框只能按**标签**找：它的 placeholder 是一句固定的例句，不是留言内容
+  // （从前这条断言用 placeholder 找，靠的是例句里恰好有「这里为什么不用队列？」—— 运气好而已）
+  const noteArea = (h) => {
+    const f = Array.from(h.querySelectorAll('.ac-dock .ac-field'))
+      .find((el) => (el.querySelector('label')?.textContent || '').indexOf('留言') === 0)
+    return f && f.querySelector('textarea')
+  }
+  const host = document.createElement('div')
+  document.body.appendChild(host)
+  const root = createRoot(host)
+  // 留言相关的写入都经过 RPC，落定要看下一拍
+  const settle = async () => {
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)) })
     await flush()
-    return { host, root, calls }
   }
-
-  // a. 挂载即自动补：两条未办一次性补进去，已解决的不进
-  const first = await mount(USER_TYPED)
-  eq('挂载就把未办留言补进草稿（一次调用）', first.calls.length, 1)
-  const filled = first.calls[0] || ''
-  ok('用户原本打的字原样留在最前面', filled.indexOf(USER_TYPED) === 0, filled)
-  ok('两条未办都补进来了', filled.indexOf('@x1') >= 0 && filled.indexOf('@x3') >= 0, filled)
-  ok('已解决的那条不进草稿', filled.indexOf('@x2') < 0, filled)
-  eq('引用之间是空格，不换行（同一行里排开）',
-    filled.split('\n').filter((ln) => ln.indexOf('@') >= 0).length, 1)
-  await act(async () => { first.root.unmount() })
-  first.host.remove()
-
-  // b. 负向对照：草稿里**已经**有这两条时，一个字符都不动 —— 否则每次重挂都会追加一遍
-  const already = await mount(USER_TYPED + ' @x1 @x3')
-  eq('全都在草稿里时不再调用 setDraft', already.calls.length, 0)
-  await act(async () => { already.root.unmount() })
-  already.host.remove()
-
-  // c. 负向对照：用户手动删掉一个引用后，同一批待办**不会**被追着加回来。
-  //    否则「删掉」这个动作在界面上等于没发生 —— 那不是自动，那是按键精灵。
-  //    做法：先让 effect 按「x1 单独一条」这一批跑过一次，再让这一批的两条都出现。
-  const SIG_MODEL = JSON.parse(JSON.stringify(AUTO_NOTE_MODEL))
-  SIG_MODEL.nodes[2].note = ''      // 先把 x3 的留言摘掉 → 这一批只有 x1
-  autoNoteModel.nodes = SIG_MODEL.nodes
-  const partial = await mount('我打的字')
-  eq('第一批（只有 x1）补了一次', partial.calls.length, 1)
-  await act(async () => { partial.root.unmount() })
-  partial.host.remove()
-  // 再把 x3 的留言放回来，但草稿里已经被用户删得只剩 x1
-  autoNoteModel.nodes[2].note = '未办二'
-  const afterDelete = await mount('我打的字 @x1')
-  eq('换了一批之后只补缺的那一条（@x3）', afterDelete.calls.length, 1)
-  eq('补的是缺的那一条，不重复 @x1', afterDelete.calls[0], '我打的字 @x1 @x3')
-  await act(async () => { afterDelete.root.unmount() })
-  afterDelete.host.remove()
-
-  // d. 回归：待办被清空之后，**同一个实例 / 同一个节点**上再写一条留言，照样要自动进输入框。
-  //
-  //    注意这条**必须在同一个已挂载的实例里**走完「写 → 清 → 再写」：autoFilledRef 是 useRef，
-  //    每次重新挂载都是新的空签名，卸载重挂是复现不出来的（第一版就是这么写成了空转断言 ——
-  //    把修复撤掉它照样通过，白测了）。所以这里用检查器真写三条留言，让 model 状态自己变。
-  const CYCLE_MODEL = {
-    nodes: [{ id: 'z1', label: '节点子', shape: 'rect', group: null, x: 0, y: 0, note: '', noteDone: false }],
-    edges: [], groups: [], direction: 'TD', extras: [],
-  }
-  const prevRespondCycle = respond
-  const cycleModel = JSON.parse(JSON.stringify(CYCLE_MODEL))
-  respond = function (method, args) {
-    if (method === 'doc:get') return fullDoc({ model: cycleModel, nodeCount: cycleModel.nodes.length })
-    if (method === 'doc:set') { cycleModel.nodes = args.model.nodes; return fullDoc({ model: args.model, revision: 9, updatedBy: 'user' }) }
-    return prevRespondCycle(method, args)
-  }
-  const cycCalls = []
-  const cycHost = document.createElement('div')
-  document.body.appendChild(cycHost)
-  const cycRoot = createRoot(cycHost)
   await act(async () => {
-    cycRoot.render(React.createElement(captured['conversation.view'], {
+    root.render(React.createElement(captured['conversation.view'], {
       cwd: UI, sessionId: 's1', useSessions: () => UI,
-      inputActions: { setDraft: (t) => { cycCalls.push(t) } },
+      inputActions: { setDraft: (t) => { drafts.push(t) }, submit: () => {} },
       useInput: (sel) => sel({ draft: '我打的字' }),
     }))
   })
   await flush()
-  eq('开局没有留言 → 一个引用也不补', cycCalls.length, 0)
+  await settle()
+  eq('挂载时（图上已有两条未办留言）一次 setDraft 都没调', drafts.length, 0)
 
-  const cycNodeEl = Array.from(cycHost.querySelectorAll('g.ac-node'))
-    .find((g) => (g.textContent || '').indexOf('节点子') >= 0)
-  await act(async () => {
-    clickEl(cycNodeEl)
+  // a. 写一条新留言
+  const nodeEl = Array.from(host.querySelectorAll('g.ac-node')).find((g) => (g.textContent || '').indexOf('甲') >= 0)
+  ok('找得到节点（否则下面的断言是空转）', !!nodeEl)
+  await act(async () => { clickEl(nodeEl) })
+  await flush()
+  const area = noteArea(host)
+  ok('检查器里出现留言输入框', !!area)
+  const setAreaValue = Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, 'value').set
+  if (area) await act(async () => {
+    setAreaValue.call(area, '新写的一条')
+    area.dispatchEvent(new dom.window.Event('input', { bubbles: true }))
   })
   await flush()
-  const cycArea = () => cycHost.querySelector('.ac-dock textarea[placeholder*="这里为什么不用队列"]')
-  ok('检查器里出现留言输入框', !!cycArea())
-  const setCycValue = Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, 'value').set
-  const writeNote = async (text) => {
-    await act(async () => {
-      setCycValue.call(cycArea(), text)
-      cycArea().dispatchEvent(new dom.window.Event('input', { bubbles: true }))
-    })
+  if (area) await act(async () => { area.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true })) })
+  await flush()
+  await settle()
+  ok('留言确实写进去了（正向对照）',
+    sets.length > 0 && sets[sets.length - 1].nodes.some((n) => n.id === 'x1' && n.note === '新写的一条'),
+    sets.length)
+  eq('写完留言，输入框仍然一次都没被碰', drafts.length, 0)
+
+  // b. 标记已解决
+  const doneBtn = Array.from(host.querySelectorAll('.ac-note-actions button'))
+    .find((b) => b.textContent.indexOf('标记已解决') === 0)
+  ok('找得到「标记已解决」按钮（否则下面那条是空转）', !!doneBtn)
+  const before = sets.length
+  if (doneBtn) {
+    await act(async () => { doneBtn.click() })
     await flush()
-    await act(async () => {
-      cycArea().dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
-    })
-    await flush()
+    await settle()
   }
+  ok('已解决确实写进去了（正向对照）',
+    sets.length > before && sets[sets.length - 1].nodes.some((n) => n.id === 'x1' && n.noteDone === true),
+    { before: before, after: sets.length })
+  eq('标记已解决也不碰输入框', drafts.length, 0)
 
-  await writeNote('第一条留言')
-  eq('写完第一条 → 自动补一次', cycCalls.length, 1)
-  eq('补的是那一条', cycCalls[0], '我打的字 @z1')
-
-  await writeNote('')          // 清空：待办集合变空
-  eq('清空留言时不再补引用', cycCalls.length, 1)
-
-  await writeNote('第二条留言') // 同一个实例、同一个节点，再写一条
-  eq('同一个节点上重新写留言 → 仍然要自动补进输入框', cycCalls.length, 2)
-  eq('补的是重新写的那一条', cycCalls[1], '我打的字 @z1')
-
-  await act(async () => { cycRoot.unmount() })
-  cycHost.remove()
-  respond = prevRespondCycle
-
-  respond = prevRespondAutoNote
+  await act(async () => { root.unmount() })
+  host.remove()
+  respond = prevRespondNote
 }
 console.log('\n[4o] Esc 两段式：第一下只拿焦点，第二下才关编辑页')
 {
@@ -2174,28 +2191,48 @@ console.log('\n[4r] 客户端逻辑审计的修复：自动布局不许丢字段
     ],
     edges: [], groups: [{ id: 'AI端', label: 'AI 端' }], direction: 'TD', extras: [],
   }
-  const groupInput = (host) => {
-    const fields = Array.from(host.querySelectorAll('.ac-dock .ac-field'))
-    const f = fields.find((el) => (el.querySelector('label')?.textContent || '').indexOf('分组') === 0)
+  const groupField = (host) => Array.from(host.querySelectorAll('.ac-dock .ac-field'))
+    .find((el) => (el.querySelector('label')?.textContent || '').indexOf('分组') === 0)
+  const groupSelect = (host) => groupField(host)?.querySelector('select')
+  // 「新组名字」那一格只在选到「＋ 新建组…」时才存在
+  const groupNameInput = (host) => {
+    const f = Array.from(host.querySelectorAll('.ac-dock .ac-field'))
+      .find((el) => (el.querySelector('label')?.textContent || '').indexOf('新组名字') === 0)
     return f && f.querySelector('input')
   }
+  const optTexts = (sel) => Array.from(sel.querySelectorAll('option')).map((o) => o.textContent)
+  const pickOption = async (sel, value) => {
+    const d = Object.getOwnPropertyDescriptor(dom.window.HTMLSelectElement.prototype, 'value').set
+    d.call(sel, value)
+    await act(async () => { sel.dispatchEvent(new dom.window.Event('change', { bubbles: true })) })
+    await flush()
+  }
+  const typeName = async (input, v) => {
+    await act(async () => { setNativeValue(input, v, dom.window.HTMLInputElement.prototype) })
+    await flush()
+    await act(async () => { input.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true })) })
+    await flush()
+  }
   await mountModel(GRP_MODEL, '', async ({ host, sets }) => {
-    // 选中第二个节点，把它的分组写成带空格的 "AI 端"
-    const g2 = Array.from(host.querySelectorAll('g.ac-node')).find((el) => (el.textContent || '').indexOf('乙') >= 0)
-    await act(async () => {
-      clickEl(g2)
-    })
+    const nodeOf = (t) => Array.from(host.querySelectorAll('g.ac-node')).find((el) => (el.textContent || '').indexOf(t) >= 0)
+
+    // ---- A. 三态都在：不分组 / 现有组（带成员数）/ 新建 ----
+    await act(async () => { clickEl(nodeOf('乙')) })
     await flush()
-    const input = groupInput(host)
-    ok('检查器里有分组输入框', !!input)
+    const sel = groupSelect(host)
+    ok('检查器里的分组是一个下拉框', !!sel)
+    eq('下拉框的值就是节点当前的组（乙没组 → 空）', sel.value, '')
+    const texts = optTexts(sel)
+    ok('第 1 项是「不属于任何组」', texts[0] === '不属于任何组', texts)
+    ok('列出了现有组，并且带成员数', texts.indexOf('AI 端（1）') >= 0, texts)
+    eq('最后一项是「＋ 新建组…」', texts[texts.length - 1], '＋ 新建组…')
+
+    // ---- B. 新建：id 洗过、label 保留原话 ----
+    await pickOption(sel, '#new')
+    ok('选了「新建组」才出现名字输入框', !!groupNameInput(host))
     // 用一个**全新的**名字：没有任何已有组能按标签认领，所以这里考的就是 id 清洗本身
-    // （第一版用 'AI 端'，而"按标签认领已有组"那条分支单独就能过 —— 考不到清洗，白测了）
-    await act(async () => { setNativeValue(input, '数据 层', dom.window.HTMLInputElement.prototype) })
-    await flush()
-    await act(async () => {
-      input.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
-    })
-    await flush()
+    await typeName(groupNameInput(host), '数据 层')
+    ok('新建过之后名字框收起来了', !groupNameInput(host))
     const sent = sets[sets.length - 1]
     const node = sent && sent.nodes.find((x) => x.id === 'g2')
     ok('新组的 id 不含空格（含空格会把 subgraph 语法写坏）',
@@ -2204,23 +2241,68 @@ console.log('\n[4r] 客户端逻辑审计的修复：自动布局不许丢字段
     ok('label 保留用户打的原话（给人看的名字不用洗）',
       !!(sent && sent.groups.find((g) => g.id === '数据_层' && g.label === '数据 层')),
       sent && sent.groups)
-    // 再走一遍"认领已有组"：把它写成已有的 'AI 端'，应当对上已有组的 id 'AI端'，不该凭空多一个
-    const g1 = Array.from(host.querySelectorAll('g.ac-node')).find((el) => (el.textContent || '').indexOf('甲') >= 0)
-    await act(async () => {
-      clickEl(g1)
-    })
+
+    // ---- C. 认领：名字撞上已有组的标签，不该凭空多一个组 ----
+    await act(async () => { clickEl(nodeOf('甲')) })
     await flush()
-    const input2 = groupInput(host)
-    await act(async () => { setNativeValue(input2, 'AI 端', dom.window.HTMLInputElement.prototype) })
-    await flush()
-    await act(async () => {
-      input2.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
-    })
-    await flush()
+    eq('已属于某个组时，下拉框选中的是那个组', groupSelect(host).value, 'AI端')
+    await pickOption(groupSelect(host), '#new')
+    await typeName(groupNameInput(host), 'AI 端')
     const sent2 = sets[sets.length - 1]
     const node1 = sent2 && sent2.nodes.find((x) => x.id === 'g1')
     eq('按标签认领已有组：打 "AI 端" 对上 id "AI端"（不是凭空多一个）', node1 && node1.group, 'AI端')
     eq('组总数不变（没有多出第二个 AI 组）', sent2 && sent2.groups.length, 2)
+
+    // ---- D. 选一个现有组：这是接线的老毛病，值得一条断言 ----
+    //    `mountModel` 每次都换一份桩模型，所以这里先把「乙」放回一个已存在的组里再验下拉框。
+    await act(async () => { clickEl(nodeOf('乙')) })
+    await flush()
+    await pickOption(groupSelect(host), 'AI端')
+    const sent3 = sets[sets.length - 1]
+    eq('选现有组 → 直接落到那个组 id 上', sent3 && sent3.nodes.find((x) => x.id === 'g2').group, 'AI端')
+    // 反向：选「不属于任何组」要真的移出（值回到空串，节点 group 变 null）
+    await pickOption(groupSelect(host), '')
+    const sent4 = sets[sets.length - 1]
+    eq('选「不属于任何组」→ 节点的 group 变成 null',
+      sent4 && sent4.nodes.find((x) => x.id === 'g2').group, null)
+  })
+
+  // ---- D3. 真实的危险案例：宿主与客户端对同一个名字**洗得不一样**
+  //   两条路的规则本来就不是一套：
+  //     宿主 `cleanId`：不在 [A-Za-z0-9_] 里的字符**一律换成 '_'**（'数据-层' → '数据_层'）
+  //     客户端 `groupKeyOf`：空格换成 '_'，但 `-` `+` `.` 这些标点**原样留着**（→ '数据-层'）
+  //   所以文件里真会出现 `subgraph 数据_层["数据-层"]`。用户在检查器里再打一次同样的名字，
+  //   必须**按 label 认领**那个已经是同一组的组 —— 否则图上凭空多一个同名组，结构被分成两半。
+  //   （第一版这里用的是 'AI 端'，而空格两边都洗成 '_'，于是这条断言在没有认领逻辑时照样过 ——
+  //    空转。负向对照抓出来的。）
+  const DUAL_MODEL = {
+    nodes: [{ id: 'd1', label: '丁', shape: 'rect', group: null, x: 0, y: 0 }],
+    edges: [], groups: [{ id: '数据_层', label: '数据-层' }], direction: 'TD', extras: [],
+  }
+  await mountModel(DUAL_MODEL, '', async ({ host, sets }) => {
+    await act(async () => { clickEl(Array.from(host.querySelectorAll('g.ac-node'))[0]) })
+    await flush()
+    await pickOption(groupSelect(host), '#new')
+    await typeName(groupNameInput(host), '数据-层')
+    const sent = sets[sets.length - 1]
+    eq('两边洗法不一致时也要认领已有组（否则图上多一个同名组）',
+      sent && sent.nodes.find((n) => n.id === 'd1').group, '数据_层')
+    eq('组数没有变多', sent && sent.groups.length, 1)
+  })
+
+  // ---- D2. 负向对照：节点指着一个**不在 groups 里**的组（文件手改过 / 组被删过），
+  //   下拉框必须也把它列出来 —— 否则 select 找不到匹配项会退回显示第一项，界面就在说谎。
+  const ORPHAN_MODEL = {
+    nodes: [{ id: 'o1', label: '孤儿', shape: 'rect', group: '没这个组', x: 0, y: 0 }],
+    edges: [], groups: [], direction: 'TD', extras: [],
+  }
+  await mountModel(ORPHAN_MODEL, '', async ({ host }) => {
+    await act(async () => { clickEl(Array.from(host.querySelectorAll('g.ac-node'))[0]) })
+    await flush()
+    const sel = groupSelect(host)
+    eq('孤儿组的 id 真的被选中了（不是掉回第一项）', sel.value, '没这个组')
+    ok('下拉框里有它，并标明组已不存在',
+      optTexts(sel).some((t) => t.indexOf('没这个组') >= 0 && t.indexOf('组已不存在') >= 0), optTexts(sel))
   })
 
   // ---- E. 无穿透：自环不许捅穿自己；两个方块几乎重叠时线也不许消失 ----
@@ -2296,14 +2378,18 @@ console.log('\n[4r] 客户端逻辑审计的修复：自动布局不许丢字段
       /^M /.test(ds[0]) && ds[0].indexOf('L') >= 0, ds[0])
   })
 
-  // ---- F. @ 引用按词边界匹配：草稿里有 @c11 不能把 @c1 吃掉 ----
+  // ---- F. 留言**不再**自动补进草稿：草稿里写了什么，挂载后就是什么 ----
+  // 从前这里考的是 `draftHasRef` 的词边界（`@c11` 不能把 `@c1` 吃掉）。那个自动补引用的
+  // 机制连同 `draftHasRef` 一起移除了（见 studio.ts「留言不进输入框」那段注释），
+  // 所以现在锁的是更简单的一条：**留言在图上、草稿一个字都不动**。
   const REF_MODEL = {
     nodes: [{ id: 'c1', label: '节点丙一', shape: 'rect', group: null, x: 0, y: 0, note: '待办', noteDone: false }],
     edges: [], groups: [], direction: 'TD', extras: [],
   }
   await mountModel(REF_MODEL, '@c11', async ({ calls }) => {
-    eq('草稿里的 @c11 不该把 @c1 吃掉 → 仍然补了一次', calls.length, 1)
-    ok('补进去的是带词边界的 @c1', calls[0] === '@c11 @c1', calls[0])
+    eq('草稿里有 @c11、图上有一条未办留言 —— setDraft 一次都不调', calls.length, 0)
+    ok('而那条留言确实在图上（正向对照，否则上一条是空转）',
+      (REF_MODEL.nodes[0].note || '') === '待办')
   })
 
   // ---- G. 详情面板在「点选」抬手时才展开；拖动（含手抖）不该把它顶出来 ----
@@ -2698,6 +2784,85 @@ console.log('\n[4u] 描边亮度与组配色：描边不再用「边框」令牌
   p2.host.remove()
 
   respond = prevR
+}
+
+console.log('\n[4v] 展开态的组框整块可拖：拖背景带走整组，拖按钮不带走')
+{
+  // 用户的原话：「我希望展开的时候，节点组的背景也能被捕捉并移动」。
+  // 折叠态那个块早就能拖，展开态从前只能平移画布 —— 同一个东西一个能拖一个不能。
+  const GMODEL = {
+    nodes: [
+      { id: 'm1', label: '组内一', shape: 'rect', group: 'g1', x: 100, y: 100 },
+      { id: 'm2', label: '组内二', shape: 'rect', group: 'g1', x: 260, y: 100 },
+      { id: 'out1', label: '组外', shape: 'rect', group: null, x: 560, y: 320 },
+    ],
+    edges: [], groups: [{ id: 'g1', label: '一组' }], direction: 'TD', extras: [],
+  }
+  const prevRespondV = respond
+  let curV = JSON.parse(JSON.stringify(GMODEL))
+  let vSets = 0
+  respond = function (method, args) {
+    if (method === 'doc:get') return fullDoc({ model: curV, nodeCount: curV.nodes.length, groupCount: curV.groups.length })
+    if (method === 'doc:set') { vSets++; curV = args.model; return fullDoc({ model: curV, nodeCount: curV.nodes.length, revision: 2, updatedBy: 'user' }) }
+    return prevRespondV(method, args)
+  }
+  const vHost = document.createElement('div')
+  document.body.appendChild(vHost)
+  const vRoot = createRoot(vHost)
+  await act(async () => {
+    vRoot.render(React.createElement(captured['conversation.view'], {
+      cwd: UI, sessionId: 's1', useSessions: () => UI,
+    }))
+  })
+  await flush()
+  const vSvg = vHost.querySelector('svg.ac-svg')
+  const groupBox = vHost.querySelector('rect.ac-group-box')
+  ok('展开态下组框存在（前置条件，否则下面全是空转）', !!groupBox && !!vSvg)
+
+  // a. 拖组框背景 → 组内两个节点移动**同一个位移**，组外的节点一个像素都不动
+  const before = JSON.parse(JSON.stringify(curV))
+  const setsBefore = vSets
+  await act(async () => {
+    groupBox.dispatchEvent(new dom.window.PointerEvent('pointerdown', { bubbles: true, button: 0, clientX: 150, clientY: 110 }))
+    vSvg.dispatchEvent(new dom.window.PointerEvent('pointermove', { bubbles: true, clientX: 260, clientY: 200 }))
+    vSvg.dispatchEvent(new dom.window.PointerEvent('pointerup', { bubbles: true, button: 0, clientX: 260, clientY: 200 }))
+  })
+  await flush()
+  const nodeOfV = (m, id) => m.nodes.find((n) => n.id === id)
+  const d1 = { x: nodeOfV(curV, 'm1').x - nodeOfV(before, 'm1').x, y: nodeOfV(curV, 'm1').y - nodeOfV(before, 'm1').y }
+  const d2 = { x: nodeOfV(curV, 'm2').x - nodeOfV(before, 'm2').x, y: nodeOfV(curV, 'm2').y - nodeOfV(before, 'm2').y }
+  ok('拖组框真的写盘了（否则下面全是空转）', vSets > setsBefore)
+  ok('组内两个节点都被带走了', (d1.x !== 0 || d1.y !== 0) && (d2.x !== 0 || d2.y !== 0), { d1, d2 })
+  eq('而且位移完全一致（整组平移，不是各走各的）—— x', d1.x, d2.x)
+  eq('而且位移完全一致 —— y', d1.y, d2.y)
+  eq('组外的节点 x 一个像素都不动（负向对照）', nodeOfV(curV, 'out1').x, nodeOfV(before, 'out1').x)
+  eq('组外的节点 y 一个像素都不动（负向对照）', nodeOfV(curV, 'out1').y, nodeOfV(before, 'out1').y)
+  ok('负向对照：拖动**不**折叠（组框还在）', !!vHost.querySelector('rect.ac-group-box'))
+
+  // b. 拖那个收起按钮 → 不许把整组拖走（openFold 有 stopPropagation），只换折叠态
+  const before2 = JSON.parse(JSON.stringify(curV))
+  const setsBefore2 = vSets
+  const vBtn = vHost.querySelector('g.ac-group-btn')
+  ok('收起按钮还在（否则下面那条是空转）', !!vBtn)
+  await act(async () => {
+    vBtn.dispatchEvent(new dom.window.PointerEvent('pointerdown', { bubbles: true, button: 0, clientX: 150, clientY: 110 }))
+    vSvg.dispatchEvent(new dom.window.PointerEvent('pointermove', { bubbles: true, clientX: 300, clientY: 240 }))
+    vSvg.dispatchEvent(new dom.window.PointerEvent('pointerup', { bubbles: true, button: 0, clientX: 300, clientY: 240 }))
+  })
+  await flush()
+  eq('拖收起按钮不会写盘（没把组拖走）', vSets, setsBefore2)
+  eq('组内节点 x 一点没变', nodeOfV(curV, 'm1').x, nodeOfV(before2, 'm1').x)
+  eq('组内节点 y 一点没变', nodeOfV(curV, 'm1').y, nodeOfV(before2, 'm1').y)
+  ok('而它确实折叠了（说明按钮本身还是工作的）', !!vHost.querySelector('g.ac-fold'))
+
+  // c. 样式表里那两条 cursor —— jsdom 不算层叠样式，只能断言规则本身
+  ok('组框与组名都是 cursor:move（不是那个骗人的 pointer）',
+    insertedCss.indexOf('.ac-group-box{') >= 0 && /\.ac-group-box\{[^}]*cursor:move/.test(insertedCss)
+    && /\.ac-group-lbl\{[^}]*cursor:move/.test(insertedCss))
+
+  await act(async () => { vRoot.unmount() })
+  vHost.remove()
+  respond = prevRespondV
 }
 
 console.log('\n[7] 卸载不留尾')

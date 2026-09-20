@@ -120,22 +120,6 @@ function studioMemoFor(key, create) {
   return m
 }
 
-/**
- * 草稿里有没有这个节点的引用。**必须按词边界判**，不能用 `indexOf('@' + id)`：
- * 草稿里有 `@c11` 时 `@c1` 会被误判成「已经在了」，于是 c1 的未办留言永远进不了输入框。
- * 这一个口子同时管着自动补引用与写完留言时的去重。
- */
-function draftHasRef(draft, id) {
-  var s = String(id == null ? '' : id)
-  if (!s) return false
-  var esc = s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  try {
-    return new RegExp('(^|[^\\w-])@' + esc + '(?![\\w-])').test(String(draft == null ? '' : draft))
-  } catch (e) {
-    return String(draft == null ? '' : draft).indexOf('@' + s) >= 0
-  }
-}
-
 function ArchStudio(props) {
   var cwd = props && props.cwd
   var cwdRef = React.useRef(cwd)
@@ -281,9 +265,14 @@ function ArchStudio(props) {
   var dragHint = hintState[0]
   var setDragHint = hintState[1]
 
+  // 分组：下拉框选「不属于任何组 / 某个已有组 / ＋ 新建组…」，只在选到「新建」时才用得上那个名字框。
+  // 用 '#new' 当哨兵：'#' 是 groupKeyOf 唯一会剥掉、而组 id 里**绝不可能出现**的字符，撞不上真 id。
   var grpState = React.useState('')
-  var groupDraft = grpState[0]
-  var setGroupDraft = grpState[1]
+  var groupPick = grpState[0]
+  var setGroupPick = grpState[1]
+  var grpNewState = React.useState('')
+  var groupNewName = grpNewState[0]
+  var setGroupNewName = grpNewState[1]
 
   var elabState = React.useState('')
   var edgeDraft = elabState[0]
@@ -349,8 +338,6 @@ function ArchStudio(props) {
   var taRef = React.useRef(null)
   // 源码页整页只有一个滚动口，就是它（见 runtime.ts 的 .ac-textwrap）。
   var textWrapRef = React.useRef(null)
-  // 已经自动放进输入框的那一批待办留言（按 id 拼成的签名），防止删掉又被加回来。
-  var autoFilledRef = React.useRef('')
   var histState = React.useState(0)
   var setHistTick = histState[1]
 
@@ -664,39 +651,15 @@ function ArchStudio(props) {
     return function () { el.removeEventListener('wheel', onWheel) }
   }, [tab])
 
-  // ==================== 未办留言自动进输入框 ====================
-  // 用户要的：不再有「放入输入框」那个按钮，**所有未办留言自动**以 `@id` 的形式进草稿。
-  // 只追加缺的那些 —— 既不顶掉正在打的字，也不重复加。
-  //
-  // 触发条件是「待办集合变了」，不是「草稿变了」：后者会在用户手动删掉一个引用之后
-  // 立刻又给他加回来，那不是自动，那是按键精灵。已解决的**不进** —— 它们不该再注入给 AI。
-  React.useEffect(function () {
-    if (!inputActions || typeof inputActions.setDraft !== 'function') return
-    if (!model || !model.nodes) return
-    var ids = []
-    for (var i = 0; i < model.nodes.length; i++) {
-      var n = model.nodes[i]
-      if (n && n.note && !n.noteDone) ids.push(n.id)
-    }
-    if (ids.length === 0) {
-      // 待办清空了，签名也要跟着清 —— 否则「写一条留言 → 清掉 → 在同一个节点上再写一条」
-      // 会撞上同一个签名，effect 以为这一批加过了，新留言永远进不了输入框。
-      autoFilledRef.current = ''
-      return
-    }
-    var sig = ids.join(',')
-    if (autoFilledRef.current === sig) return
-    autoFilledRef.current = sig
-    var cur = String(liveDraft == null ? '' : liveDraft)
-    var add = []
-    for (var j = 0; j < ids.length; j++) {
-      // 必须按**词边界**判，不能用 `indexOf('@' + id)`：草稿里有 `@c11` 时
-      // `@c1` 会被误判成「已经在里面了」，于是 c1 的未办留言永远进不了输入框（审计第 8 条）。
-      if (!draftHasRef(cur, ids[j])) add.push('@' + ids[j])
-    }
-    if (add.length === 0) return
-    inputActions.setDraft(cur.trim() ? cur.replace(/\s+$/, '') + ' ' + add.join(' ') : add.join(' '))
-  }, [model, liveDraft])
+  // ==================== 留言**不**进输入框（2026-09-21 移除） ====================
+  // 这里从前有一个 effect：把当前所有未办留言按 `@id` 自动补进聊天草稿，用户按回车就发出去了。
+  // 它被移除的原因是**它和提示词注入在送同一件事**：`promptText()` 每一步都把未办留言连正文
+  // 一起注入（`src/host/plugin.ts`），所以那串 `@id` 是第二遍搬运。代价却是实的：
+  //   ① 你正要打自己的话，框里先多出一串 `@n1 @n2`；
+  //   ② 它得靠「签名 + 词边界」两套小机制才不至于重复加、不至于把 `@c11` 认成 `@c1`；
+  //   ③ 最要紧的是它让「输入框是空的」这个状态根本不存在 —— 于是「空框也能发」永远测不出来。
+  // 现在只有一条路：清单头部那个「交给 AI (N)」按钮，点一下替你把这一批写成一条消息并发出。
+  // 手动的 `@` 引用源（register.ts 的 inputTriggers）不动 —— 那是用户主动选的，不是自动塞的。
 
   // 卸载与清理：组件卸载时取消待执行的高亮定时器
   React.useEffect(function () {
@@ -933,7 +896,8 @@ function ArchStudio(props) {
     var sp0 = splitLabel(node.label)
     setLabelDraft(sp0.title)
     setDescDraft(sp0.desc)
-    setGroupDraft(node.group || '')
+    setGroupPick(node.group || '')
+    setGroupNewName('')
     setNoteDraft(node.note || '')
     setNoteDoneDraft(node.noteDone === true)
     setFilesDraft((node.files || []).join('\n'))
@@ -1200,7 +1164,8 @@ function ArchStudio(props) {
     setDockOpen(true)
     setLabelDraft('新节点')
     setDescDraft('')
-    setGroupDraft('')
+    setGroupPick('')
+    setGroupNewName('')
     setNoteDraft('')
     setNoteDoneDraft(false)
     setFilesDraft('')
@@ -1234,6 +1199,12 @@ function ArchStudio(props) {
   }
 
   /**
+   * 分组下拉框里「新建组」那一项的哨兵值。挑 '#' 是因为 groupKeyOf 会把 '#' 剥掉，
+   * 所以**任何真实组 id 都不可能是它** —— 哨兵与真 id 不可能撞。
+   */
+  var GROUP_NEW = '#new'
+
+  /**
    * 组 id 不能含空格：`scanNodeRef` 的 ID_RE 遇到空格就停，`subgraph AI 端["AI 端"]`
    * 会被解析成 id=`AI` + 标签=`端["AI 端"]`，下次加载组结构就分裂、往返严重漂移。
    * 宿主侧 `set_group` 会过一遍 `cleanId`，但**检查器这条路是客户端直接改模型** ——
@@ -1244,22 +1215,25 @@ function ArchStudio(props) {
   }
 
   function commitGroup() {
+    // 下拉框的三态：'' = 移出，'#new' = 交给下面那个名字框，其余 = 现有组的 id。
+    // 选「新建」时先一步什么都不做 —— 名字还没打呢。
+    if (groupPick === GROUP_NEW) return
+    applyGroup(groupPick ? groupPick : null, null)
+  }
+
+  /**
+   * 把当前选中的节点放进 `want` 这个组（`want` = null 表示移出）。
+   *
+   * 从前这条路是「一个自由文本框」，于是有三个坑（2026-09-21 按体验反馈改成下拉框）：
+   * ① 用户得**记得**组名，打错一个字就凭空多一个组、图被分成两半；
+   * ② 看不出图上一共有哪些组，也不知道自己现在在哪一个；
+   * ③ 空、已有、新建三种意图挤在同一个输入框里，回车之前分不出来。
+   */
+  function applyGroup(want, newLabel) {
     var s = selRef.current
     var cur = modelRef.current
     if (!s || s.kind !== 'node' || !cur) return
     var next = cloneModel(cur)
-    var raw = groupDraft.trim()
-    var want = null
-    if (raw) {
-      // 先按**现有组的 id 或标签**认领：用户打的是给人看的名字（"AI 端"），
-      // 而 id 早就被洗成 "AI端" 了。不认领就会凭空多出一个同名组、图被分成两半。
-      var pick = groupKeyOf(raw)
-      for (var g0 = 0; g0 < next.groups.length; g0++) {
-        var gg = next.groups[g0]
-        if (gg && (gg.id === pick || gg.label === raw || groupKeyOf(gg.label) === pick)) { want = gg.id; break }
-      }
-      if (!want) want = pick
-    }
     var prev = undefined
     var found = false
     for (var i = 0; i < next.nodes.length; i++) {
@@ -1274,10 +1248,30 @@ function ArchStudio(props) {
       var exists = false
       for (var g = 0; g < next.groups.length; g++) if (next.groups[g].id === want) exists = true
       // label 保留用户打的原话（可以是 "AI 端"），id 用洗干净的那个
-      if (!exists) next.groups.push({ id: want, label: raw })
+      if (!exists) next.groups.push({ id: want, label: newLabel == null ? want : newLabel })
     }
     push(next, '用户改了分组')
     setStatus('已更新分组')
+  }
+
+  /** 「＋ 新建组…」那条路：把名字洗干净当 id，名字已经存在就直接认领那个组。 */
+  function commitNewGroup() {
+    var raw = String(groupNewName || '').trim()
+    if (!raw) return
+    var pick = groupKeyOf(raw)
+    if (!pick) return
+    // 先按现有组的 id 或标签认领：用户打的是给人看的名字（"AI 端"），而 id 早已被洗成 "AI端"。
+    // 不认领就会凭空多出一个同名组、图被分成两半 —— 这条与旧实现一致，别删。
+    var cur = modelRef.current
+    var groups = (cur && cur.groups) || []
+    var want = pick
+    for (var g = 0; g < groups.length; g++) {
+      var gg = groups[g]
+      if (gg && (gg.id === pick || gg.label === raw || groupKeyOf(gg.label) === pick)) { want = gg.id; break }
+    }
+    applyGroup(want, raw)
+    setGroupPick(want)
+    setGroupNewName('')
   }
 
   /**
@@ -1375,7 +1369,8 @@ function ArchStudio(props) {
     var sp1 = splitLabel(node.label)
     setLabelDraft(sp1.title)
     setDescDraft(sp1.desc)
-    setGroupDraft(node.group || '')
+    setGroupPick(node.group || '')
+    setGroupNewName('')
     setNoteDraft(node.note || '')
     setNoteDoneDraft(node.noteDone === true)
     setFilesDraft((node.files || []).join('\n'))
@@ -1710,11 +1705,19 @@ function ArchStudio(props) {
           React.createElement('text', { y: 3.6 }, '▸')),
       ))
     } else {
-      inner.push(React.createElement('g', { key: 'g' + gb.id, className: 'ac-grp' + hueClassOf(hueOfGroup, gb.id) },
+      inner.push(React.createElement('g', {
+        key: 'g' + gb.id,
+        className: 'ac-grp' + hueClassOf(hueOfGroup, gb.id),
+        // 展开态的组框**整块可拖**（拖的是组内所有人）：用户要的是「展开的时候，组的背景也能被
+        // 捕捉并移动」—— 折叠态那个块早就能拖，展开态却只能平移画布，同一个东西一个能拖一个
+        // 不能，是没有道理的。节点自己是兄弟节点、又画在组框之上，所以点节点仍然是「拖那一个」。
+        onPointerDown: (function (gid) { return function (ev) { onGroupDown(ev, gid) } })(gb.id),
+      },
         React.createElement('rect', { className: 'ac-group-box', x: gb.x, y: gb.y, width: gb.w, height: gb.h, rx: 12 }),
         React.createElement('text', { className: 'ac-group-lbl', x: gb.x + 12, y: gb.y + 17 },
           String(gb.label == null ? gb.id : gb.label)),
-        // 收起按钮：同样只挂在按钮上 —— 点组名、点组内空白都不动。
+        // 收起按钮：收起/展开仍然**只挂在按钮上**，而它会 stopPropagation ——
+        // 所以点它不会顺手把整组拖走。
         React.createElement('g', {
           className: 'ac-group-btn',
           transform: 'translate(' + (gb.x + gb.w - 14) + ',' + (gb.y + 14) + ')',
@@ -2123,6 +2126,45 @@ function ArchStudio(props) {
   }
   // 总量（含已解决）：按钮上那个数字以前只有待办数，读起来像「统计漏了已解决的」。
   var noteTotal = noteListOpen.length + noteListDone.length
+  var noteBatch = function () {
+    var diagName = (external ? externalName : (libKey || currentDiagramRef.current)) || 'architecture'
+    var lines = [
+      '关于画布「' + diagName + '」上的 ' + noteListOpen.length + ' 条留言，请逐条回应（点名节点 id）：',
+      '',
+    ]
+    for (var bi = 0; bi < noteListOpen.length; bi++) {
+      var bn = noteListOpen[bi]
+      var bsp = splitLabel(bn.label)
+      var btitle = bsp.title || bn.id
+      var bnote = String(bn.note || '').replace(/\r?\n/g, ' / ')
+      lines.push((bi + 1) + '. `' + bn.id + '`（' + btitle + '）：' + bnote)
+    }
+    return lines.join('\n')
+  }
+  // 有 submit 才是「一个动作交出去」，没有就退回「只放进输入框」——旧宿主上按钮不该消失。
+  var canSubmitNote = !!(inputActions && typeof inputActions.submit === 'function')
+
+  /**
+   * 把这一批未解决的留言**交给 AI**，用户一个字都不用打。
+   *
+   * 为什么不能只是「放进输入框让用户回车」：DSH 的输入框对**空草稿**是拒绝的 —— Enter 那条路
+   * 明确判了 `!empty`，而 `inputActions.submit()` 落到同一台状态机上，空草稿＋无附件是 no-op。
+   * 所以「输入框空着也能发送」只能由我们补一句话达成：空着就替用户把这一批写成一条消息，
+   * 已经打了字就**原样发他打的那句**（那是他要说的话，别顶掉；留言本来就每一步都在上下文里）。
+   */
+  function sendNotes() {
+    if (!canSubmitNote) return
+    if (String(liveDraft == null ? '' : liveDraft).trim()) {
+      inputActions.submit()
+      setStatus('已发送')
+      return
+    }
+    if (typeof inputActions.setDraft !== 'function') return
+    inputActions.setDraft(noteBatch())
+    // 隔一拍再提交：setDraft 与 submit 读的是同一份编辑器投影，不必赌它的更新时机
+    ctxTimeout(function () { inputActions.submit() }, 0)
+    setStatus('已把 ' + noteListOpen.length + ' 条留言交给 AI')
+  }
   function noteRow(nd, isDone) {
     return React.createElement('div', { key: (isDone ? 'd' : 'o') + nd.id, className: 'ac-lib-row' },
       React.createElement('button', {
@@ -2146,25 +2188,18 @@ function ArchStudio(props) {
       (inputActions && typeof inputActions.setDraft === 'function' && noteListOpen.length > 0)
         ? React.createElement('button', {
             className: 'ac-btn primary',
-            title: '把所有未完成留言打包填入聊天输入框',
-            onClick: function () {
-              var diagName = (external ? externalName : (libKey || currentDiagramRef.current)) || 'architecture'
-              var lines = [
-                '关于画布「' + diagName + '」上的 ' + noteListOpen.length + ' 条留言，请逐条回应（点名节点 id）：',
-                '',
-              ]
-              for (var bi = 0; bi < noteListOpen.length; bi++) {
-                var bn = noteListOpen[bi]
-                var sp = splitLabel(bn.label)
-                var title = sp.title || bn.id
-                var cleanNote = String(bn.note || '').replace(/\r?\n/g, ' / ')
-                lines.push((bi + 1) + '. `' + bn.id + '`（' + title + '）：' + cleanNote)
-              }
-              var batchText = lines.join('\n')
-              inputActions.setDraft(batchText)
-              setStatus('已把 ' + noteListOpen.length + ' 条留言填入聊天输入框，回车发送')
-            },
-          }, '发送这一轮留言 (' + noteListOpen.length + ')')
+            title: canSubmitNote
+              ? '把这一批未解决的留言交给 AI —— 输入框空着也行（它会替你把这一批写成一条消息发出去）'
+              : '把所有未完成留言打包填入聊天输入框',
+            onClick: canSubmitNote
+              ? sendNotes
+              : function () {
+                  inputActions.setDraft(noteBatch())
+                  setStatus('已把 ' + noteListOpen.length + ' 条留言填入聊天输入框，回车发送')
+                },
+          }, canSubmitNote
+            ? '交给 AI (' + noteListOpen.length + ')'
+            : '放入输入框 (' + noteListOpen.length + ')')
         : null,
       React.createElement('button', { className: 'ac-btn', onClick: function () { setNotesOpen(false) } }, '收起'),
     ),
@@ -2226,6 +2261,21 @@ function ArchStudio(props) {
   ) : null
 
   // ---------- 底部检查器（点选后才展开，拖动中不弹） ----------
+  // 分组下拉框要用到三样东西：现有组（带成员数）、节点当前指着的那个组、以及
+  // 「这个组 id 其实已经不在 groups 里了」这种情况（文件手改过 / 组被删过）。
+  // 最后那种必须也在下拉框里有名字 —— 否则 select 找不到匹配项会退回显示第一个选项，界面就在说谎。
+  var groupCounts = {}
+  var groupIdSet = {}
+  var allGroups = (model && model.groups) || []
+  for (var gq = 0; gq < allGroups.length; gq++) if (allGroups[gq]) groupIdSet[allGroups[gq].id] = true
+  if (model && model.nodes) {
+    for (var nq = 0; nq < model.nodes.length; nq++) {
+      var gqn = model.nodes[nq].group
+      if (gqn) groupCounts[gqn] = (groupCounts[gqn] || 0) + 1
+    }
+  }
+  var orphanGroup = (groupPick && groupPick !== GROUP_NEW && !groupIdSet[groupPick]) ? groupPick : null
+
   var dock = null
   if (nodeSel && dockOpen) {
     dock = React.createElement('div', { className: 'ac-dock' },
@@ -2260,9 +2310,41 @@ function ArchStudio(props) {
           ),
         ),
         React.createElement('div', { className: 'ac-field' },
-          React.createElement('label', null, '分组（留空=不分组）'),
-          React.createElement('input', { className: 'ac-input', value: groupDraft, onChange: function (e) { setGroupDraft(e.target.value) }, onBlur: commitGroup, onKeyDown: function (e) { if (e.key === 'Enter') commitGroup() } }),
+          React.createElement('label', null, '分组'),
+          React.createElement('select', {
+            className: 'ac-select', value: groupPick,
+            onChange: function (e) {
+              var v = e.target.value
+              setGroupPick(v)
+              setGroupNewName('')
+              // 选「新建」时先不动模型 —— 名字还没打呢，下一步那个输入框回车才生效
+              if (v === GROUP_NEW) return
+              applyGroup(v ? v : null, null)
+            },
+          },
+            React.createElement('option', { value: '' }, '不属于任何组'),
+            orphanGroup
+              ? React.createElement('option', { key: 'orphan', value: orphanGroup }, orphanGroup + '（组已不存在）')
+              : null,
+            allGroups.map(function (g) {
+              if (!g) return null
+              var cnt = groupCounts[g.id] || 0
+              // 带上成员数：两个组名字像的时候，这个数字是唯一的区分办法
+              return React.createElement('option', { key: g.id, value: g.id },
+                String(g.label || g.id) + (cnt ? '（' + cnt + '）' : '（空）'))
+            }),
+            React.createElement('option', { value: GROUP_NEW }, '＋ 新建组…'),
+          ),
         ),
+        groupPick === GROUP_NEW ? React.createElement('div', { className: 'ac-field full' },
+          React.createElement('label', null, '新组名字（回车生效）'),
+          React.createElement('input', {
+            className: 'ac-input', value: groupNewName, placeholder: '例如：AI 端', autoFocus: true,
+            onChange: function (e) { setGroupNewName(e.target.value) },
+            onBlur: commitNewGroup,
+            onKeyDown: function (e) { if (e.key === 'Enter') { e.preventDefault(); commitNewGroup() } },
+          }),
+        ) : null,
         React.createElement('div', { className: 'ac-field full' },
           React.createElement('label', null, noteDraft
             ? (noteDoneDraft ? '留言（已解决 —— 不再注入给 AI）' : '留言（会随每一步进入 AI 的上下文）')
