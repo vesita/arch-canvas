@@ -47,25 +47,38 @@ var libraryFiles = []         // 项目里散落的 .mmd / .mermaid（自动扫�
 var libraryFingerprint = ''   // 上次扫描的指纹：变了才去读文件内容算节点数
 var libraryRev = 0            // 图库清单修订号：界面靠它发现「有新图了」并自动刷新
 
-var doc = {
-  name: DEFAULT_DIAGRAM,
-  nodes: [], edges: [], groups: [], extras: [],
-  direction: 'TD', revision: 0, updatedBy: 'init', updatedAt: Date.now(),
-  file: '', warnings: [], notes: [], tombstoned: false,
-  // 整张图的一句话总结（`%% @summary`）：图级字段，不挂节点。进提示词的头部，
-  // 也随图库清单回给界面 —— 它回答的是「这张图讲的是什么」，不必读完整个文件。
-  summary: '',
-  absent: false,
-  // 代码锚点的失效校验结果（派生数据，不落盘）：{ 节点id: { 引用: 'ok'|'missing'|'symbol-missing'|'unknown' } }
-  fileStatus: {},
-  // 锚点保鲜报告（派生数据，不落盘；见 drift.ts）：{ stale:[{node,ref}], uncovered:[{dir,files}], baseline, … }
-  // fileStatus 只说「文件/符号还在不在」，它答不了「函数还在但已经不是图上说的那个东西了」——
-  // 那个要靠和落盘时记下的**内容指纹**比对，就是 drift.stale。
-  drift: null as any,
-  // 打开的是项目里某个 .mmd / .mermaid 文件时，这里放它的绝对路径（图库里的图是 null）。
-  // 有它就意味着「别被图库加载冲掉」+ 提示词里要写明这张图的真相源是哪个文件。
-  external: null,
+/**
+ * 一份**全新的**空白文档状态。换项目时必须用它造新对象，而不是在原地改旧的 ——
+ * 内存槽里存的是文档对象**引用**，原地改会把上一个项目那份一起改掉
+ * （2026-09-23 实测：X 的槽会变成 Y 的内容，回到 X 就等于丢了 X 的图）。
+ */
+function newDocState() {
+  return {
+    name: DEFAULT_DIAGRAM,
+    nodes: [], edges: [], groups: [], extras: [],
+    direction: 'TD', revision: 0, updatedBy: 'init', updatedAt: Date.now(),
+    file: '', warnings: [], notes: [], tombstoned: false,
+    // 这份文档属于哪个工作区（会话的项目目录；全局兜底库是 ''）。
+    // 2026-09-23 加：宿主只有一份内存文档，而**提示词注入没有会话信息** —— 另一个会话把画布切到
+    // 它自己的项目之后，本会话的每一步都会读到那张图，连留在那上面的留言都会被当自己的消费掉
+    // （留言是「读一次即送达」）。所以文档要记住自己是谁的，注入前先对一下工作区。
+    workspace: '',
+    // 整张图的一句话总结（`%% @summary`）：图级字段，不挂节点。进提示词的头部，
+    // 也随图库清单回给界面 —— 它回答的是「这张图讲的是什么」，不必读完整个文件。
+    summary: '',
+    absent: false,
+    // 代码锚点的失效校验结果（派生数据，不落盘）：{ 节点id: { 引用: 'ok'|'missing'|'symbol-missing'|'unknown' } }
+    fileStatus: {},
+    // 锚点保鲜报告（派生数据，不落盘；见 drift.ts）：{ stale:[{node,ref}], uncovered:[{dir,files}], baseline, … }
+    // fileStatus 只说「文件/符号还在不在」，它答不了「函数还在但已经不是图上说的那个东西了」——
+    // 那个要靠和落盘时记下的**内容指纹**比对，就是 drift.stale。
+    drift: null as any,
+    // 打开的是项目里某个 .mmd / .mermaid 文件时，这里放它的绝对路径（图库里的图是 null）。
+    // 有它就意味着「别被图库加载冲掉」+ 提示词里要写明这张图的真相源是哪个文件。
+    external: null,
+  }
 }
+var doc = newDocState()
 // 最近一次改动的来源与涉及节点。界面拿它把 AI 刚动过的地方高亮出来 ——
 // 「图变了」和「变在哪」是两件事，后者才是沟通。
 var lastChange = null
@@ -752,6 +765,7 @@ async function loadInto(name, create, target, policy?) {
   doc.name = clean
   doc.file = fileAt(target.dir, clean)
   doc.external = null      // 从图库载入：之前打开的外部文件就此让位
+  doc.workspace = projectKeyOfTarget(target)   // 这份文档属于哪个项目（提示词注入据此判归属）
   doc.tombstoned = false
   doc.warnings = []
   var text = null
@@ -816,6 +830,119 @@ async function loadInto(name, create, target, policy?) {
 }
 
 /**
+ * 一个工作区（会话的项目目录）在内存里存一份画布。
+ *
+ * 2026-09-23 事故的根因：宿主只有**一份**内存文档，而 `promptText` 是同步求值、拿不到会话 ——
+ * 另一个会话把画布切到它自己的项目之后，本会话的每一步都读到那张图，还把留在那上面的留言
+ * 当自己的「读一次即送达」消费掉了（跨会话丢用户写的东西）。
+ *
+ * 修法：内存文档按工作区各存一份（槽里放的是**同一批对象引用**，切换只是换指针，不复制内容），
+ * 并且 `promptText` 先对一下「这份文档是不是你这个项目的」，不是就换指针、换不到就给一句说明
+ * 而**不消费任何留言**。
+ */
+var docSlots = {}
+var DOC_SLOT_MAX = 6
+function slotKeyOfLib(target) { return (target && target.scope === 'project') ? String(target.workspace || '') : '' }
+function activeSlotKey() { return slotKeyOfLib(root) }
+
+/**
+ * 这次加载的目标属于**哪个项目**（槽与归属都用项目根，不用子图库那一层）。
+ * `libOf('子项目')` 给的 workspace 是 `.../项目/子项目` —— 直接拿它当归属，
+ * 用户下钻一次子图库，自己的提示词就会被判成「别人的画布」。
+ */
+function projectKeyOfTarget(target) {
+  var key = slotKeyOfLib(target)
+  var rk = String((root && root.workspace) || '')
+  if (key && rk && (key === rk || key.indexOf(rk + '/') === 0)) return rk
+  return key
+}
+
+/**
+ * 把当前这一份存进它自己的工作区槽（切换前调用；同一批对象引用，不深拷贝）。
+ * **只存「已经载入过」的状态**：换项目时会先重置成一份空白文档再去加载，
+ * 那个中间态（`loadedFor === null`）存进去就是一颗雷 —— 下次「命中」它等于命中一张空图。
+ */
+function saveActiveSlot() {
+  if (!loadedFor) return
+  docSlots[activeSlotKey()] = {
+    at: Date.now(),
+    root: root, lib: lib, loadedFor: loadedFor, everLoaded: everLoaded,
+    doc: doc, lastChange: lastChange,
+    libraryCache: libraryCache, libraryFiles: libraryFiles, libraryCacheAt: libraryCacheAt,
+    libraryFingerprint: libraryFingerprint, libraryRev: libraryRev,
+  }
+  var keys = Object.keys(docSlots)
+  if (keys.length > DOC_SLOT_MAX) {
+    var oldest = keys[0], at = Infinity
+    for (var i = 0; i < keys.length; i++) {
+      var t = docSlots[keys[i]].at || 0
+      if (t < at) { at = t; oldest = keys[i] }
+    }
+    if (oldest !== activeSlotKey()) delete docSlots[oldest]
+  }
+}
+
+/** 换到这个工作区存过的那一份（同步，只走内存）。命中返回 true。 */
+function activateSlot(key) {
+  var s = docSlots[key]
+  if (!s) return false
+  // 没载入过的槽不算命中（换项目时会留下这种中间态）：让它走「重置 + 加载」那条路
+  if (!s.loadedFor) { delete docSlots[key]; return false }
+  if (activeSlotKey() !== key) saveActiveSlot()
+  root = s.root
+  lib = s.lib
+  loadedFor = s.loadedFor
+  everLoaded = s.everLoaded
+  doc = s.doc
+  lastChange = s.lastChange
+  libraryCache = s.libraryCache
+  libraryFiles = s.libraryFiles
+  libraryCacheAt = s.libraryCacheAt
+  libraryFingerprint = s.libraryFingerprint
+  libraryRev = s.libraryRev
+  s.at = Date.now()
+  return true
+}
+
+/** 内存状态清成「准备重新加载目标工作区」的样子（槽里没存过时才走这条）。 */
+function resetToWorkspace(next, key) {
+  root = next
+  lib = next
+  loadedFor = null
+  libraryCache = []
+  libraryFiles = []
+  libraryCacheAt = 0
+  libraryFingerprint = ''
+  // **换新对象**：旧那份还挂在它自己的工作区槽里，原地改会把别人的图改掉
+  doc = newDocState()
+  doc.workspace = key
+  lastChange = null
+}
+
+/**
+ * 让内存里的文档变成 `where` 那个工作区的 —— **同步**，只走缓存。
+ * 提示词注入是同步求值的（不能 await），所以它只认这一条路；真正的加载留给 ensureLoaded。
+ */
+function syncWorkspaceFor(where: string) {
+  var key = slotKeyOfLib(resolveLib(where))
+  if (key === activeSlotKey()) return true
+  return activateSlot(key)
+}
+
+/** 这份内存文档是不是属于 `where` 那个工作区（提示词注入据此决定读不读给这一步）。 */
+function docBelongsTo(where: string) {
+  var key = slotKeyOfLib(resolveLib(where))
+  if (key === activeSlotKey()) return true
+  // 外部文件：按「文件落在不在这个工作区里」判（它是用户明确打开的文件，不属于图库）
+  if (doc.external) {
+    var w = String(where).replace(/\/+$/, '')
+    var p = String(doc.external)
+    return p === w || p.indexOf(w + '/') === 0
+  }
+  return false
+}
+
+/**
  * 保证内存里的文档来自 where 指定的图库。
  * where 为 undefined 时保持现状（工具或界面没提供信息就沿用上次识别出的项目）。
  * 换库会 bump 修订号并标 by:'switch'，这样界面轮询能发现并重新适应视图。
@@ -829,17 +956,18 @@ function ensureLoaded(where?: string, sessionId?: string) {
   var policy = policyOfSessionId(sessionId)
   if (typeof where === 'string') {
     var next = resolveLib(where)
-    if (next.dir !== root.dir) {
-      // 换了项目：根和当前层都回到新根。注意这里比的是 root 而不是 lib ——
-      // 界面每次都会报会话 cwd，如果拿它跟 lib 比，用户刚下钻到子图库就会被拽回来。
-      root = next
-      lib = next
-      loadedFor = null
-      libraryCache = []
-      libraryCacheAt = 0
-      libraryFingerprint = ''
-      doc.external = null
-      doc.name = DEFAULT_DIAGRAM
+    var nextKey = slotKeyOfLib(next)
+    if (nextKey !== activeSlotKey()) {
+      // 换了**项目**：先把这一份存进它自己的槽，再看目标项目有没有存过。
+      // 存过就只是换指针（不读盘、不 bump 修订号、把上一步投递过的留言状态原样留着）；
+      // 没存过才重置并重新加载。
+      saveActiveSlot()
+      if (activateSlot(nextKey)) return Promise.resolve({ ok: true })
+      resetToWorkspace(next, nextKey)
+    } else if (next.dir !== root.dir) {
+      // 同一个项目里换层（下钻的子图库 / 回到根）：沿用旧行为 —— 比的是 root 而不是 lib，
+      // 否则界面每次报会话 cwd 都会把刚下钻的层拽回来。
+      resetToWorkspace(next, nextKey)
     }
   }
   // 打开的是项目里的外部文件：别被「图库加载」冲掉（界面每次请求都带 where）

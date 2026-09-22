@@ -1735,6 +1735,85 @@ eq('落盘失败后作者没有被改写', afterFail.updatedBy, byWas)
 ok('落盘失败后标签也没变（内存已回滚）', afterFail.model.nodes[0].label !== '这次不该生效',
   afterFail.model.nodes[0].label)
 
+console.log('【会话隔离：画布属于项目、不属于进程（2026-09-23 跨项目丢留言事故）】')
+{
+  // 事故现场：另一个会话（另一个项目）把共享画布切到它自己那边之后，本会话每一步的提示词注入
+  // 都读到了那张图，还把留在那上面的 3 条留言当自己的「读一次即送达」消费掉了。
+  // 根因：宿主只有**一份**内存文档，而 promptText 是同步求值、拿不到会话。
+  // 这一节钉三件事：①别把别的项目的图/留言读给这一步；②别消费不属于本项目的留言；
+  // ③每个项目各留一份内存画布（换回来只是换指针，不重新读盘、不额外推进修订号）。
+  const dirIX = '/tmp/proj-iso-x'
+  const dirIY = '/tmp/proj-iso-y'
+  const fileIX = dirIX + '/.arch-canvas/architecture.mmd'
+  files.set(fileIX, 'flowchart TD\n  x1["X 项目的节点"]\n')
+  files.set(dirIY + '/.arch-canvas/architecture.mmd', 'flowchart TD\n  y1["Y 项目的节点"]\n')
+  files.set(dirIX + '/子项目/.arch-canvas/细节图.mmd', 'flowchart TD\n  sx1["X 子项目的节点"]\n')
+  const agentX = { session: { id: 'sess-x', cwd: dirIX } }
+  const agentY = { session: { id: 'sess-y', cwd: dirIY } }
+  const promptOf = (agent) => promptFn(agent ? { agent: agent } : undefined)
+
+  // 1) X 打开自己的画布，并在节点上留一条**待递**留言
+  const gX = await call('doc:get', { where: dirIX, session: 'sess-x' })
+  eq('X 打开自己的画布', gX.diagram, 'architecture')
+  ok('X 的图里是 X 的节点', gX.mermaid.indexOf('X 项目的节点') >= 0)
+  const mX = JSON.parse(JSON.stringify(gX.model))
+  const nx1 = mX.nodes.find((n) => n.id === 'x1')
+  nx1.note = 'X 的待办：这条只能给 X 看'
+  nx1.noteDone = false
+  const setX = await call('doc:set', { where: dirIX, session: 'sess-x', model: mX })
+  ok('留言写进 X 的画布', setX && setX.ok !== false)
+
+  // 2) 另一个项目的会话走一步 —— 事故就发生在这里
+  const pY = promptOf(agentY)
+  ok('Y 那一步读不到 X 的图（负向对照：这就是事故发生的位置）', pY.indexOf('X 项目的节点') < 0, pY.slice(0, 200))
+  ok('Y 那一步读不到 X 的留言', pY.indexOf('X 的待办：这条只能给 X 看') < 0)
+  ok('Y 那一步明确说明「画布停在别的项目上」', pY.indexOf('画布现在停在别的项目上') >= 0, pY.slice(0, 200))
+  ok('Y 那一步不含别的项目的源文本块', pY.indexOf('```mermaid') < 0)
+  const notesXAfterY = JSON.parse(files.get(dirIX + '/.arch-canvas/notes.json') || '{}')
+  eq('X 的留言在盘上仍是未办（Y 那一步没动它）',
+    notesXAfterY['architecture.mmd'] && notesXAfterY['architecture.mmd'].x1 && notesXAfterY['architecture.mmd'].x1.done, false)
+
+  // 3) X 自己那一步：图与留言都在 —— 这是「留言没被投错人」的判决性证据
+  const pX1 = promptOf(agentX)
+  ok('X 那一步能看到自己的图', pX1.indexOf('X 项目的节点') >= 0)
+  ok('X 那一步能拿到自己那条留言（Y 没把它吃掉）', pX1.indexOf('X 的待办：这条只能给 X 看') >= 0)
+  ok('正常路径里不出现「停在别的项目上」那句说明', pX1.indexOf('画布现在停在别的项目上') < 0)
+  // 4) 一次性投递的语义不变：同一条只进一次
+  ok('第二次走 X 的提示词里，这条留言已经不在（读一次即送达）',
+    promptOf(agentX).indexOf('X 的待办：这条只能给 X 看') < 0)
+
+  // 5) Y 调一次工具（工具带着自己的 cwd）→ 画布切到 Y 自己的项目
+  const readY = await tool('arch_read').execute({}, { agent: agentY })
+  ok('Y 的 arch_read 读到的是 Y 自己的图',
+    !!readY && typeof readY.mermaid === 'string' && readY.mermaid.indexOf('Y 项目的节点') >= 0,
+    readY && { diagram: readY.diagram, file: readY.file, ok: readY.ok, mermaid: String(readY.mermaid).slice(-80) })
+  const pY2 = promptOf(agentY)
+  ok('Y 的提示词随工具调用切回自己的画布（不再是那句说明）',
+    pY2.indexOf('Y 项目的节点') >= 0 && pY2.indexOf('画布现在停在别的项目上') < 0)
+
+  // 6) 每个项目一份内存画布：换回来只是换指针
+  const revX0 = (await call('doc:get', { where: dirIX, session: 'sess-x' })).revision
+  await call('doc:get', { where: dirIY, session: 'sess-y' })
+  const gXBack = await call('doc:get', { where: dirIX, session: 'sess-x' })
+  eq('回到 X：修订号一点没动（没有重新加载）', gXBack.revision, revX0)
+  ok('回到 X：lastChange 不是 switch（负向对照：真换了库就会标 switch）',
+    !(gXBack.lastChange && gXBack.lastChange.by === 'switch'), gXBack.lastChange)
+  const gZ = await call('doc:get', { where: '/tmp/proj-iso-z', session: 'sess-z' })
+  ok('负向对照：第一次进一个新项目确实会标 switch', gZ.lastChange && gZ.lastChange.by === 'switch', gZ.lastChange)
+
+  // 7) 下钻到子图库时，归属仍按**项目根**算 —— 否则用户一下钻，自己的提示词就被判成别人的
+  const swSub = await tool('arch_switch').execute({ name: '子项目/细节图' }, { agent: agentX })
+  ok('X 切到自己的子图库成功', swSub && swSub.ok === true, swSub)
+  const pXsub = promptOf(agentX)
+  ok('子图库仍是 X 自己的画布（不是那句「停在别的项目上」）',
+    pXsub.indexOf('X 子项目的节点') >= 0 && pXsub.indexOf('画布现在停在别的项目上') < 0, pXsub.slice(0, 200))
+
+  // 8) 没有会话信息时保持旧行为（工具/测试桩/headless 都走这条）
+  const pNoAgent = promptOf(undefined)
+  ok('没有会话上下文时照旧注入当前画布（不被这句说明顶掉）',
+    pNoAgent.indexOf('停在别的项目上') < 0 && pNoAgent.indexOf('```mermaid') >= 0)
+}
+
 console.log('【写盘前的往返守恒检查：整套测试跑下来一次都不该报】')
 // 这条检查会跟着**每一次落盘**跑（上面几百次保存全经历过）。它一旦报，
 // 说明「写出去再读回来对不上」—— 也就是有一类字段写不进文件（用户下次打开就少东西，

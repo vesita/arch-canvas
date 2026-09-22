@@ -45,7 +45,57 @@ function labelTitle(label) {
   return i < 0 ? s : s.slice(0, i)
 }
 
-function promptText() {
+var lastForeignCanvasLogged = ''
+
+/**
+ * 「画布停在别的项目上」时这一步只注入这一段 —— 不含任何别人的图内容、锚点、留言。
+ * 内容与留言都可能涉及另一个会话正在进行的工作，而且留言是**一次性投递**：投给错的会话
+ * 就等于丢了（2026-09-23 真的这样丢过 3 条）。所以这里只说清状态和下一步该干什么。
+ */
+function foreignCanvasText(sessWhere: string) {
+  var parked = doc.external ? doc.external : keyOf(doc.name)
+  var parkedWhere = doc.external
+    ? ('项目文件 ' + doc.external)
+    : ((lib.scope === 'project' ? '项目图库 ' : '全局图库 ') + lib.dir)
+  var sig = parked + '|' + sessWhere
+  if (sig !== lastForeignCanvasLogged) {
+    lastForeignCanvasLogged = sig
+    logEvent('info', 'prompt.foreign-canvas', { parked: parked, parkedDir: lib.dir, session: sessWhere })
+  }
+  return [
+    '## 逻辑框架画布（arch-canvas）',
+    '**画布现在停在别的项目上**：`' + parked + '`（' + parkedWhere + '）。你这个会话的项目是 `' + sessWhere + '`。',
+    '提示词这一侧**不会**把别的项目的图读给你，也不会替它消费留言（留言是「读一次即送达」，投给错的会话就没了）——' +
+      '所以这一轮你看不到任何画布内容，别对上面那张图做任何操作。',
+    '要看你这个项目的图：调一次 `arch_read`（工具会按你的工作目录把画布切过来；那个项目还没有图库的话它会说是空的）。' +
+      '`arch_edit` / `arch_write` 同样会先切到你的项目，但**改之前先读一次**，别凭想象改。',
+  ].join('\n')
+}
+
+/**
+ * 每一步注入给模型的画布状态。
+ *
+ * `asctx` 是 DSH 传进来的装配上下文（`{ agent, scope, signal }`，见 dsh-agent 的
+ * `assembleContextFor`）—— **提示词注入是唯一必须知道「这一步是谁在跑」的地方**。
+ * 2026-09-23 的事故：宿主只有一份内存文档，而这里从前忽略入参、直接读全局 doc ——
+ * 另一个会话（另一个项目）把画布切到它自己那边之后，本会话每一步都读到那张图，
+ * 连留在那上面的留言都被当自己的「读一次即送达」消费掉了（用户写的东西就这么没了）。
+ *
+ * 现在的规矩：**画布属于项目，不属于进程**。这一步的会话在自己项目里 → 正常注入；
+ * 不在 → 只给一句说明，绝不把别人项目的图、锚点、留言读给这一步，也绝不消费那些留言。
+ */
+function promptText(asctx?) {
+  var sessWhere = whereOfExec({ agent: asctx && asctx.agent })
+  if (typeof sessWhere === 'string' && sessWhere) {
+    if (!docBelongsTo(sessWhere)) {
+      // 先试着**同步**把自己项目那一份换进来（命中内存槽就不用等下一次）；命中不了才给说明。
+      // 这里**不排异步加载**：提示词注入是每一步都会跑的读路径，在这里发起的加载会与
+      // 别的会话的切库抢同一个「当前文档」（宿主只有一份活动指针），实测会把一份**空文档**
+      // 当成某个项目的槽存下来。要自己的画布，走 `arch_read` —— 那条路带着会话 cwd，
+      // 目标明确、也不会把中间态写进别人的槽。
+      if (!syncWorkspaceFor(sessWhere)) return foreignCanvasText(sessWhere)
+    }
+  }
   var curKey = doc.external || keyOf(doc.name)
   var where = doc.external ? '项目里的文件 ' : (lib.scope === 'project' ? '项目图库 ' : '全局图库 ')
   var loc = doc.external ? doc.external : lib.dir

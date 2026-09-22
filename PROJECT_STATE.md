@@ -21,11 +21,31 @@
 npm run check
 ```
 
-当前：`mermaid 162` · `layout 19` · `edges 27` · `host.e2e 522` · `host-loader 20` · `plugin-mount 16` ·
-`client-config-card 23` · `ui.render 416` · `tools.schema`（全过）= **1205 条断言，EXIT=0**。
+当前：`mermaid 162` · `layout 19` · `edges 35` · `host.e2e 542` · `host-loader 20` · `plugin-mount 16` ·
+`client-config-card 23` · `ui.render 417` · `tools.schema`（全过）= **1234 条断言，EXIT=0**。
 
 装机是**快照**（`file:...tgz` → `~/.dsh/profiles/web/node_modules/arch-canvas/`）：
 客户端改动 = `npm run build` + 拷 `lib/*.js` + 刷新页面；宿主改动还要**重启 dsh**。
+
+## 2026-09-23（二）：画布串项目 —— 会话隔离
+
+**事故**：别的会话（别的项目）把共享画布切到它自己那边之后，本会话每一步的提示词注入都读到那张图，
+并把留在那上面的 3 条留言当自己的「读一次即送达」消费掉了（用户写的东西投给了错的会话；那 3 条由
+对方转写到协作板，才没真丢）。根因：**宿主只有一份内存文档，而 `promptText` 是同步求值、拿不到会话**。
+
+修法（只动宿主半边）：
+
+| 改了什么 | 在哪 | 为什么 |
+|---|---|---|
+| `promptText(asctx)` 按会话判归属，不属于就只注入一段说明 | `plugin.ts` | DSH 会把 `{agent,…}` 传给注册的 `text` 函数，`agent.session.cwd` 就是这一步的项目 |
+| 每个项目一份内存画布（`docSlots`，指针切换） | `document.ts` | 换回来不读盘、不 bump 修订号，投递过的留言状态也留着 |
+| 槽只存「已载入」状态；换项目给全新 doc 对象 | `document.ts` | 中间态会被当成命中（空图）；原地改会把别人那份一起改掉 |
+| 归属键取项目根（`projectKeyToTarget`） | `document.ts` | 否则一下钻子图库，自己的提示词就被判成别人的 |
+| 读路径不发起加载 | `plugin.ts` | 与别会话切库抢活动指针，实测把空文档写进某个项目的槽 |
+| `doc.workspace` 进 `RUNTIME_ONLY_FIELDS` | `mermaid.ts` | 不进文件，漏了就是每次保存都误报往返检查（当场被逮住） |
+
+验收：`npm run check` **1234 条断言 EXIT=0**（宿主 542，含新增【会话隔离】22 条）。
+残留（未修）：取不到 cwd 的会话仍按「当前文档」读写（既有行为）。
 
 ## 2026-09-23：画布交互三件（拖动 / 详情面板 / 连线锚定）
 
