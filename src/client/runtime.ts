@@ -107,8 +107,23 @@ var STUDIO_CSS = [
   // 拖拽吸附的参考线：拖拽时才出现，松手即消失（不进模型、不进文件、也不导出）。
   '.ac-snapline{stroke:var(--dsw-alias-brand-primary,#4c8dff);stroke-width:1;stroke-dasharray:4 4;pointer-events:none;opacity:.9}',
   // 选中后才出现的底部检查器（窄栏放不下右侧栏，改成下挂）
-  '.ac-dock{flex:0 0 auto;max-height:46%;overflow:auto;border-top:1px solid var(--dsw-alias-border-l1,#2a2e35);background:var(--dsw-alias-bg-layer-1,#1b1e23);padding:9px 10px}',
-  '.ac-dock h4{margin:0 0 8px;font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--dsw-alias-label-secondary,#9aa3af)}',
+  // 结构（2026-09-23）：分隔条 → 标题栏（收起 / 关闭）→ 内容体。**只有内容体滚动**，
+  // 标题栏一直够得着；高度可以由用户拖出来（`height` 内联样式），没拖过就按内容自适应、
+  // 上限 46%（小屏不至于把画布挤没）。
+  '.ac-dock{flex:0 0 auto;display:flex;flex-direction:column;max-height:70%;border-top:1px solid var(--dsw-alias-border-l1,#2a2e35);background:var(--dsw-alias-bg-layer-1,#1b1e23)}',
+  '.ac-dock:not([style*="height"]){max-height:46%}',
+  '.ac-sash{flex:0 0 auto;height:6px;margin:0;cursor:row-resize;background:transparent;position:relative;touch-action:none}',
+  '.ac-sash:hover{background:var(--dsw-alias-brand-primary,#4c8dff);opacity:.35}',
+  '.ac-dock-bar{flex:0 0 auto;display:flex;align-items:center;gap:6px;padding:4px 8px 5px;border-bottom:1px solid var(--dsw-alias-border-l1,#2a2e35)}',
+  '.ac-dock-title{flex:1 1 auto;min-width:0;font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--dsw-alias-label-secondary,#9aa3af);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+  '.ac-dock-btn{flex:0 0 auto;background:transparent;color:var(--dsw-alias-label-secondary,#9aa3af);border:1px solid transparent;border-radius:6px;padding:2px 7px;font:inherit;font-size:11.5px;cursor:pointer}',
+  '.ac-dock-btn:hover{color:var(--dsw-alias-label-primary,#e8eaed);border-color:var(--dsw-alias-border-l2,#3a4048);background:var(--dsw-alias-bg-base,#14161a)}',
+  '.ac-dock-body{flex:1 1 auto;min-height:0;overflow:auto;padding:9px 10px}',
+  // 收起态：只剩一条细条。它必须在**选中还在**的时候出现 —— 用户能一眼看出
+  // 「面板收起来了」而不是「选中丢了」，点一下就能展开。
+  '.ac-peek{flex:0 0 auto;display:flex;align-items:center;gap:6px;padding:3px 8px;border-top:1px solid var(--dsw-alias-border-l1,#2a2e35);background:var(--dsw-alias-bg-layer-1,#1b1e23)}',
+  '.ac-peek-btn{flex:1 1 auto;min-width:0;text-align:left;background:transparent;border:none;color:var(--dsw-alias-label-secondary,#9aa3af);font:inherit;font-size:11.5px;padding:2px 0;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+  '.ac-peek-btn:hover{color:var(--dsw-alias-label-primary,#e8eaed)}',
   '.ac-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}',
   '.ac-grid .full{grid-column:1 / -1}',
   '.ac-field label{display:block;font-size:11px;color:var(--dsw-alias-label-secondary,#9aa3af);margin-bottom:3px}',
@@ -348,24 +363,87 @@ function refRowCount(files) {
   return refRowText(files) ? 1 : 0
 }
 
+// rAF 合帧：拖动时一帧最多做一次状态更新。Chrome 的鼠标 pointermove 本来就与帧对齐，
+// 但触屏 / 高刷设备会给得更密，而每一次更新都是一整棵画布的重渲染 + 全图重新布线。
+// 拿不到 requestAnimationFrame（老环境、测试桩）就**同步执行** —— 宁可掉帧，也不能不动。
+function rafFrame(fn) {
+  try {
+    if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+      return window.requestAnimationFrame(fn)
+    }
+  } catch (e) {}
+  fn()
+  return 0
+}
+
+function rafCancel(id) {
+  try {
+    if (id && typeof window !== 'undefined' && typeof window.cancelAnimationFrame === 'function') {
+      window.cancelAnimationFrame(id)
+    }
+  } catch (e) {}
+}
+
 // 拖拽吸附：把候选坐标对齐到「其他节点的中心线」上，阈值内才吸。
-// **只做中心线对齐**，不做边缘、也不做网格 —— 网格会限制自由布局，
-// 而「这两个节点该不该排成一条线」才是摆整齐真正要回答的问题。
+//
+// 2026-09-23 三处改动，都是照着成熟编辑器（Excalidraw / tldraw / Figma）的做法：
+//   1) **阈值按屏幕像素算**（`SNAP_PX / k`）。旧值 8 是模型单位 —— 缩到 0.5 倍时屏幕上只剩
+//      4px（吸不住），放到 2 倍时是 16px（甩不开）。同一个手感必须与缩放无关。
+//   2) **迟滞**：吸上要在 ENTER 半径内，脱开要走到 EXIT 半径外（EXIT > ENTER）。
+//      没有迟滞时，鼠标停在阈值边缘上，节点会在「吸住」和「跟手」之间来回抖。
+//   3) **按轴记忆**：上一步吸在哪个坐标记在 `prev` 里，这一步才谈得上迟滞。
 // 返回吸附后的坐标，以及命中的参考线位置（gx / gy 为 null 表示那条轴没吸上）。
-var SNAP_PX = 8
-function snapToPeers(nodes, movingId, x, y) {
-  var bx = null, by = null
-  var dbx = SNAP_PX + 1, dby = SNAP_PX + 1
+var SNAP_PX = 8          // 进入吸附的半径（屏幕像素）
+var SNAP_EXIT_PX = 14    // 脱开吸附的半径（屏幕像素，> 进入半径才有迟滞）
+var SNAP_MIN_MODEL = 2   // 折算出来的半径下限：放得很大时也要吸得住 1~2px 的对齐
+var SNAP_MAX_MODEL = 28  // 上限：缩得很小时不至于吸住半张画布
+
+/** 屏幕像素半径折算成模型单位（与缩放无关的手感）。 */
+function snapRadius(k, px) {
+  var kk = (typeof k === 'number' && k > 0) ? k : 1
+  return Math.min(SNAP_MAX_MODEL, Math.max(SNAP_MIN_MODEL, px / kk))
+}
+
+/**
+ * 一条轴上的吸附决定（纯函数，好测）。`active` 是上一步吸住的那条线（null = 没吸住）。
+ * 迟滞的写法就是这两句：**已经吸住的先判脱开半径，没吸住的才判进入半径**。
+ */
+function snapAxis(raw, cands, enter, exit, active) {
+  if (active != null && active !== undefined) {
+    if (Math.abs(active - raw) <= exit) return { v: active, line: active }
+    return { v: raw, line: null }
+  }
+  var best = null, bd = Infinity
+  for (var i = 0; i < cands.length; i++) {
+    var d = Math.abs(cands[i] - raw)
+    if (d < bd) { bd = d; best = cands[i] }
+  }
+  if (best != null && bd <= enter) return { v: best, line: best }
+  return { v: raw, line: null }
+}
+
+/**
+ * `movingIds` 是这次被拖着一起动的节点 id（分组拖动时是一整组）——
+ * 拖动中的节点不能当自己的吸附候选，否则整组会吸在自己的旧坐标上动不了。
+ */
+function snapToPeers(nodes, movingIds, x, y, k, prev) {
+  var move = {}
+  if (movingIds && typeof movingIds.length === 'number') {
+    for (var mi = 0; mi < movingIds.length; mi++) move[movingIds[mi]] = true
+  } else if (movingIds != null) {
+    move[movingIds] = true
+  }
+  var cxs = [], cys = []
   for (var i = 0; i < nodes.length; i++) {
     var n = nodes[i]
-    if (!n || n.id === movingId) continue
+    if (!n || move[n.id]) continue
     if (n.x == null || n.y == null) continue
-    var ax = Math.abs(n.x - x)
-    if (ax <= SNAP_PX && ax < dbx) { dbx = ax; bx = n.x }
-    var ay = Math.abs(n.y - y)
-    if (ay <= SNAP_PX && ay < dby) { dby = ay; by = n.y }
+    cxs.push(n.x)
+    cys.push(n.y)
   }
-  return { x: bx == null ? x : bx, y: by == null ? y : by, gx: bx, gy: by }
+  var sx = snapAxis(x, cxs, snapRadius(k, SNAP_PX), snapRadius(k, SNAP_EXIT_PX), prev ? prev.gx : null)
+  var sy = snapAxis(y, cys, snapRadius(k, SNAP_PX), snapRadius(k, SNAP_EXIT_PX), prev ? prev.gy : null)
+  return { x: sx.v, y: sy.v, gx: sx.line, gy: sy.line }
 }
 
 // 标签 = 标题（第一段）+ 描述（其余段）。节点默认只画标题，点开（选中）才画描述 ——
@@ -775,6 +853,55 @@ function edgePathHits(pts, obs) {
   return false
 }
 
+/** 点是否在形状**内部**（往里收 0.5px：贴着轮廓走不算「穿进去」）。与 perimeterPoint 同一套尺寸约定。 */
+function shapeInterior(px, py, g, kind) {
+  var a = Math.max(0.5, g.w / 2 - 0.5), b = Math.max(0.5, g.h / 2 - 0.5)
+  var dx = px - g.x, dy = py - g.y
+  if (kind === 'ellipse') return Math.hypot(dx / a, dy / b) < 1
+  if (kind === 'diamond') return Math.abs(dx) / a + Math.abs(dy) / b < 1
+  if (kind === 'hex') {
+    // 六边形 = 上下直边 + 左右两条斜边，对 |dy| 分层：边界 |x| = w/2 - 14·(|y|/(h/2))
+    var hw = Math.max(0.5, g.w / 2 - 0.5), hh = Math.max(0.5, g.h / 2 - 0.5)
+    if (Math.abs(dy) >= hh) return false
+    var hexInset = Math.min(NODE_HEX_INSET, hw)
+    return Math.abs(dx) < hw - hexInset * (Math.abs(dy) / hh)
+  }
+  // rect / round / sub / cyl / stadium：圆角矩形（rect 的 rx=9）
+  var r = kind === 'rect' ? 9 : Math.min(a, b)
+  var cx = Math.max(Math.abs(dx) - (a - r), 0)
+  var cy = Math.max(Math.abs(dy) - (b - r), 0)
+  return Math.hypot(cx, cy) < r
+}
+
+/**
+ * 线段是否真的穿进这个节点的**可见形状**。包围盒只当快速预筛 —— 非矩形节点的锚点本来就落在
+ * 包围盒内部（轮廓上），拿包围盒当判据会把每条候选都判成自穿透（复核第 1 条：那会让整条线
+ * 落到不看障碍的兜底上，画出来正好穿过别的方块）。只有真的进了形状才算命中，于是「从轮廓上
+ * 出发往外走」天然不算。
+ */
+function edgeSegHitsNode(x1, y1, x2, y2, g) {
+  var box = { x1: g.x - g.w / 2, y1: g.y - g.h / 2, x2: g.x + g.w / 2, y2: g.y + g.h / 2 }
+  if (!edgeSegHitsRect(x1, y1, x2, y2, box)) return false
+  var kind = kindOf(g.shape)
+  if (kind === 'rect') return true            // 矩形填满包围盒，不必再采样
+  var L = Math.abs(x2 - x1) + Math.abs(y2 - y1)
+  var steps = Math.max(2, Math.min(48, Math.ceil(L / 6)))
+  for (var i = 1; i < steps; i++) {
+    var t = i / steps
+    if (shapeInterior(x1 + (x2 - x1) * t, y1 + (y2 - y1) * t, g, kind)) return true
+  }
+  return false
+}
+
+/** 一条折线有没有穿进**自己**这个节点（a / b 各查一次）。 */
+function edgePathHitsSelf(pts, g) {
+  if (!g || typeof g.w !== 'number' || typeof g.h !== 'number') return false
+  for (var i = 0; i + 1 < pts.length; i++) {
+    if (edgeSegHitsNode(pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y, g)) return true
+  }
+  return false
+}
+
 /** 把折点整理成一条干净的路径：去掉零长段与共线的多余拐点。`hops` 是交叉处的拱桥（可省）。 */
 function edgeCleanPath(pts, hops?: any) {
   var hp = (hops && hops.length) ? hops : []
@@ -924,12 +1051,203 @@ function edgePortOffset(span, p) {
   return (p.i - (p.n - 1) / 2) * gap
 }
 
+// ==================== 选边与落点（2026-09-23 重写） ====================
+// 从前的规则是「两节点中心的 |dx| / |dy| 谁大就走竖轴、否则走横轴，侧边按 delta 的正负取」。
+// 那是 React Flow「Simple Floating Edges」那套的简化版：它只看中心，**不看两个方块各自有多大**，
+// 于是「一个矮胖节点斜对一个方块」这类常见摆法会选错轴、白绕几十像素
+// （实测 420 个相对位置：平均多绕 24.8px，26.7% 的位置多绕 40px 以上）。
+// 工业界（draw.io 的端口方向掩码、JointJS 的 anchor + boundary connectionPoint、
+// React Flow 官方 floating edges）的共同做法是**先算落点、再定侧**。这里照这个思路做，
+// 只保留现有正交路由器能吃的形状（两端走同一条轴），把「选哪条轴、哪条边」交给代价函数。
+var NODE_HEX_INSET = 14  // 六边形左右两个斜角的水平内缩 —— 与 studio.ts 画形状时用的是同一个数
+
+function sideNormal(s) {
+  if (s === 't') return { x: 0, y: -1 }
+  if (s === 'b') return { x: 0, y: 1 }
+  if (s === 'l') return { x: -1, y: 0 }
+  return { x: 1, y: 0 }
+}
+
+/** 这条边上的「半个跨度」：上下边是 w/2，左右边是 h/2。 */
+function sideHalfSpan(g, s) {
+  return (s === 't' || s === 'b') ? g.w / 2 : g.h / 2
+}
+
+/** 边心（不带端口偏移）—— 只用来估代价。 */
+function sideCenter(g, s) {
+  var n = sideNormal(s)
+  return { x: g.x + n.x * g.w / 2, y: g.y + n.y * g.h / 2 }
+}
+
+/** 两个方块在四条边外侧的间隙（负数 = 这一轴上两方块重叠）。 */
+function edgeGaps(a, b) {
+  return {
+    r: b.x - b.w / 2 - (a.x + a.w / 2),
+    l: a.x - a.w / 2 - (b.x + b.w / 2),
+    b: b.y - b.h / 2 - (a.y + a.h / 2),
+    t: a.y - a.h / 2 - (b.y + b.h / 2),
+  }
+}
+
+/**
+ * 这条轴上「朝对端」的那条边。两方块在该轴上有间隙时取有间隙的那条（这就是「朝向」的
+ * 准确含义）；没有间隙（在该轴上重叠）就退化成「对端在哪个方向就走哪边」。
+ */
+function sideOnAxis(a, b, vertical, gp) {
+  if (vertical) {
+    if (gp.b >= 0) return 'b'
+    if (gp.t >= 0) return 't'
+    return b.y >= a.y ? 'b' : 't'
+  }
+  if (gp.r >= 0) return 'r'
+  if (gp.l >= 0) return 'l'
+  return b.x >= a.x ? 'r' : 'l'
+}
+
+/**
+ * 这条轴「走不走得通」的粗估：用边心 + 中位线附近几条候选试着铺一下，全部撞障碍就返回 false。
+ * 它**不替代**布线器（那边会扫十几条车道、还有两段绕行），只用来在选边时避开「这条轴根本没路」
+ * 的情况 —— 真图上实测过：不看障碍时，选出来的那条轴会被障碍全部拒掉，最后落到不看障碍的
+ * 硬穿兜底，画出一条穿过第三方块的线。
+ */
+function axisLooksClear(a, b, sa, sb, vertical, obs) {
+  var p = sideCenter(a, sa), q = sideCenter(b, sb)
+  var mid0 = vertical ? (p.y + q.y) / 2 : (p.x + q.x) / 2
+  var tries = [mid0]
+  for (var t = 1; t <= 2; t++) { tries.push(mid0 - t * EDGE_LANE_STEP); tries.push(mid0 + t * EDGE_LANE_STEP) }
+  for (var i = 0; i < tries.length; i++) {
+    var m = tries[i]
+    var pts = vertical
+      ? [{ x: p.x, y: p.y }, { x: p.x, y: m }, { x: q.x, y: m }, { x: q.x, y: q.y }]
+      : [{ x: p.x, y: p.y }, { x: m, y: p.y }, { x: m, y: q.y }, { x: q.x, y: q.y }]
+    if (!edgePathHits(pts, obs)) return true
+  }
+  return false
+}
+
+/**
+ * 两端的端口各落在哪条边上。只考虑「两端同轴」的两种组合（竖轴 / 横轴）—— 现有正交
+ * 路由器（中位线 + 避障 + 车道 + 拱桥）吃的就是这一类；混轴要出 L 形折线，那是另一套
+ * 布线器的事，不在这次改动里。
+ *
+ * 代价 = 两个边心的曼哈顿距离（**这就是这条折线将会有多长**）
+ *      + 从「重叠的那条轴」绕出去的罚（一条轴明明开着，就别从另一条叠着的轴背后出去）
+ *      + **这条轴根本走不通**的罚（给 obstacles 时才算；不给就退化成纯几何估价）
+ *      + 回头线 / 自穿透的重罚。
+ * 实测（420 个相对位置，见 test 里那节的同款网格）：旧规则平均比「两端同轴的最优」多绕
+ * 24.8px、26.7% 的位置多绕 40px 以上；换成这个代价函数后是 3.4px / 0%。
+ * **边心**（不是端口）参与估价：端口偏移是「同一侧多条线均分」的结果，不该反过来影响选边。
+ *
+ * `obstacles` 是画布上其它可见方块的几何（可省）。studio 的端口分组与这里的布线器**必须传同一份**，
+ * 否则两边会选出不同的侧（端口按 A 侧均分、线却从 B 侧出去）。
+ */
+function edgeSidesOf(a, b, obstacles = null) {
+  if (!a || !b) return { a: 'b', b: 't', vertical: true }
+  var gp = edgeGaps(a, b)
+  var gpB = edgeGaps(b, a)   // 反着来一遍：sideOnAxis 的「间隙」是按第一个参数算的
+  // 障碍按布线器同一套规则做（带 EDGE_PAD 的余量 + 两端自身零余量的 guard）
+  var obs = []
+  if (obstacles) {
+    for (var oi = 0; oi < obstacles.length; oi++) {
+      var o = obstacles[oi]
+      if (!o || o === a || o === b) continue
+      if (typeof o.w !== 'number' || typeof o.h !== 'number') continue
+      obs.push({
+        x1: o.x - o.w / 2 - EDGE_PAD, y1: o.y - o.h / 2 - EDGE_PAD,
+        x2: o.x + o.w / 2 + EDGE_PAD, y2: o.y + o.h / 2 + EDGE_PAD,
+      })
+    }
+  }
+  var best = null, bestCost = Infinity
+  for (var vi = 0; vi < 2; vi++) {
+    var vertical = vi === 0
+    var sa = sideOnAxis(a, b, vertical, gp)
+    var sb = sideOnAxis(b, a, vertical, gpB)
+    var p = sideCenter(a, sa), q = sideCenter(b, sb)
+    var cost = Math.abs(q.x - p.x) + Math.abs(q.y - p.y)
+    var gap = vertical ? Math.max(gp.b, gp.t) : Math.max(gp.r, gp.l)
+    var gapOther = vertical ? Math.max(gp.r, gp.l) : Math.max(gp.b, gp.t)
+    if (gap < 0 && gapOther > 0) cost += 200 + Math.min(600, -gap * 2)
+    // 粗估只查**别人的方块**：自己的盒子会误伤「锚点在轮廓上」（见 edgeGeometry 里那段注释）
+    if (obstacles && !axisLooksClear(a, b, sa, sb, vertical, obs)) cost += 400
+    var na = sideNormal(sa), nb = sideNormal(sb)
+    // 出了门先朝背离对端的方向走 = 回头线（旧代码里那个 `inverted` 兜的正是这一类）
+    if ((b.x - p.x) * na.x + (b.y - p.y) * na.y < 0) cost += 900
+    if ((a.x - q.x) * nb.x + (a.y - q.y) * nb.y < 0) cost += 900
+    // 出点落在对端身体里、或入点落在本端身体里 = 自穿透
+    if (Math.abs(p.x - b.x) < b.w / 2 && Math.abs(p.y - b.y) < b.h / 2) cost += 100000
+    if (Math.abs(q.x - a.x) < a.w / 2 && Math.abs(q.y - a.y) < a.h / 2) cost += 100000
+    if (cost < bestCost) { bestCost = cost; best = { a: sa, b: sb, vertical: vertical } }
+  }
+  // 两个方块完全重合（同一坐标、同样大小）时，两端会各自选到同一条边的边心 —— 出入点重合，
+  // 折线退化成 `M x y` 一个点（看不见、也点不中）。这时改走横轴：一左一右，至少是一条看得见的线。
+  // 触发路径很常见：连点两次「＋ 节点」（都落在视口中心）再把它们连起来。
+  var pc = sideCenter(a, best.a), qc = sideCenter(b, best.b)
+  if (Math.abs(pc.x - qc.x) < 0.5 && Math.abs(pc.y - qc.y) < 0.5) {
+    return { a: 'r', b: 'l', vertical: false }
+  }
+  return best
+}
+
+/**
+ * 把「某条边上的横向偏移」投到形状的**可见轮廓**上，而不是包围盒上。
+ * 这一步是本次改动里最容易被看见的一条：菱形/椭圆/六边形/胶囊的锚点从前落在包围盒上，
+ * 同一侧挤两根线时箭头就悬在方块外面（实测：菱形 24.4px、椭圆 10.1px、六边形 5.4px）。
+ * `kind` 来自 kindOf(shape)，与 studio.ts 里画形状的那段共用同一套尺寸约定。
+ */
+function perimeterPoint(g, kind, side, lateral) {
+  var ax = side === 't' || side === 'b'
+  var spanA = ax ? g.w / 2 : g.h / 2   // 沿边方向
+  var spanD = ax ? g.h / 2 : g.w / 2   // 垂直方向（矩形时就是落点距离）
+  var lim = Math.max(0, spanA - 2)
+  var lat = Math.max(-lim, Math.min(lim, lateral || 0))
+  var perp = spanD
+  if (kind === 'diamond') {
+    perp = spanD * Math.max(0, 1 - Math.abs(lat) / Math.max(1e-6, spanA))
+  } else if (kind === 'ellipse') {
+    var eu = spanA > 0 ? lat / spanA : 0
+    perp = spanD * Math.sqrt(Math.max(0, 1 - eu * eu))
+  } else if (kind === 'hex') {
+    if (ax) {
+      // 上下边：中间一段是直边，两端各有一个 14px 的斜角
+      var inset = Math.min(NODE_HEX_INSET, spanA)
+      perp = Math.abs(lat) <= spanA - inset
+        ? spanD
+        : spanD * Math.max(0, (spanA - Math.abs(lat)) / Math.max(1e-6, inset))
+    } else {
+      // 左右两侧不是边，是两个顶点：从顶点沿斜边收进去（垂直方向的半长是 spanD）
+      perp = Math.max(0, spanD - NODE_HEX_INSET * (Math.abs(lat) / Math.max(1e-6, spanA)))
+    }
+  } else if (kind !== 'rect') {
+    // round / sub / cyl / stadium：rx = min(h/2, w/2) 的胶囊，直段之外落到圆角上。
+    // 圆角圆心在「离形状中心 (spanD - r) 的垂直距离」处，所以半径那一段要**加上这个偏移**：
+    // 少了它，横着出去的锚点会缩进方块里（140×60 的胶囊上实测缩了 41px）。
+    var r = Math.min(spanA, spanD)
+    if (Math.abs(lat) > spanA - r) {
+      var dc = Math.abs(lat) - (spanA - r)
+      perp = (spanD - r) + Math.sqrt(Math.max(0, r * r - dc * dc))
+    }
+  }
+  if (side === 'b') return { x: g.x + lat, y: g.y + perp }
+  if (side === 't') return { x: g.x + lat, y: g.y - perp }
+  if (side === 'r') return { x: g.x + perp, y: g.y + lat }
+  return { x: g.x - perp, y: g.y + lat }
+}
+
+/** 某个端口位次在给定侧上的最终落点（先按「同侧均分」算偏移，再投到轮廓上）。 */
+function portPointOf(g, side, p) {
+  var span = (side === 't' || side === 'b') ? g.w : g.h
+  return perimeterPoint(g, kindOf(g.shape), side, edgePortOffset(span, p))
+}
+
 /**
  * 一条连线的路径。`obstacles` 是画布上**其它可见方块**的几何（被折叠收起的方块不该挡路），
  * `offset` 用于把同一对节点之间的多条线错开（由调用方按序号算），
  * `ports` 是两端的端口位次 `{ a: {n,i}, b: {n,i} }`，
  * `usedLanes` 是**前面几条线已经占掉的车道** —— 有了它，两条不同连线的中位线撞上时
  * 后来者会自己往旁边让（用户要的「平行间隔」）。由调用方逐条累积。
+ *
+ * 几何里可以带 `shape`（studio 传的就是带 shape 的那份）；不带就按矩形处理。
  */
 function edgeGeometry(a, b, obstacles, offset, ports, usedLanes) {
   if (!a || !b) return null
@@ -946,12 +1264,8 @@ function edgeGeometry(a, b, obstacles, offset, ports, usedLanes) {
       })
     }
   }
-  var dx = b.x - a.x
-  var dy = b.y - a.y
-  var vertical = Math.abs(dy) >= Math.abs(dx)
   var pA = ports && ports.a
   var pB = ports && ports.b
-  var p0, p1
   // 自环（`n1 --> n1`）：从右边绕出去一小圈再回来。不特判的话 dx=dy=0 会被判成"垂直"，
   // 出点取底边中心、入点取顶边中心 —— 画出来是一条**从底边穿到顶边的直线**，正好捅穿方块。
   if (a === b) {
@@ -963,41 +1277,24 @@ function edgeGeometry(a, b, obstacles, offset, ports, usedLanes) {
     var lc = edgeCleanPath(loopPts)
     return { d: lc.d, mid: { x: loopL, y: a.y }, pts: lc.pts, lanes: edgePathLanes(lc.pts) }
   }
-  if (vertical) {
-    var down = dy >= 0
-    p0 = { x: a.x + edgePortOffset(a.w, pA), y: a.y + (down ? a.h / 2 : -a.h / 2) }
-    p1 = { x: b.x + edgePortOffset(b.w, pB), y: b.y + (down ? -b.h / 2 : b.h / 2) }
-  } else {
-    var right = dx >= 0
-    p0 = { x: a.x + (right ? a.w / 2 : -a.w / 2), y: a.y + edgePortOffset(a.h, pA) }
-    p1 = { x: b.x + (right ? -b.w / 2 : b.w / 2), y: b.y + edgePortOffset(b.h, pB) }
-  }
-  // 端口倒挂：中心点说「b 在下」，可两个方块**纵向上是重叠的**（a.x 与 b.x 差得远、
-  // y 只差一点点，于是 |dy| >= |dx| 选中的是纵轴）—— 出点（a 的下边）反而落在入点
-  // （b 的上边）之下。折线一出发就在往回走，直接钻进 a 自己身体里。
-  // 这时换另一条轴：横着连过去不会倒挂。（2026-09-20 客户端逻辑审计第 7 条。）
-  var inverted = vertical ? (dy >= 0 ? p1.y < p0.y : p1.y > p0.y) : (dx >= 0 ? p1.x < p0.x : p1.x > p0.x)
-  if (inverted) {
-    vertical = !vertical
-    if (vertical) {
-      var down2 = dy >= 0
-      p0 = { x: a.x + edgePortOffset(a.w, pA), y: a.y + (down2 ? a.h / 2 : -a.h / 2) }
-      p1 = { x: b.x + edgePortOffset(b.w, pB), y: b.y + (down2 ? -b.h / 2 : b.h / 2) }
-    } else {
-      var right2 = dx >= 0
-      p0 = { x: a.x + (right2 ? a.w / 2 : -a.w / 2), y: a.y + edgePortOffset(a.h, pA) }
-      p1 = { x: b.x + (right2 ? -b.w / 2 : b.w / 2), y: b.y + edgePortOffset(b.h, pB) }
-    }
-  }
+  // 选边（两端同轴）→ 落点（投到真实轮廓上，而不是包围盒）
+  var sides = edgeSidesOf(a, b)
+  var vertical = sides.vertical
+  var p0 = portPointOf(a, sides.a, pA)
+  var p1 = portPointOf(b, sides.b, pB)
+  // 「端口倒挂」（出点反而落在入点之后）从前靠一段 `inverted` 特判兜住，现在由
+  // edgeSidesOf 的代价函数在选边阶段就排除掉 —— 自穿透与回头线都是重罚项。
 
   // a 和 b 自己**不**进障碍表（带 12px 余量的话会把贴着边框出发的端口段一起判成"命中"，
-  // 于是每条线都被拒），但要单独做一次**零余量**的自穿透检查：两个方块纵向上重叠时，
-  // 中位线候选会从出点往回钻、直接穿过方块自己。零余量 + 严格不等号正好能分开
-  // 「贴着边框出发」（不算命中）与「钻进边框内部」（算命中）。（审计第 6/7 条的地基。）
-  var guard = obs.concat([
-    { x1: a.x - a.w / 2, y1: a.y - a.h / 2, x2: a.x + a.w / 2, y2: a.y + a.h / 2 },
-    { x1: b.x - b.w / 2, y1: b.y - b.h / 2, x2: b.x + b.w / 2, y2: b.y + b.h / 2 },
-  ])
+  // 于是每条线都被拒），但要单独做一次自穿透检查：两个方块纵向上重叠时，
+  // 中位线候选会从出点往回钻、直接穿过方块自己。**只查内部段**（首末两段贴着端口，
+  // 必须允许它从形状的轮廓上出发）—— 非矩形节点的锚点落在圆角/斜边上，那个点本来就在
+  // 包围盒**里面**（菱形、胶囊、椭圆都是），连首段也查的话每个候选都会被拒，
+  // 整条线落到不看障碍的硬穿兜底上，画出来正好穿过别的方块（复核第 1 条，实测过）。
+  // 严格不等号保住「贴着边框出发」与「钻进内部」的分界。（审计第 6/7 条的地基。）
+  var blockedBy = function (pts) {
+    return edgePathHits(pts, obs) || edgePathHitsSelf(pts, a) || edgePathHitsSelf(pts, b)
+  }
 
   // 一段跨越式：从出点直走 → 在某个「跨越线」上横过去 → 再直走进点。
   // 候选跨越线按「离正中越近越优先」排序；障碍的边线外侧也在候选里 —— 那让线能贴着障碍绕。
@@ -1034,11 +1331,35 @@ function edgeGeometry(a, b, obstacles, offset, ports, usedLanes) {
     var pts = vertical
       ? [{ x: p0.x, y: p0.y }, { x: p0.x, y: m }, { x: p1.x, y: m }, { x: p1.x, y: p1.y }]
       : [{ x: p0.x, y: p0.y }, { x: m, y: p0.y }, { x: m, y: p1.y }, { x: p1.x, y: p1.y }]
-    if (edgePathHits(pts, guard)) continue
+    if (blockedBy(pts)) continue
     if (!bestAny) bestAny = pts
     if (freeOfLane(pts)) { best = pts; break }
   }
   if (!best) best = bestAny
+  // 兜底零：候选车道**再往两边扫一遍**（±10 条车道 + 每条障碍的外侧一条）。
+  // 为什么要有这一层：上面那圈候选只铺到 ±3 条车道，方块挤在一起时会被全部拒掉，
+  // 然后落到「兜底二」那条**不看障碍**的硬穿线上 —— 实测真图（dsh-plugin-framework）
+  // 上就是这里多出了两条穿过第三方块的线。先多找几条干净的车道，实在找不到才硬穿。
+  if (!best) {
+    var wide = []
+    for (var wq = 1; wq <= 10; wq++) { wide.push(mid0 - wq * EDGE_LANE_STEP); wide.push(mid0 + wq * EDGE_LANE_STEP) }
+    for (var wz = 0; wz < obs.length; wz++) {
+      if (vertical) { wide.push(obs[wz].y1 - EDGE_LANE); wide.push(obs[wz].y2 + EDGE_LANE) }
+      else { wide.push(obs[wz].x1 - EDGE_LANE); wide.push(obs[wz].x2 + EDGE_LANE) }
+    }
+    wide.sort(function (m, n) { return Math.abs(m - mid0) - Math.abs(n - mid0) })
+    var cleanOnly = null
+    for (var wc = 0; wc < wide.length; wc++) {
+      var mw = wide[wc] + shift
+      var wpts = vertical
+        ? [{ x: p0.x, y: p0.y }, { x: p0.x, y: mw }, { x: p1.x, y: mw }, { x: p1.x, y: p1.y }]
+        : [{ x: p0.x, y: p0.y }, { x: mw, y: p0.y }, { x: mw, y: p1.y }, { x: p1.x, y: p1.y }]
+      if (blockedBy(wpts)) continue
+      if (!cleanOnly) cleanOnly = wpts
+      if (freeOfLane(wpts)) { best = wpts; break }
+    }
+    if (!best) best = cleanOnly
+  }
   // 兜底一：两段跨越式，从整片障碍的外侧绕过去（中间那条直路被完全堵死时走这条）。
   if (!best) {
     var bx1 = Math.min(a.x - a.w / 2, b.x - b.w / 2)
@@ -1049,7 +1370,15 @@ function edgeGeometry(a, b, obstacles, offset, ports, usedLanes) {
       bx1 = Math.min(bx1, obs[z].x1); by1 = Math.min(by1, obs[z].y1)
       bx2 = Math.max(bx2, obs[z].x2); by2 = Math.max(by2, obs[z].y2)
     }
+    // 车道不只「整片外面的两条」：方块挤成一片时，那两条外侧车道往往正好卡在别的方块旁边，
+    // 于是一条都走不通、直接落到硬穿。这里把**每块障碍的外侧**也当候选，按离中位线的远近排。
     var lanes = vertical ? [bx1 - EDGE_LANE, bx2 + EDGE_LANE] : [by1 - EDGE_LANE, by2 + EDGE_LANE]
+    for (var lz = 0; lz < obs.length; lz++) {
+      if (vertical) lanes.push(obs[lz].x1 - EDGE_LANE, obs[lz].x2 + EDGE_LANE)
+      else lanes.push(obs[lz].y1 - EDGE_LANE, obs[lz].y2 + EDGE_LANE)
+    }
+    var laneMid = vertical ? (p0.x + p1.x) / 2 : (p0.y + p1.y) / 2
+    lanes.sort(function (m, n) { return Math.abs(m - laneMid) - Math.abs(n - laneMid) })
     // 绕行折线的形状：先走一小段离开出点方块，横到外侧车道、沿车道走到另一端，再横回来进去。
     // 关键是那两条横线落在「刚离开方块」的位置，而不是落在正中 —— 落在正中时第一段
     // 就已经穿进障碍带了（这条是实测踩出来的，不是想出来的）。
@@ -1068,7 +1397,7 @@ function edgeGeometry(a, b, obstacles, offset, ports, usedLanes) {
            { x: lane, y: p1.y + ey * EDGE_LANE }, { x: p1.x, y: p1.y + ey * EDGE_LANE }, { x: p1.x, y: p1.y }]
         : [{ x: p0.x, y: p0.y }, { x: p0.x + sx * EDGE_LANE, y: p0.y }, { x: p0.x + sx * EDGE_LANE, y: lane },
            { x: p1.x + ex * EDGE_LANE, y: lane }, { x: p1.x + ex * EDGE_LANE, y: p1.y }, { x: p1.x, y: p1.y }]
-      if (!edgePathHits(detour, guard)) best = detour
+      if (!blockedBy(detour)) best = detour
     }
   }
   // 兜底二：还是不行就直接跨越。画布上一根线消失比画得难看严重得多，所以绝不返回 null。

@@ -1889,14 +1889,22 @@ console.log('\n[4p] 连线之间的两件事：平行间隔（不叠在一起）
   }
 
   // —— 甲：平行间隔 ——
-  // 两条都是「往右下」的竖线，中位线**算出来是同一个 y**（下面两条负向对照会证明这点），
-  // 横向跨度 [0,200] 与 [100,300] 相交。没有间隔算法时它们会画成同一条线。
+  // 两条竖着走的 Z 形折线，中位线**算出来是同一个 y**，横向跨度互相重叠 —— 没有间隔算法时
+  // 它们会画成同一条线。
+  //
+  // 2026-09-23 换掉了这个模型的坐标两次，原因值得写下来：
+  //   1) 最早的 pa(0,0)→pb(200,400) 靠「|dy| >= |dx| 就走竖轴」那条**只看中心**的旧规则才竖着走；
+  //      选边改成代价择优之后它改走横轴（更短），冲突就没了。
+  //   2) 第二版（把节点堆在两根柱子上）**这个断言是空转的**：pc/pd 会挡住 pa→pb 的直路，
+  //      于是第一条线本来就绕行、两条线天然不在同一条车道上 —— 把间隔算法删掉断言照样过。
+  //      独立复核抓到了这一点，现在的坐标是**穷举搜出来**的：两条都是干净的 Z（4 个折点、
+  //      不绕行）、中位线相同、跨度重叠，唯一能解释「车道差 ≥10px」的就只剩间隔算法本身。
   const PARALLEL_MODEL = {
     nodes: [
-      { id: 'pa', label: '甲', shape: 'rect', group: null, x: 0, y: 0 },
-      { id: 'pb', label: '乙', shape: 'rect', group: null, x: 200, y: 400 },
-      { id: 'pc', label: '丙', shape: 'rect', group: null, x: 300, y: 0 },
-      { id: 'pd', label: '丁', shape: 'rect', group: null, x: 100, y: 400 },
+      { id: 'pa', label: '甲', shape: 'rect', group: null, x: -60, y: 0 },
+      { id: 'pb', label: '乙', shape: 'rect', group: null, x: 40, y: 500 },
+      { id: 'pc', label: '丙', shape: 'rect', group: null, x: -40, y: 1000 },
+      { id: 'pd', label: '丁', shape: 'rect', group: null, x: 20, y: -500 },
     ],
     edges: [
       { id: 'pe1', from: 'pa', to: 'pb', label: '', arrow: '-->' },
@@ -1911,6 +1919,21 @@ console.log('\n[4p] 连线之间的两件事：平行间隔（不叠在一起）
     const p = ptsOf(d)
     return (p[0].y + p[p.length - 1].y) / 2
   }
+  // 两条都是干净的 Z（只有 M/L 四个折点；拐角被抹圆会额外出现 Q，那不算绕行）：
+  // 只要有一条在绕行（六个折点），下面那条断言就不是在测间隔算法了 —— 复核抓过一次这种空转。
+  const straightOf = (d) => {
+    const out = []
+    const re = /([ML])((?: -?[\d.]+)+)/g
+    let m
+    while ((m = re.exec(d)) !== null) {
+      const ns = (m[2].match(/-?[\d.]+/g) || []).map(Number)
+      out.push({ x: ns[0], y: ns[1] })
+    }
+    return out
+  }
+  ok('两条都是干净的 Z 形折线（没有绕行）',
+    straightOf(pds[0]).length === 4 && straightOf(pds[1]).length === 4,
+    { a: straightOf(pds[0]), b: straightOf(pds[1]) })
   // 负向对照：两条线的**中位线**本来就是同一个 —— 说明「相隔 ≥10px」不是算出来的巧合，
   // 而是间隔算法真的把它们推开了。
   ok('负向对照：两条线本来会落在同一条中位线上（|Δ| < 1）',
@@ -2437,6 +2460,77 @@ console.log('\n[4r] 客户端逻辑审计的修复：自动布局不许丢字段
     eq('手抖也不多记一次落盘', sets.length, setsBeforeJitter)
     ok('手抖仍然算点选 → 详情展开',
       !!dockEl() && dockEl().textContent.indexOf('节点 dk1') >= 0, dockEl() && dockEl().textContent)
+
+    // ---- 2026-09-23：展开/收起改成一整套显式语义（面板三态 + Esc 分层 + 分隔条） ----
+    const peekEl = () => host.querySelector('.ac-peek')
+    const selNode = () => host.querySelector('g.ac-node.sel')
+    const dockBtn = (t) => Array.from(host.querySelectorAll('.ac-dock-btn')).find((b) => b.textContent.trim() === t)
+
+    // 5) 再点**同一个**节点 = 收起（选中保留）—— 一个动作一个开关，不用去找关闭按钮
+    await act(async () => { down(nodeEl('甲'), 400, 300) })
+    await flush()
+    await act(async () => { up(nodeEl('甲'), 400, 300) })
+    await flush()
+    ok('再点同一个节点：面板收起', !dockEl())
+    ok('收起后留一条细条，写明收的是谁', !!peekEl() && peekEl().textContent.indexOf('节点 dk1') >= 0, peekEl() && peekEl().textContent)
+    ok('收起**不取消选中**（画布上的高亮还在）', !!selNode(), selNode() && selNode().textContent)
+
+    // 6) 点细条 → 重新展开
+    await act(async () => { peekEl().querySelector('.ac-peek-btn').click() })
+    await flush()
+    ok('点细条重新展开面板', !!dockEl() && dockEl().textContent.indexOf('节点 dk1') >= 0)
+
+    // 7) 标题栏上的两个按钮：收起（保留选中）/ 关闭（取消选中）
+    await act(async () => { dockBtn('▾ 收起').click() })
+    await flush()
+    ok('「▾ 收起」把面板收成细条，选中保留', !dockEl() && !!peekEl() && !!selNode())
+    await act(async () => { peekEl().querySelector('.ac-peek-btn').click() })
+    await flush()
+    await act(async () => { dockBtn('×').click() })
+    await flush()
+    ok('「×」关掉面板并取消选中', !dockEl() && !peekEl() && !selNode())
+
+    // 8) 背景「按下 + 抬手、中间没位移」= 点空白 → 清选中、面板也收
+    await act(async () => { down(nodeEl('甲'), 100, 100); up(nodeEl('甲'), 100, 100) })
+    await flush()
+    ok('前置：面板又打开了', !!dockEl())
+    await act(async () => { down(svgEl, 500, 400); up(svgEl, 500, 400) })
+    await flush()
+    ok('点空白：面板与细条都消失', !dockEl() && !peekEl())
+    ok('点空白：选中也清了', !selNode())
+
+    // 9) 负向对照：背景上**拖动平移**不该把面板收掉（想挪视角的人不该丢掉正在编辑的节点）
+    await act(async () => { down(nodeEl('乙'), 300, 200); up(nodeEl('乙'), 300, 200) })
+    await flush()
+    ok('前置：面板开着（乙）', !!dockEl() && dockEl().textContent.indexOf('节点 dk2') >= 0)
+    await act(async () => { down(svgEl, 500, 400); move(540, 430); up(svgEl, 540, 430) })
+    await flush()
+    ok('平移过画布之后：面板还在', !!dockEl() && dockEl().textContent.indexOf('节点 dk2') >= 0)
+    ok('平移过画布之后：选中还在', !!selNode())
+
+    // 10) Esc 分层：先收面板（选中保留）→ 再取消选中
+    const esc = (el) => el.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    const rootEl2 = host.querySelector('.ac-root')
+    await act(async () => { esc(rootEl2) })
+    await flush()
+    ok('第一下 Esc：只收面板，选中保留', !dockEl() && !!peekEl() && !!selNode())
+    await act(async () => { esc(rootEl2) })
+    await flush()
+    ok('第二下 Esc：取消选中，细条也消失', !peekEl() && !selNode())
+
+    // 11) 分隔条：能拖出面板高度（拖出来之后面板带内联 height，双击复位）
+    await act(async () => { down(nodeEl('甲'), 100, 100); up(nodeEl('甲'), 100, 100) })
+    await flush()
+    const sash = host.querySelector('.ac-sash')
+    ok('面板上有分隔条，且标了 role=separator', !!sash && sash.getAttribute('role') === 'separator')
+    await act(async () => {
+      sash.dispatchEvent(new dom.window.PointerEvent('pointerdown', { bubbles: true, button: 0, clientX: 10, clientY: 400 }))
+      dom.window.dispatchEvent(new dom.window.PointerEvent('pointermove', { bubbles: true, clientX: 10, clientY: 300 }))
+      dom.window.dispatchEvent(new dom.window.PointerEvent('pointerup', { bubbles: true, clientX: 10, clientY: 300 }))
+    })
+    await flush()
+    const dockAfter = host.querySelector('.ac-dock')
+    ok('拖分隔条之后面板带上了显式高度', !!dockAfter && /height:\s*\d+px/.test(dockAfter.getAttribute('style') || ''), dockAfter && dockAfter.getAttribute('style'))
   })
 
   respond = respond
@@ -2863,6 +2957,200 @@ console.log('\n[4v] 展开态的组框整块可拖：拖背景带走整组，拖
   await act(async () => { vRoot.unmount() })
   vHost.remove()
   respond = prevRespondV
+}
+
+console.log('\n[4w] 拖动：rAF 合帧不丢位移 / 吸附按屏幕像素 + 迟滞 + Alt / 取消要回滚')
+{
+  // 这一节量的是「手感」里可断言的那部分：
+  //   1) 一帧最多一次状态更新（rAF 合帧），但抬手前必须 flush —— 否则最后一段位移会丢；
+  //   2) 吸附阈值按**屏幕像素**折算（与缩放无关），带迟滞（吸上 8px、脱开 14px），Alt 临时关掉；
+  //   3) pointercancel（浏览器把手势判成滚动/缩放）= 回滚，不写盘也不进历史；
+  //      lostpointercapture（捕获中途丢了）= 提交，绝不静默丢掉用户已经拖出来的位移。
+  const DRAG_MODEL = {
+    nodes: [
+      { id: 'd1', label: '甲', shape: 'rect', group: null, x: 0, y: 0 },
+      { id: 'd2', label: '乙', shape: 'rect', group: null, x: 200, y: 0 },
+    ],
+    edges: [], groups: [], direction: 'TD', extras: [],
+  }
+  const prevR = respond
+  const sets = []
+  const m = JSON.parse(JSON.stringify(DRAG_MODEL))
+  respond = function (method, args) {
+    if (method === 'doc:get') return fullDoc({ model: m, nodeCount: m.nodes.length })
+    if (method === 'doc:set') { sets.push(args.model); return fullDoc({ model: args.model, nodeCount: args.model.nodes.length, revision: 7, updatedBy: 'user' }) }
+    return prevR(method, args)
+  }
+  const host = document.createElement('div')
+  document.body.appendChild(host)
+  const root = createRoot(host)
+  await act(async () => {
+    root.render(React.createElement(captured['conversation.view'], { cwd: UI, sessionId: 's-drag', useSessions: () => UI }))
+  })
+  await flush()
+
+  const svgEl = host.querySelector('svg.ac-svg')
+  const stageEl = host.querySelector('.ac-stage')
+  const nodeEl = () => Array.from(host.querySelectorAll('g.ac-node')).find((el) => (el.textContent || '').indexOf('甲') >= 0)
+  const rectX = () => Number(nodeEl().querySelector('rect:not(.ac-pulse)').getAttribute('x'))
+  const down = (x, y, extra) => nodeEl().dispatchEvent(new dom.window.PointerEvent('pointerdown', Object.assign({ bubbles: true, button: 0, clientX: x, clientY: y }, extra || {})))
+  const move = (x, y, extra) => svgEl.dispatchEvent(new dom.window.PointerEvent('pointermove', Object.assign({ bubbles: true, clientX: x, clientY: y }, extra || {})))
+  const up = (x, y) => svgEl.dispatchEvent(new dom.window.PointerEvent('pointerup', { bubbles: true, button: 0, clientX: x, clientY: y }))
+  const frame = async () => { await act(async () => { await new Promise((r) => dom.window.requestAnimationFrame(() => r())) }) }
+  const curX = () => { const s = sets[sets.length - 1]; return s ? s.nodes.find((n) => n.id === 'd1').x : 0 }
+  let k = 1   // 当前缩放：client 位移 = 模型位移 × k
+  // 每次拖动都从「节点当前所在的位置」出发（拖动会累积，不是每次都从 0 开始）
+  const dragTo = async (target, extra) => {
+    const from = curX()
+    await act(async () => { down(0, 0) })
+    await flush()
+    await act(async () => { move((target - from) * k, 0, extra) })
+    await frame()
+  }
+  const endDrag = async () => { await act(async () => { up(0, 0) }); await flush() }
+  // 一次「按下 → 若干次移动 → 抬手」。**必须一次按下走完**，因为吸附的迟滞状态
+  // （上一步吸在哪条线上）挂在这一次拖动里；每次移动都要等一帧，rAF 是 latest-wins。
+  const dragSeq = async (targets) => {
+    let from = curX()
+    await act(async () => { down(0, 0) })
+    await flush()
+    for (const t of targets) {
+      const d = (t - from) * k
+      await act(async () => { move(d, 0) })
+      await frame()
+      from = t
+    }
+    await endDrag()
+  }
+
+  // ---- 1) rAF 合帧：只发一个 pointermove（不抬手），下一帧位置也要生效 ----
+  await act(async () => { down(0, 0) })
+  await flush()
+  await act(async () => { move(100, 0) })
+  await frame()
+  ok('只发 pointermove、不抬手：下一帧节点就跟着走了（rAF 那条路真的在跑）',
+    Math.abs(rectX() - (-52 + 100)) < 1, rectX())
+  await act(async () => { up(100, 0) })
+  await flush()
+  eq('抬手时提交的是最后那段位移（flush 没丢）', curX(), 100)
+
+  // ---- 2) 吸附：k=1 时阈值 8px，206 距对端中心 6px → 吸到 200 ----
+  await dragTo(206)
+  ok('吸附命中时画布上出现参考线（.ac-snapline）', !!host.querySelector('.ac-snapline'))
+  await endDrag()
+  eq('k=1：偏离 6px 吸到对端中心线上', curX(), 200)
+
+  // ---- 3) 迟滞：吸上之后要走到 14px 之外才脱开（必须在**同一次**拖动里） ----
+  // 先挪到一个离吸附线远的地方（230），这样后面每次移动都能按「节点中心的目标值」直接算
+  await dragSeq([230])
+  await act(async () => { down(0, 0) })
+  await flush()
+  await act(async () => { move((204 - 230) * k, 0) })   // 中心 204：距 200 是 4px → 吸上
+  await frame()
+  ok('先吸上（中心 204 距 200 只有 4px）', Math.abs(rectX() - (-52 + 200)) < 1, rectX())
+  await act(async () => { move((210 - 230) * k, 0) })   // 中心 210：距 200 是 10px，> 进入阈值 8、< 脱开阈值 14
+  await frame()
+  ok('吸上之后 10px 之内仍然吸着（迟滞）', Math.abs(rectX() - (-52 + 200)) < 1, rectX())
+  await act(async () => { move((216 - 230) * k, 0) })   // 中心 216：16px > 14 → 脱开
+  await frame()
+  await act(async () => { up(0, 0) })
+  await flush()
+  eq('走出脱开阈值之后不再吸（回到跟手）', curX(), 216)
+
+  // ---- 4) Alt 临时关掉吸附 ----
+  await dragTo(206, { altKey: true })
+  await endDrag()
+  eq('按住 Alt：同一个位置不吸，落在 206', curX(), 206)
+
+  // ---- 5) 阈值按屏幕像素折算：放大到 1.4 倍之后，6px 就不该再吸 ----
+  await act(async () => {
+    for (let i = 0; i < 3; i++) stageEl.dispatchEvent(new dom.window.WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: -1, clientX: 0, clientY: 0 }))
+  })
+  await flush()
+  // 缩放从**画布真实渲染出来的 transform** 读，而不是把滚轮步长（1.12）抄进测试 ——
+  // 抄进来的话，改一次滚轮灵敏度这条测试就悄悄测错了东西。
+  const worldScale = () => {
+    const t = host.querySelector('g.ac-world').getAttribute('transform') || ''
+    const m = /scale\(([\d.]+)\)/.exec(t)
+    return m ? Number(m[1]) : 1
+  }
+  k = worldScale()
+  ok('前置：滚轮确实把画布放大了（从 transform 读到的 k=' + k.toFixed(3) + '）', k > 1.3)
+  // 这一条是**旧规则的判据**，不是恒真式：阈值缩到 8/k 之后，6px 的偏移已经落在阈值外，
+  // 而同一批操作在 k=1 时是吸上的（第 2 步断言过「k=1：偏离 6px 吸到对端中心线上」）。
+  ok('负向对照：按旧规则（模型单位 8px）这个偏移会吸上，而按屏幕阈值 8/k=' + (8 / k).toFixed(2) + 'px 不该吸',
+    6 > 8 / k && 6 < 8)
+  // 注意：拖动本身有个 4px（client）的抖动门槛，所以「位移」要够大才算拖动。
+  // 放大之后 4 个模型像素 = 5.6 个 client 像素，够过门槛；而两次移动的距离也要够。
+  await dragSeq([216])
+  eq('放大后 16px 的偏移不吸（离得远）', curX(), 216)
+  await dragSeq([204])   // 216 → 204：位移 12 模型像素（够过门槛），终点距 200 是 4px < 8/k
+  eq('放大后 4px 的偏移仍然吸上（不是「放大之后吸附整体失效」）', curX(), 200)
+  await dragSeq([206])   // 200 → 206：终点距 200 是 6px > 8/k ≈ 5.7px
+  eq('放大后 6px 的偏移不再吸（阈值按屏幕像素折算）', curX(), 206)
+
+  // ---- 6) pointercancel：回滚，不写盘 ----
+  const setsBeforeCancel = sets.length
+  const atCancel = curX()
+  await dragTo(atCancel + 300)
+  ok('前置：取消之前节点确实跟着走了', rectX() > 100, rectX())
+  await act(async () => { svgEl.dispatchEvent(new dom.window.PointerEvent('pointercancel', { bubbles: true, clientX: 300 * k, clientY: 0 })) })
+  await flush()
+  eq('pointercancel 之后节点回到按下时的坐标', curX(), atCancel)
+  eq('pointercancel 不写盘（不进历史）', sets.length, setsBeforeCancel)
+
+  // ---- 7) lostpointercapture：提交，不静默丢位移 ----
+  const setsBeforeLost = sets.length
+  const target7 = curX() + 160
+  await dragTo(target7)
+  await act(async () => { svgEl.dispatchEvent(new dom.window.PointerEvent('lostpointercapture', { bubbles: true, clientX: 160 * k, clientY: 0 })) })
+  await flush()
+  ok('捕获中途丢了：位移被提交而不是丢掉', sets.length > setsBeforeLost, sets.length - setsBeforeLost)
+  eq('提交的正是拖动到的位置', curX(), target7)
+
+  await act(async () => { root.unmount() })
+  host.remove()
+  respond = prevR
+
+  // ---- 8) 分组拖动也吸附（从前只有节点吸，同一个动作两种手感） ----
+  const GRP_MODEL = {
+    nodes: [
+      { id: 'm1', label: '甲', shape: 'rect', group: 'g1', x: 0, y: 0 },
+      { id: 'm2', label: '乙', shape: 'rect', group: 'g1', x: 100, y: 0 },
+      { id: 'p1', label: '丙', shape: 'rect', group: null, x: 450, y: 0 },
+    ],
+    edges: [], groups: [{ id: 'g1', label: '组一' }], direction: 'TD', extras: [],
+  }
+  const gSets = []
+  const gm0 = JSON.parse(JSON.stringify(GRP_MODEL))
+  respond = function (method, args) {
+    if (method === 'doc:get') return fullDoc({ model: gm0, nodeCount: gm0.nodes.length })
+    if (method === 'doc:set') { gSets.push(args.model); return fullDoc({ model: args.model, nodeCount: args.model.nodes.length, revision: 7, updatedBy: 'user' }) }
+    return prevR(method, args)
+  }
+  const gHost = document.createElement('div')
+  document.body.appendChild(gHost)
+  const gRoot = createRoot(gHost)
+  await act(async () => {
+    // 换个会话：视角记忆按「会话|文档」存，上一个挂载把画布放大过
+    gRoot.render(React.createElement(captured['conversation.view'], { cwd: UI, sessionId: 's-drag-grp', useSessions: () => UI }))
+  })
+  await flush()
+  const gBox = gHost.querySelector('rect.ac-group-box')
+  const gSvg = gHost.querySelector('svg.ac-svg')
+  ok('前置：组框在（展开态）', !!gBox)
+  // 组成员中心 = (0+100)/2 = 50；拖 396 → 圈心到 446，距 p1 的中心 450 差 4px → 吸上 → 位移变 400
+  await act(async () => { gBox.dispatchEvent(new dom.window.PointerEvent('pointerdown', { bubbles: true, button: 0, clientX: 0, clientY: 0 })) })
+  await flush()
+  await act(async () => { gSvg.dispatchEvent(new dom.window.PointerEvent('pointermove', { bubbles: true, clientX: 396, clientY: 0 })) })
+  await act(async () => { await new Promise((r) => dom.window.requestAnimationFrame(() => r())) })
+  await act(async () => { gSvg.dispatchEvent(new dom.window.PointerEvent('pointerup', { bubbles: true, button: 0, clientX: 396, clientY: 0 })) })
+  await flush()
+  const gm = gSets[gSets.length - 1]
+  eq('分组拖动也吸附：圈心吸到对端中心线（396 → 400）', gm && gm.nodes.find((n) => n.id === 'm1').x, 400)
+  await act(async () => { gRoot.unmount() })
+  gHost.remove()
+  respond = prevR
 }
 
 console.log('\n[7] 卸载不留尾')

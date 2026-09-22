@@ -11,6 +11,14 @@ var TAB_ID = 'arch-canvas'
  */
 var DRAG_SLOP = 4
 
+/**
+ * 底部检查器（详情面板）的高度（px）—— 用户在面板上边缘拖出来的结果。
+ * **只活在模块里**：切走子页、换会话都还在，重启 dsh 就复位。与「视角、撤销栈」同一条
+ * 记忆规则（见 studioMemo 那段注释）：这些是用户**自己调过**的东西，重开面板该还在；
+ * 而面板里的草稿、选中、开合状态都不记 —— 那些是「正在做的事」。
+ */
+var STUDIO_DOCK_H = null
+
 // 当前画布的实时节点快照，供 register.ts 里的 @ 引用 trigger source 消费。
 // **按会话分开存**：画布现在住在主窗口子页里（`conversation.view`），切到「对话」页就是卸载，
 // 而快照是模块级的、卸载不会清。从前只有一个数组，于是在另一个会话（另一个项目）里打 @，
@@ -205,9 +213,24 @@ function ArchStudio(props) {
   // 从前面板在 pointerdown 就 setSel，于是「想拖一个节点」的那一下也把详情顶出来：
   // 它最多吃掉画布 46% 的高度，拖动途中画布变矮，节点被挤到看不见的地方，手感就坏了。
   // 选中的高亮仍然在按下时给（描边不改变布局，是拖动时该有的即时反馈），详情等抬手。
+  //
+  // 三态（2026-09-23）：展开 / 收起成**一条细条**（选中保留）/ 无选中。
+  // 「收起」与「关闭」必须分开：收起只把面板收掉、保留选中（还能继续用方向键微调、看高亮），
+  // 关闭才取消选中。从前只有布尔开关，收面板的唯一办法是清选中 —— 想「先看看整张图再回来改」
+  // 就做不到。VS Code 的 Panel、Blender 的 N 面板都是这个语义。
   var dockState = React.useState(false)
   var dockOpen = dockState[0]
   var setDockOpen = dockState[1]
+  var dockHState = React.useState(STUDIO_DOCK_H)
+  var dockH = dockHState[0]
+  var setDockH = dockHState[1]
+  // 面板当前展示的是哪个元素 + 面板是不是开着：这两个都走 ref，因为
+  // 「点同一个元素 = 收起」要在**没有重渲染夹在中间**时也成立（测试里 down/up 就是同一个 act）。
+  var dockForRef = React.useRef(null)
+  var dockOpenRef = React.useRef(false)
+  dockOpenRef.current = dockOpen
+  var dockRef = React.useRef(null)
+  var sashCleanupRef = React.useRef(null)
 
   var viewState = React.useState({ x: 0, y: 0, k: 1 })
   var view = viewState[0]
@@ -364,8 +387,10 @@ function ArchStudio(props) {
         // 节点**永远只画标题**，具体信息一律去检查器里看（2026-09 用户要求取消就地展开）。
         // 好处不只是省地方：尺寸不再与选中有关，于是选中一个方块**不会改变它的几何** ——
         // 连在它上面的线就不会因为你点一下而全部重画。
+        // `shape` 要跟着几何一起给连线用：锚点得投到这个形状的**可见轮廓**上，
+        // 而 edgeGeometry 只拿到几何 —— 少了它，菱形/椭圆上的箭头会悬在包围盒外面。
         var s = nodeSize(splitLabel(n.label).title, 0)
-        out[n.id] = { x: n.x == null ? 0 : n.x, y: n.y == null ? 0 : n.y, w: s.w, h: s.h }
+        out[n.id] = { x: n.x == null ? 0 : n.x, y: n.y == null ? 0 : n.y, w: s.w, h: s.h, shape: n.shape || 'rect' }
       }
     }
     geomRef.current = out
@@ -822,12 +847,32 @@ function ArchStudio(props) {
     var el = hostRef.current
     if (!el || typeof ResizeObserver !== 'function') return
     var ro = new ResizeObserver(function () {
-      if (fittedRef.current) return
-      if (fitView(false)) fittedRef.current = true
+      // 还没适应过窗口 → 补一次适应；已经摆好了 → 只在选中元素被挤出视野时把它带回来。
+      // 从前这里 `if (fittedRef.current) return` 什么都不做，于是「详情面板一展开、
+      // 贴着底边的那个节点就被盖住」是一个没人管的洞。
+      if (!fittedRef.current && fitView(false)) { fittedRef.current = true; return }
+      if (fittedRef.current) keepSelInView()
     })
     ro.observe(el)
     return function () { ro.disconnect() }
   }, [tab])
+
+  // 面板开合 → 画布高度变了 → 把选中的东西带回视野（最小平移，不重新适应窗口）。
+  React.useEffect(function () {
+    if (!dockOpen) return
+    keepSelInView()
+  }, [dockOpen])
+
+  // 卸载时把还没跑的那一帧取消掉：画布住在子页里，切到「对话」就是卸载，
+  // 而 rAF 回调里握着的还是旧组件的作用域 —— 让它跑完只是白算一次，还会往已经没人看的状态里写。
+  React.useEffect(function () {
+    return function () {
+      var d = dragRef.current
+      if (d && d.raf) rafCancel(d.raf)
+      dragRef.current = null
+      if (typeof sashCleanupRef.current === 'function') sashCleanupRef.current()
+    }
+  }, [])
 
   React.useEffect(function () {
     // **只在画布页挂滚轮缩放。** 这条 `if` 修的是一桩真 bug（用户报了两遍）：
@@ -854,12 +899,110 @@ function ArchStudio(props) {
     return function () { el.removeEventListener('wheel', onWheel) }
   }, [tab])
 
-  function toModelPt(e) {
+  // 每个 pointermove 都 getBoundingClientRect 会强制一次布局计算（写后读）。
+  // 拖动期间画布矩形的尺寸/位置不会变（变的是面板开合，而那发生在抬手），所以按下时量一次、
+  // 整段拖动复用；没有缓存时才现量。
+  function stageRect() {
+    var el = hostRef.current
+    return el ? el.getBoundingClientRect() : { left: 0, top: 0, width: 0, height: 0 }
+  }
+  function toModelPt(e, rect = null) {
     var el = hostRef.current
     if (!el) return { x: 0, y: 0 }
-    var rect = el.getBoundingClientRect()
+    var r = rect || el.getBoundingClientRect()
     var v = viewRef.current
-    return { x: (e.clientX - rect.left - v.x) / v.k, y: (e.clientY - rect.top - v.y) / v.k }
+    return { x: (e.clientX - r.left - v.x) / v.k, y: (e.clientY - r.top - v.y) / v.k }
+  }
+
+  function sameSel(x, y) {
+    if (!x || !y || x.kind !== y.kind) return false
+    if (x.kind === 'node') return x.id === y.id
+    return x.from === y.from && x.to === y.to
+  }
+
+  /**
+   * 点了一个元素之后，详情面板该怎么办：
+   *   同一个元素 + 面板开着  → **收起**（选中保留，画布立刻长回来）
+   *   别的元素 / 面板收着    → 展开并换成这个元素
+   * 于是「点一下 = 打开，再点一下 = 收起」——一个动作一个开关，不需要去找关闭按钮。
+   */
+  function toggleDockFor(next) {
+    if (dockOpenRef.current && sameSel(dockForRef.current, next)) { setDockOpen(false); return }
+    dockForRef.current = next
+    setDockOpen(true)
+  }
+
+  function setDockHeight(h) {
+    STUDIO_DOCK_H = h == null ? null : Math.round(h)
+    setDockH(STUDIO_DOCK_H)
+  }
+
+  /**
+   * 拖面板上边缘调整高度（分隔条）。
+   * 用 window 上的 pointermove/up 而不是元素自己的：拖动中指针经常跑到分隔条外面，
+   * 挂在元素上会中途断掉。双击复位成默认高度。
+   */
+  function onSashDown(e) {
+    if (e.button !== 0) return
+    e.stopPropagation()
+    e.preventDefault()
+    if (typeof window === 'undefined') return
+    var el = dockRef.current, root = rootRef.current
+    if (!el) return
+    var h0 = el.getBoundingClientRect().height || 200
+    var rootH = root ? (root.getBoundingClientRect().height || 600) : 600
+    var y0 = e.clientY
+    function onMove(ev) {
+      var h = h0 + (y0 - ev.clientY)
+      // 上限同时受两件事约束：不超过 60% 的根高，也不把画布压到低于它的最小高度
+      // （.ac-stage 有 min-height:140px，加上标题栏/工具条/状态栏，再往上顶就会溢出被裁掉）。
+      var cap = Math.max(140, Math.min(rootH * 0.6, rootH - 250))
+      h = Math.max(120, Math.min(cap, h))
+      setDockHeight(h)
+    }
+    function onUp() {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', onUp)
+      sashCleanupRef.current = null
+    }
+    // pointercancel 也要摘（触屏上拖分隔条很容易被判成滚动手势）；
+    // 另外把清理挂到 ref 上，组件卸载时（切到「对话」子页）也要摘掉 ——
+    // 不摘的话监听器会留在 window 上，之后**不按键**移动指针也会改面板高度。
+    sashCleanupRef.current = onUp
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    window.addEventListener('pointercancel', onUp)
+  }
+
+  /**
+   * 面板开合会改变 .ac-stage 的高度：选中元素如果因此跑出视野（最典型的是贴着底边的节点，
+   * 面板一展开就被盖住），就把视角**最小地**平移一下把它带回来。
+   * 刻意不重新 fitView：用户自己摆的视角是一次开面板不该冲掉的东西。
+   */
+  function keepSelInView() {
+    var el = hostRef.current
+    var s = selRef.current
+    if (!el || !s || s.kind !== 'node') return
+    var g = geomRef.current[s.id]
+    if (!g) return
+    var rect = el.getBoundingClientRect()
+    if (!rect.width || !rect.height) return
+    var v = viewRef.current
+    var pad = 26
+    var x0 = v.x + g.x * v.k - (g.w * v.k) / 2
+    var x1 = v.x + g.x * v.k + (g.w * v.k) / 2
+    var y0 = v.y + g.y * v.k - (g.h * v.k) / 2
+    var y1 = v.y + g.y * v.k + (g.h * v.k) / 2
+    var dx = 0, dy = 0
+    if (x0 < pad) dx = pad - x0
+    else if (x1 > rect.width - pad) dx = (rect.width - pad) - x1
+    if (y0 < pad) dy = pad - y0
+    else if (y1 > rect.height - pad) dy = (rect.height - pad) - y1
+    if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) return
+    var nv = { k: v.k, x: v.x + dx, y: v.y + dy }
+    viewRef.current = nv
+    setView(nv)
   }
 
   function nodeAt(pt) {
@@ -882,11 +1025,15 @@ function ArchStudio(props) {
 
   function onBackgroundDown(e) {
     if (e.button !== 0) return
-    setSel(null)
-    setDockOpen(false)
+    // 清选中 / 收面板**不在这里做**：按下只是「一次可能的平移」的开始。真要清，得等抬手时
+    // 仍然没有位移（见 onPointerUp）—— 否则「想把视角挪一下」的那一下一定先把详情面板收掉，
+    // 而那正是用户正在看的东西。
     capture(e)
     var v = viewRef.current
-    dragRef.current = { kind: 'pan', ox: e.clientX - v.x, oy: e.clientY - v.y }
+    dragRef.current = {
+      kind: 'pan', ox: e.clientX - v.x, oy: e.clientY - v.y,
+      moved: false, sx: e.clientX, sy: e.clientY, rect: stageRect(),
+    }
   }
 
   function onNodeDown(e, node) {
@@ -902,9 +1049,17 @@ function ArchStudio(props) {
     setNoteDoneDraft(node.noteDone === true)
     setFilesDraft((node.files || []).join('\n'))
     capture(e)
-    var pt = toModelPt(e)
     var g = geomRef.current[node.id]
-    dragRef.current = { kind: 'node', id: node.id, dx: g.x - pt.x, dy: g.y - pt.y, moved: false, sx: e.clientX, sy: e.clientY }
+    if (!g) return
+    var rect0 = stageRect()
+    var pt0 = toModelPt(e, rect0)
+    dragRef.current = {
+      kind: 'node', id: node.id, dx: g.x - pt0.x, dy: g.y - pt0.y,
+      moved: false, sx: e.clientX, sy: e.clientY, rect: rect0,
+      start: { x: g.x, y: g.y },          // 取消（pointercancel）时回滚到这里
+      snap: { gx: null, gy: null },       // 吸附迟滞要记住上一步吸在哪条线上
+      pending: null, raf: 0,
+    }
   }
 
   /**
@@ -925,7 +1080,11 @@ function ArchStudio(props) {
     }
     if (!members.length) return
     capture(e)
-    dragRef.current = { kind: 'group', gid: gid, start: toModelPt(e), members: members, moved: false, sx: e.clientX, sy: e.clientY }
+    dragRef.current = {
+      kind: 'group', gid: gid, start: toModelPt(e), members: members,
+      moved: false, sx: e.clientX, sy: e.clientY, rect: stageRect(),
+      snap: { gx: null, gy: null }, pending: null, raf: 0,
+    }
   }
 
   function onHandleDown(e, node) {
@@ -933,15 +1092,15 @@ function ArchStudio(props) {
     e.stopPropagation()
     capture(e)
     setLinkPt(toModelPt(e))
-    dragRef.current = { kind: 'link', from: node.id }
+    dragRef.current = { kind: 'link', from: node.id, rect: stageRect() }
   }
 
   function onEdgeDown(e, from, to) {
     if (e.button !== 0) return
     e.stopPropagation()
     setSel({ kind: 'edge', from: from, to: to })
-    // 连线没有拖动语义，按下就是点 —— 详情直接开。
-    setDockOpen(true)
+    // 连线没有拖动语义，按下就是点 —— 与节点同一条开关语义（再点一次收起详情）。
+    toggleDockFor({ kind: 'edge', from: from, to: to })
     var cur = modelRef.current
     var ed = null
     if (cur && cur.edges) {
@@ -955,36 +1114,67 @@ function ArchStudio(props) {
     setEdgeDraft(ed && ed.label ? ed.label : '')
   }
 
-  function onPointerMove(e) {
+  /**
+   * 把一次 pointermove 交给 rAF 合帧：一帧最多一次状态更新。
+   * 每次更新都是一次整树重渲染 + 全图重新布线；鼠标 pointermove 在 Chrome 上本来就与帧对齐，
+   * 但触屏/高刷设备会给得更密，中间那些点对「跟手」没有任何贡献。
+   * **抬手前必须 flush**（见 flushMove / onPointerUp），否则最后一段位移会丢。
+   */
+  function scheduleMove(e) {
     var d = dragRef.current
     if (!d) return
-    if (d.kind === 'pan') {
-      var nv = { k: viewRef.current.k, x: e.clientX - d.ox, y: e.clientY - d.oy }
-      viewRef.current = nv
-      userViewRef.current = true
-      setView(nv)
-      return
-    }
-    var pt = toModelPt(e)
+    d.pending = { x: e.clientX, y: e.clientY, alt: e.altKey === true }
+    if (d.raf) return
+    var mine = d
+    d.raf = rafFrame(function () {
+      var cur = dragRef.current
+      if (!cur || cur !== mine) return
+      mine.raf = 0
+      var p = mine.pending
+      mine.pending = null
+      if (p) applyMove(p)
+    })
+  }
+
+  function flushMove() {
+    var d = dragRef.current
+    if (!d) return
+    if (d.raf) { rafCancel(d.raf); d.raf = 0 }
+    var p = d.pending
+    d.pending = null
+    if (p) applyMove(p)
+  }
+
+  /** 一次拖动的实际计算：入参是光标位置（不是事件对象），因此 rAF 合帧与直接调用走同一条路。 */
+  function applyMove(p) {
+    var d = dragRef.current
+    if (!d) return
+    var pt = toModelPt({ clientX: p.x, clientY: p.y }, d.rect)
     if (d.kind === 'node') {
       var cur = modelRef.current
       if (!cur) return
       // 抖动门槛：按下之后的一两像素移动**不算拖动**（触控板点一下很少一动不动）。
       // 过了门槛才认成拖动，也才可能进历史 —— 于是「按下就没动」的那一次干净地留给
       // onPointerUp 去开详情，而不是既开详情又记一条「用户移动了节点」的假历史。
-      if (!d.moved && Math.abs(e.clientX - d.sx) + Math.abs(e.clientY - d.sy) < DRAG_SLOP) return
+      if (!d.moved && Math.abs(p.x - d.sx) + Math.abs(p.y - d.sy) < DRAG_SLOP) return
       d.moved = true
-      // 吸附：接近别的节点的中心线就贴上去，并留一条参考线说明「贴的是哪一条」。
-      var sn = snapToPeers(cur.nodes, d.id, Math.round(pt.x + d.dx), Math.round(pt.y + d.dy))
+      // 拖动期保持**浮点**坐标：每帧 Math.round 会把它变成 k 像素的台阶（放大时肉眼可见）。
+      // 落盘的坐标由宿主自己取整（`mermaid.ts` 与 normalizeModel），提交时这里也再取整一次，
+      // 所以「跟手」不会换来「文件里出现小数」。
+      var tx = pt.x + d.dx
+      var ty = pt.y + d.dy
+      // 吸附：阈值按屏幕像素折算（与缩放无关），带迟滞；按住 Alt 临时关掉。
+      var sn = p.alt
+        ? { x: tx, y: ty, gx: null, gy: null }
+        : snapToPeers(cur.nodes, [d.id], tx, ty, viewRef.current.k, d.snap)
+      d.snap = { gx: sn.gx, gy: sn.gy }
       setDragHint(sn.gx == null && sn.gy == null ? null : sn)
-      var nx = sn.x
-      var ny = sn.y
       var nodes = []
       for (var i = 0; i < cur.nodes.length; i++) {
         var n = cur.nodes[i]
         // 用 Object.assign 保留**所有**字段：原先显式列 {id,label,shape,group,x,y} 会把
         // note / noteDone / files / link 悄悄丢掉 —— 拖一下，留言和锚点就没了（而且不报错）。
-        nodes.push(n.id === d.id ? Object.assign({}, n, { x: nx, y: ny }) : n)
+        nodes.push(n.id === d.id ? Object.assign({}, n, { x: sn.x, y: sn.y }) : n)
       }
       setLocal({ nodes: nodes, edges: cur.edges, groups: cur.groups, direction: cur.direction, extras: cur.extras })
       return
@@ -993,14 +1183,31 @@ function ArchStudio(props) {
       var curG = modelRef.current
       if (!curG) return
       // 与节点拖动同一条门槛：折叠块「点一下」不该把整组挪走，也不该记一条历史。
-      if (!d.moved && Math.abs(e.clientX - d.sx) + Math.abs(e.clientY - d.sy) < DRAG_SLOP) return
+      if (!d.moved && Math.abs(p.x - d.sx) + Math.abs(p.y - d.sy) < DRAG_SLOP) return
       d.moved = true
       // 组**没有自己的坐标** —— 它就是成员节点的包围盒。所以「拖动组」唯一真实的含义
       // 是把成员一起挪。位移用**起点差值**而不是逐帧累加，免得浮点误差把坐标磨偏。
-      var gdx = Math.round(pt.x - d.start.x)
-      var gdy = Math.round(pt.y - d.start.y)
+      var gdx = pt.x - d.start.x
+      var gdy = pt.y - d.start.y
+      // 分组拖动也要吸附（从前只有节点吸）—— 同一个动作两种手感，本身就是「不自然」的来源。
+      // 吸附参考取整组的圈心，于是整组一起贴到别的节点/组的中心线上。
       var startPos = {}
       for (var mk = 0; mk < d.members.length; mk++) startPos[d.members[mk].id] = d.members[mk]
+      var ids = []
+      var cxs = 0, cys = 0
+      for (var mj = 0; mj < d.members.length; mj++) {
+        ids.push(d.members[mj].id)
+        cxs += d.members[mj].x
+        cys += d.members[mj].y
+      }
+      var n0 = Math.max(1, d.members.length)
+      var gsn = p.alt
+        ? { x: 0, y: 0, gx: null, gy: null }
+        : snapToPeers(curG.nodes, ids, cxs / n0 + gdx, cys / n0 + gdy, viewRef.current.k, d.snap)
+      if (gsn.gx != null) gdx += gsn.gx - (cxs / n0 + gdx)
+      if (gsn.gy != null) gdy += gsn.gy - (cys / n0 + gdy)
+      d.snap = { gx: gsn.gx, gy: gsn.gy }
+      setDragHint(gsn.gx == null && gsn.gy == null ? null : gsn)
       var gNodes = []
       for (var gk = 0; gk < curG.nodes.length; gk++) {
         var gn = curG.nodes[gk]
@@ -1010,33 +1217,93 @@ function ArchStudio(props) {
       setLocal({ nodes: gNodes, edges: curG.edges, groups: curG.groups, direction: curG.direction, extras: curG.extras })
       return
     }
+    if (d.kind === 'pan') {
+      if (!d.moved && Math.abs(p.x - d.sx) + Math.abs(p.y - d.sy) < DRAG_SLOP) return
+      d.moved = true
+      var nv = { k: viewRef.current.k, x: p.x - d.ox, y: p.y - d.oy }
+      viewRef.current = nv
+      userViewRef.current = true
+      setView(nv)
+      return
+    }
     if (d.kind === 'link') setLinkPt(pt)
+  }
+
+  function onPointerMove(e) {
+    var d = dragRef.current
+    if (!d) return
+    scheduleMove(e)
+  }
+
+  /**
+   * 提交一次拖动：**取整只在这里做一次**，然后落历史、发盘。
+   * 拖动期间模型里是浮点，所以这里必须重建一份。
+   */
+  function commitDrag(d, note) {
+    var cur = modelRef.current
+    if (!cur) return
+    var move = {}
+    if (d.kind === 'node') move[d.id] = true
+    else for (var mi = 0; mi < d.members.length; mi++) move[d.members[mi].id] = true
+    var nodes = []
+    for (var i = 0; i < cur.nodes.length; i++) {
+      var n = cur.nodes[i]
+      nodes.push(move[n.id]
+        ? Object.assign({}, n, { x: Math.round(n.x == null ? 0 : n.x), y: Math.round(n.y == null ? 0 : n.y) })
+        : n)
+    }
+    push({ nodes: nodes, edges: cur.edges, groups: cur.groups, direction: cur.direction, extras: cur.extras }, note)
+  }
+
+  /** 把被拖的东西放回按下时的位置（浏览器把这次手势取消时用，不进历史、不写盘）。 */
+  function restoreDrag(d) {
+    var cur = modelRef.current
+    if (!cur) return
+    var back = {}
+    if (d.kind === 'node') back[d.id] = d.start
+    else for (var mi = 0; mi < d.members.length; mi++) back[d.members[mi].id] = d.members[mi]
+    var nodes = []
+    for (var i = 0; i < cur.nodes.length; i++) {
+      var n = cur.nodes[i]
+      var b = back[n.id]
+      nodes.push(b ? Object.assign({}, n, { x: b.x, y: b.y }) : n)
+    }
+    setLocal({ nodes: nodes, edges: cur.edges, groups: cur.groups, direction: cur.direction, extras: cur.extras })
   }
 
   function onPointerUp(e) {
     var d = dragRef.current
+    // **平移也要 flush**：它同样走 rAF 合帧，而「这次到底是点空白还是平移」正是由
+    // 最终位移决定的 —— 不 flush 就会把一次平移误判成点空白，把选中和面板一起清掉。
+    if (d) flushMove()
     dragRef.current = null
     release(e)
     setDragHint(null)
     if (!d) return
+    if (d.kind === 'pan') {
+      // 背景上「按下 → 抬手、中间没有真实位移」= 一次点空白：清选中、收面板。
+      // 平移过就不算 —— 挪视角不该把正在编辑的节点丢掉。
+      if (!d.moved) { setSel(null); setDockOpen(false) }
+      return
+    }
     if (d.kind === 'node' && d.moved) {
-      push(modelRef.current, '用户移动了节点')
+      commitDrag(d, '用户移动了节点')
       setStatus('已移动节点并同步')
       return
     }
     if (d.kind === 'node' && !d.moved) {
-      // 按下与抬手之间没有真实位移 = 一次「点选」。详情在这一刻才展开：
-      // 它下挂的是一块最多占 46% 高度的面板，拖动中途展开会把画布挤矮、把节点挤出视野。
-      setDockOpen(true)
+      // 按下与抬手之间没有真实位移 = 一次「点选」。
+      // 详情下挂着一块能吃掉半个画布高度的面板，所以拖动途中不展开（见下面的 toggleDockFor）。
+      toggleDockFor({ kind: 'node', id: d.id })
       return
     }
     if (d.kind === 'group' && d.moved) {
-      push(modelRef.current, '用户移动了分组')
+      commitDrag(d, '用户移动了分组')
       setStatus('已移动分组里的 ' + d.members.length + ' 个节点')
       return
     }
     if (d.kind === 'link') {
-      var pt = toModelPt(e)
+      var pt = toModelPt(e, d.rect)
       var target = nodeAt(pt)
       setLinkPt(null)
       if (!target || target.id === d.from) return
@@ -1051,9 +1318,30 @@ function ArchStudio(props) {
     }
   }
 
-  function onLostPointerCapture(e) {
+  /**
+   * 浏览器把这次手势取消掉了（判成滚动/缩放/系统手势，或指针被抢走）。
+   * **不能当成一次正常抬手**：那会把一次用户根本没完成的拖动写进历史、还发盘。
+   * 把被拖的东西放回原位，一个字节都不写。
+   */
+  function onPointerCancel(e) {
+    var d = dragRef.current
     dragRef.current = null
     setLinkPt(null)
+    setDragHint(null)
+    if (!d) return
+    if (d.kind === 'node' || d.kind === 'group') restoreDrag(d)
+    try { release(e) } catch (err) {}
+  }
+
+  /**
+   * 指针捕获在拖动**中途**丢了（窗口失焦、设备被拔掉、浏览器收回捕获）。
+   * 这时静默丢掉已经发生的位移是最坏的选择 —— 用户看到方块在屏幕上动过，
+   * 松手后却回到原位，而且没有任何提示。当作一次正常抬手提交（能退回，见检查点）。
+   */
+  function onLostPointerCapture(e) {
+    var d = dragRef.current
+    if (!d) { setLinkPt(null); return }
+    onPointerUp(e)
   }
 
   function onKeyDown(e) {
@@ -1080,6 +1368,10 @@ function ArchStudio(props) {
         else if (e.target && typeof e.target.blur === 'function') e.target.blur()
         return
       }
+      // 分层（2026-09-23 改成三段）：先收面板（**保留选中**）→ 再取消选中 → 再退焦点。
+      // 与 VS Code / DevTools 的 drawer 一致：Esc 先收抽屉，选中留到下一下。
+      // 于是「收起来接着摆布局」不需要先丢掉正在改的那个节点。
+      if (dockOpen) { setDockOpen(false); return }
       // 取消选中，连带收掉还没落下的连线预览
       setSel(null)
       setLinkPt(null)
@@ -1117,6 +1409,11 @@ function ArchStudio(props) {
     var s = selRef.current
     var cur = modelRef.current
     if (!s || !cur) return
+    // 删掉之后选中就没了：面板与「面板当前展示的是谁」都要一起复位。
+    // 不复位的话，dockOpen 会一直是 true（第一下 Esc 被吞），而 dockForRef 还记着已经删掉的那个元素 ——
+    // 撤销回来再点它，第一下会变成「收起」（复核第 4 条）。
+    dockForRef.current = null
+    setDockOpen(false)
     var next = cloneModel(cur)
     if (s.kind === 'node') {
       next.nodes = next.nodes.filter(function (n) { return n.id !== s.id })
@@ -1161,6 +1458,9 @@ function ArchStudio(props) {
     next.nodes.push({ id: id, label: '新节点', shape: 'rect', group: null, x: x, y: y })
     push(next, '用户新增了节点')
     setSel({ kind: 'node', id: id })
+    // 新增的节点要**直接展开**详情（用户下一步一定是给它起名字），
+    // 所以这里不是 toggle，但要把「面板现在展示的是谁」记上，后续点它才能收起。
+    dockForRef.current = { kind: 'node', id: id }
     setDockOpen(true)
     setLabelDraft('新节点')
     setDescDraft('')
@@ -1364,6 +1664,8 @@ function ArchStudio(props) {
     for (var i = 0; i < cur.nodes.length; i++) if (cur.nodes[i].id === id) node = cur.nodes[i]
     if (!node) return
     setSel({ kind: 'node', id: id })
+    // 「跳到这个节点」= 明确要看它的详情，所以是展开而不是 toggle；但要记上面板展示的是谁。
+    dockForRef.current = { kind: 'node', id: id }
     setDockOpen(true)
     var sp1 = splitLabel(node.label)
     setLabelDraft(sp1.title)
@@ -1750,6 +2052,10 @@ function ArchStudio(props) {
     // 按**对端方向**给同一侧的线排序再平分该侧；顺序反了的话线会在方块附近互相交叉。
     // 判据是「可用边长 / 箭头宽」，**与缩放无关**：线宽与箭头都随画布变换缩放，两者比值恒定，
     // 所以放大缩小不会改变"叠不叠"这件事（实测：CSS 里没有任何 non-scaling-stroke）。
+    //
+    // 「哪一侧」必须和布线器问同一个函数（`edgeSidesOf`）—— 从前这里自己算一遍
+    // 「|dy| >= |dx| 就上下」，与 edgeGeometry 内部那套是同一条规则的两份拷贝；
+    // 现在选边改成代价择优，两份拷贝必然分叉：端口会按 A 侧均分、线却从 B 侧出去。
     var sideGroups = {}
     for (var gi = 0; gi < model.edges.length; gi++) {
       var ge = model.edges[gi]
@@ -1757,18 +2063,21 @@ function ArchStudio(props) {
       var ga2 = visGeom(ge.from)
       var gb2 = visGeom(ge.to)
       if (!ga2 || !gb2) continue
+      // 障碍也一起传：选边要避开「这条轴根本没路」的情况，而端口分组必须和布线器选同一条轴
+      var gSides = edgeSidesOf(ga2, gb2, visList)
       for (var gend = 0; gend < 2; gend++) {
-        var gme = gend === 0 ? ga2 : gb2
         var got = gend === 0 ? gb2 : ga2
-        var gvert = Math.abs(got.y - gme.y) >= Math.abs(got.x - gme.x)
-        var gside = gvert ? (got.y >= gme.y ? 'b' : 't') : (got.x >= gme.x ? 'r' : 'l')
+        var gside = gend === 0 ? gSides.a : gSides.b
         // 端口按**可见单元**分组 —— 被折叠的组里，好几个成员节点连到外面时都挂在
         // 同一个折叠块上，用原始节点 id 当 key 会把它们拆成 n=1 的小组，
         // edgePortOffset 于是全部返回 0，箭头全叠在块边中心（审计第 5 条）。
         var gunit = gend === 0 ? ge.from : ge.to
         var gkey = (foldMap[gunit] || gunit) + '|' + gside
         if (!sideGroups[gkey]) sideGroups[gkey] = []
-        sideGroups[gkey].push({ ei: gi, end: gend, at: gvert ? got.x : got.y })
+        // 排序键取「对端在**这条边**上的投影坐标」：上下边比 x、左右边比 y。
+        // 从前统一按 gvert 比 x/y，选边一变（比如从竖轴换到横轴），排序键也得跟着换。
+        var gax = gside === 't' || gside === 'b'
+        sideGroups[gkey].push({ ei: gi, end: gend, at: gax ? got.x : got.y })
       }
     }
     var portSlots = {}
@@ -1864,7 +2173,9 @@ function ArchStudio(props) {
       if (kind === 'diamond') {
         shapeEl = React.createElement('polygon', { className: 'ac-shape', points: gm.x + ',' + y0 + ' ' + (gm.x + gm.w / 2) + ',' + gm.y + ' ' + gm.x + ',' + (y0 + gm.h) + ' ' + (gm.x - gm.w / 2) + ',' + gm.y })
       } else if (kind === 'hex') {
-        shapeEl = React.createElement('polygon', { className: 'ac-shape', points: (x0 + 14) + ',' + y0 + ' ' + (x0 + gm.w - 14) + ',' + y0 + ' ' + (x0 + gm.w) + ',' + gm.y + ' ' + (x0 + gm.w - 14) + ',' + (y0 + gm.h) + ' ' + (x0 + 14) + ',' + (y0 + gm.h) + ' ' + x0 + ',' + gm.y })
+        // 内缩量与 runtime.ts 的 NODE_HEX_INSET 是同一个数 —— 锚点要投在这个多边形的轮廓上，
+        // 两处一旦不一致，箭头就会落在六边形的边外面。
+        shapeEl = React.createElement('polygon', { className: 'ac-shape', points: (x0 + NODE_HEX_INSET) + ',' + y0 + ' ' + (x0 + gm.w - NODE_HEX_INSET) + ',' + y0 + ' ' + (x0 + gm.w) + ',' + gm.y + ' ' + (x0 + gm.w - NODE_HEX_INSET) + ',' + (y0 + gm.h) + ' ' + (x0 + NODE_HEX_INSET) + ',' + (y0 + gm.h) + ' ' + x0 + ',' + gm.y })
       } else if (kind === 'ellipse') {
         shapeEl = React.createElement('ellipse', { className: 'ac-shape', cx: gm.x, cy: gm.y, rx: gm.w / 2, ry: gm.h / 2 })
       } else if (kind === 'cyl') {
@@ -1988,7 +2299,7 @@ function ArchStudio(props) {
       onPointerDown: onBackgroundDown,
       onPointerMove: onPointerMove,
       onPointerUp: onPointerUp,
-      onPointerCancel: onPointerUp,
+      onPointerCancel: onPointerCancel,
       onLostPointerCapture: onLostPointerCapture,
     }, canvasKids),
     // 空画布 = 起始页（跟常见软件一样：给出路，而不是一片空白）。
@@ -2275,11 +2586,11 @@ function ArchStudio(props) {
   }
   var orphanGroup = (groupPick && groupPick !== GROUP_NEW && !groupIdSet[groupPick]) ? groupPick : null
 
-  var dock = null
+  // 详情面板分三态：展开 / 收起成一条细条 / 没有选中。
+  // 内容（`dockBody`）与外壳（标题栏 + 分隔条 + 滚动体）分开构造 —— 外壳是给两种内容共用的。
+  var dockBody = null
   if (nodeSel && dockOpen) {
-    dock = React.createElement('div', { className: 'ac-dock' },
-      React.createElement('h4', null, '节点 ' + nodeSel.id),
-      React.createElement('div', { className: 'ac-grid' },
+    dockBody = React.createElement('div', { className: 'ac-grid' },
         React.createElement('div', { className: 'ac-field full' },
           React.createElement('label', null, '标题（回车生效）'),
           React.createElement('input', {
@@ -2427,12 +2738,9 @@ function ArchStudio(props) {
         React.createElement('div', { className: 'ac-field full' },
           React.createElement('button', { className: 'ac-btn danger', onClick: deleteSel }, '删除这个节点'),
         ),
-      ),
     )
   } else if (edgeSel && dockOpen) {
-    dock = React.createElement('div', { className: 'ac-dock' },
-      React.createElement('h4', null, '连线 ' + edgeSel.from + ' → ' + edgeSel.to),
-      React.createElement('div', { className: 'ac-grid' },
+    dockBody = React.createElement('div', { className: 'ac-grid' },
         React.createElement('div', { className: 'ac-field full' },
           React.createElement('label', null, '标签（回车生效）'),
           React.createElement('input', { className: 'ac-input', value: edgeDraft, onChange: function (e) { setEdgeDraft(e.target.value) }, onBlur: commitEdgeLabel, onKeyDown: function (e) { if (e.key === 'Enter') commitEdgeLabel() } }),
@@ -2448,7 +2756,50 @@ function ArchStudio(props) {
         React.createElement('div', { className: 'ac-field' },
           React.createElement('button', { className: 'ac-btn danger', onClick: deleteSel }, '删除这条连线'),
         ),
+    )
+  }
+
+  // 外壳：一条随时可见的标题栏（收起 / 关闭都在上面）+ 可拖的分隔条 + 只有内容滚动的面板体。
+  // 标题栏**不滚**：面板内容再长，那两个按钮也一直够得着（VS Code 的面板标题栏同理）。
+  var dockTitle = nodeSel ? ('节点 ' + nodeSel.id) : (edgeSel ? ('连线 ' + edgeSel.from + ' → ' + edgeSel.to) : '')
+  var dock = null
+  if (dockBody) {
+    dock = React.createElement('div', {
+      className: 'ac-dock', ref: dockRef, role: 'region', 'aria-label': '元素详情',
+      style: dockH ? { height: dockH + 'px' } : undefined,
+    },
+      React.createElement('div', {
+        className: 'ac-sash', role: 'separator', 'aria-orientation': 'horizontal',
+        'aria-label': '拖动调整详情面板高度（双击复位）',
+        title: '拖动调整高度，双击复位',
+        onPointerDown: onSashDown, onDoubleClick: function () { setDockHeight(null) },
+      }),
+      React.createElement('div', { className: 'ac-dock-bar' },
+        React.createElement('span', { className: 'ac-dock-title', title: '点画布上同一个元素可以再点一下收起' }, dockTitle),
+        React.createElement('button', {
+          className: 'ac-dock-btn', title: '收起详情（保留选中，画布长回来；Esc 同效）',
+          onClick: function () { setDockOpen(false) },
+        }, '▾ 收起'),
+        React.createElement('button', {
+          className: 'ac-dock-btn', title: '关闭详情并取消选中', 'aria-label': '关闭详情',
+          onClick: function () { setSel(null); setDockOpen(false) },
+        }, '×'),
       ),
+      React.createElement('div', { className: 'ac-dock-body' }, dockBody),
+    )
+  } else if (nodeSel || edgeSel) {
+    // 收起态：一条细条留在原地。它在说三件事 —— 现在的选中是谁、点这里能展开、
+    // 以及选中**还在**（画布上的高亮、方向键微调都还生效）。
+    dock = React.createElement('div', { className: 'ac-peek' },
+      React.createElement('button', {
+        className: 'ac-peek-btn', 'aria-expanded': false,
+        title: '展开详情面板',
+        onClick: function () { setDockOpen(true) },
+      }, '▴ 详情：' + dockTitle),
+      React.createElement('button', {
+        className: 'ac-dock-btn', title: '取消选中', 'aria-label': '取消选中',
+        onClick: function () { setSel(null) },
+      }, '×'),
     )
   }
 

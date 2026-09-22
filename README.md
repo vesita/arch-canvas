@@ -143,10 +143,13 @@ skills/            随包 skill（dsh-skill-filesystem 按目录名自动发现�
 .arch-canvas/      项目自己的框架图（这张画的就是插件本身），随仓库提交，测试钉着它
 test/
   mermaid.test.cjs   解析/序列化往返（幂等、坐标、@link、@file、@summary、本仓库的框架图、留言迁移与正文纯净）—— 读 dist/mermaid.js
+  layout.test.cjs    自动布局（折环、分层、方向、同层排序不许让交叉数变多）
+  edges.test.cjs     连线几何：选边（代价择优）+ 落点（投到真实轮廓），420 点网格的不变量与负向对照 —— 读 dist/client-runtime.js
   host.e2e.mjs       在 vm 里用桩服务端到端跑宿主逻辑（种子、RPC、工具、改动来源、落盘、扫描、按路径打开、留言旁路表/锚点/总结）
   host-loader.e2e.mjs 引导层本身：能不能正确加载磁盘上的真身、路径不对会不会吵
   plugin-mount.e2e.mjs 装机形态（lib/index.js）挂载：注册数、console 零输出、周期扫描定时器
-  ui.render.mjs      界面真渲染（jsdom + React）：工具条、起始页、选择器、按路径打开、留言、锚点与总结、子页登记
+  ui.render.mjs      界面真渲染（jsdom + React）：工具条、起始页、选择器、按路径打开、留言、锚点与总结、
+                     拖动（rAF 合帧 / 吸附阈值与迟滞）、详情面板三态与展开收起、子页登记
   tools.schema.mjs   拿 DSH 自己的 sandboxDefineTool 校验四个工具的 schema
 tools/build.mjs      拼接 src → dist 与 lib
 dist/                构建产物（不入库）
@@ -164,7 +167,8 @@ npm test          # 构建 + 解析器 + 宿主端到端 + 引导层 + 装机挂
 npm run check     # 上面全部 + 工具 schema 校验（改完必须过这一关）
 ```
 
-当前基线：**解析器 147 · 宿主 438 · 引导层 20 · 插件挂载 10 · 界面渲染 179 · 工具 schema 全通过**。
+当前基线：**解析器 162 · 布局 19 · 连线几何 27 · 宿主 522 · 引导层 20 · 插件挂载 16 · 配置卡 23 ·
+界面渲染 416 · 工具 schema 全通过 = 1205 条断言，EXIT=0**。
 宿主那一半里包含日志落盘与 3 天保留、并发切库不互相覆盖、落盘失败回滚、畸形 op 被拒、
 图库改名 / 软删除 / 恢复、**自动扫描（含指纹与 `libraryRev`）与按路径打开外部文件**、
 **元素留言旁路表 / 代码锚点与失效校验 / 一句话总结**、**未建库项目读路径不创建**、**检查点（谁改的、能退回）**、
