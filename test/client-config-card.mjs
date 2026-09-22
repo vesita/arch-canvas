@@ -38,8 +38,26 @@ const primitives = {
   settingsTextField: (field) => ({ field, format: (v) => (typeof v === 'string' ? v : ''), parse: () => ({ kind: 'clear' }) }),
 }
 
+/**
+ * 假 React：`createElement` 保留 children 数组，另外给一个**够真的 hook 存储**——
+ * `useState` 的值存在 `hookSlots` 里，重渲染（再调一次组件）就能看到上一次 setState 的结果。
+ * 设置卡要靠它验证「选择器失败后如实说明」。
+ */
+const hookSlots = []
+let hookIndex = 0
 const React = {
   createElement(type, props, ...children) { return { type, props, children } },
+  useState(initial) {
+    const index = hookIndex++
+    if (!(index in hookSlots)) hookSlots[index] = typeof initial === 'function' ? initial() : initial
+    return [hookSlots[index], (next) => { hookSlots[index] = typeof next === 'function' ? next(hookSlots[index]) : next }]
+  },
+  useEffect() {},
+  useRef(initial) {
+    const index = hookIndex++
+    if (!(index in hookSlots)) hookSlots[index] = { current: initial }
+    return hookSlots[index]
+  },
 }
 
 /** 抓下这次注册：槽名、key、inject 面、组件。 */
@@ -47,9 +65,14 @@ const registrations = []
 const injections = []
 const loadedScripts = []
 
+/** 系统目录选择器服务：每个用例自己换成 stub（undefined = 这个部署没有它）。 */
+let uiWorkspace = undefined
+
 const ctx = {
   configForms: { get: (ns) => { ctx._ns = ns; return { subscribe: () => () => {}, getSnapshot: () => ({ status: 'ready', value: {}, base: {}, user: {} }), mutate: async () => true } } },
   effect: (fn) => { fn(); return () => {} },
+  // 可选取用的服务走 ctx.get（列进 inject 而缺席会让整个浏览器半边 park）。
+  get: (name) => (name === 'uiWorkspace' ? uiWorkspace : undefined),
   slots: {
     inject(key, cb) { injections.push(key); cb() },
     register(options, component) { registrations.push({ options, component }); return () => {} },
@@ -109,6 +132,63 @@ if (card) {
   ok('注入面带 hooks.archConfig', !!(face.hooks && face.hooks.archConfig))
   // 表单命名空间必须是 profile 里的条目 id，否则 configForms.get 拿不到那份配置。
   eq('表单命名空间是条目 id', ctx._ns, 'arch-canvas')
+
+  // ---------- 数据目录：系统目录选择器 ----------
+  // 官方没有「一键挑目录」的跨组合入口：`uiWorkspace.pickDirectory()` 只在 native 组合成立
+  // （browse 组合会 reject），桌面 App 则走 preload 桥。所以这张卡永远保留文本输入，
+  // 选择器只是加速器 —— 下面把四条路径都钉住（成功 / 取消 / 拒绝 / 服务缺席）。
+  const collect = (node, type, out = []) => {
+    if (node == null || typeof node !== 'object') return out
+    if (Array.isArray(node)) { for (const child of node) collect(child, type, out); return out }
+    if (node.type === type) out.push(node)
+    collect(node.children, type, out)
+    return out
+  }
+  const texts = (tree, type) => collect(tree, type).map((node) => node.children && node.children[0])
+  const renderCard = (onEdit) => {
+    hookIndex = 0
+    const state = {
+      shell: { available: true, writable: true, dirty: false, invalid: false, saving: false, failed: false },
+      dataDir: { text: '', overridden: false, invalid: false },
+    }
+    return card.component({
+      useArchConfig: (selector) => selector(state),
+      edit: onEdit || (() => {}),
+      resetField: () => {},
+      save: () => {},
+      discard: () => {},
+    })
+  }
+  const clickChoose = () => collect(renderCard(), 'button')[0].props.onClick()
+
+  ok('保留了官方文本框（browse 组合 / 无桌面端下只能手填路径）',
+    collect(renderCard(), 'SettingsValueField').length === 1)
+  ok('多了一个「选择目录…」按钮', texts(renderCard(), 'button')[0] === '选择目录…', texts(renderCard(), 'button'))
+
+  const edits = []
+  uiWorkspace = { pickDirectory: () => Promise.resolve('/tmp/arch-data') }
+  await collect(renderCard((field, text) => { edits.push([field, text]) }), 'button')[0].props.onClick()
+  ok('选中系统目录后只填进暂存草稿（仍要点保存才写入）',
+    JSON.stringify(edits) === JSON.stringify([['dataDir', '/tmp/arch-data']]), edits)
+
+  edits.length = 0
+  uiWorkspace = { pickDirectory: () => Promise.resolve(null) }
+  await collect(renderCard((field, text) => { edits.push([field, text]) }), 'button')[0].props.onClick()
+  ok('取消（返回 null）什么都不写', edits.length === 0, edits)
+
+  edits.length = 0
+  uiWorkspace = { pickDirectory: () => Promise.reject(new Error('needs the native capability; serves "browse"')) }
+  await collect(renderCard((field, text) => { edits.push([field, text]) }), 'button')[0].props.onClick()
+  ok('服务拒绝时既不写草稿、也不把异常抛出去', edits.length === 0, edits)
+  ok('拒绝后如实说明，并指回手填',
+    texts(renderCard(), 'p').some((text) => typeof text === 'string' && text.includes('打不开系统目录选择器')),
+    texts(renderCard(), 'p'))
+
+  uiWorkspace = undefined
+  await clickChoose()
+  ok('没有 uiWorkspace 时说清楚这个部署没有系统选择器',
+    texts(renderCard(), 'p').some((text) => typeof text === 'string' && text.includes('没有系统目录选择器')),
+    texts(renderCard(), 'p'))
 }
 
 // ---------- 界面本体仍然要加载 ----------

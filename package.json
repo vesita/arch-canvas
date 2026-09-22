@@ -1,6 +1,6 @@
 {
   "name": "arch-canvas",
-  "version": "0.6.9",
+  "version": "0.6.10",
   "private": true,
   "description": "DSH 插件：人与 AI 共用同一张 Mermaid 逻辑框架图 —— 图形界面与源文本双向同步，双方在同一份图上交互、讨论与修改",
   "main": "lib/index.js",
