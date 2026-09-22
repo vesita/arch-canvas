@@ -1,8 +1,8 @@
 {
   "name": "arch-canvas",
-  "version": "0.6.2",
+  "version": "0.6.9",
   "private": true,
-  "description": "DSH 插件：人与 AI 共用同一张 Mermaid 架构图 —— 用户拖图形，AI 读文本，两侧同一份真相",
+  "description": "DSH 插件：人与 AI 共用同一张 Mermaid 逻辑框架图 —— 图形界面与源文本双向同步，双方在同一份图上交互、讨论与修改",
   "main": "lib/index.js",
   "exports": {
     ".": {
@@ -31,12 +31,15 @@
   },
   "scripts": {
     "build": "node tools/build.mjs",
-    "test": "node tools/build.mjs && node test/mermaid.test.cjs && node test/layout.test.cjs && node test/host.e2e.mjs && node test/host-loader.e2e.mjs && node test/plugin-mount.e2e.mjs && node test/ui.render.mjs",
+    "test": "node tools/build.mjs && node test/mermaid.test.cjs && node test/layout.test.cjs && node test/host.e2e.mjs && node test/host-loader.e2e.mjs && node test/plugin-mount.e2e.mjs && node test/client-config-card.mjs && node test/ui.render.mjs",
     "test:schema": "node tools/build.mjs && node test/tools.schema.mjs",
     "check": "npm run typecheck && npm run test && npm run test:schema",
     "typecheck": "tsc -p tsconfig.host.json --noEmit && tsc -p tsconfig.client.json --noEmit",
     "prepack": "npm run build",
     "pack": "npm pack --pack-destination \"${DSH_HOME:-$HOME/.dsh}/packages\""
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.3"
   },
   "devDependencies": {
     "jsdom": "^30.0.1",

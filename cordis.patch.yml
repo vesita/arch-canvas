@@ -1,3 +1,17 @@
+# arch-canvas 的加载点。
+#
+# `config` 块是**必需的**，不是可选的样式：DSH 0.1.7 起「插件」页只为**条目上带 config
+# 的插件**渲染配置区（页面的 `ledger.bundles` 收集注册了 `plugins.bundle.config` 槽的包，
+# 而条目没有 config 时那份布景压根不存在）。
+#
+# `dataDir` 在 Host 半边的 Config 里是 `.volatile()`：这里是它的显式缺省值。
+# 留空（或整行删掉）时插件按 `$DSH_HOME`（否则 `~/.dsh`）算出 `<dsh>/arch-canvas` ——
+# 与 dsh 自己的约定一致，所以本机这个值就是 `~/.dsh/arch-canvas`。
+#
+# 注意：数据目录在**加载期**就定下（图库根、日志落点都建立在它上面），所以改了这个值
+# 要**重启 dsh** 才生效；插件会在 `loader/volatile-update` 里记一行日志说明这件事。
 - insert:
     - id: arch-canvas
       name: 'arch-canvas'
+      config:
+        dataDir: ''

@@ -106,6 +106,30 @@ while (!existsSync(TEST_LOG_DIR) && waitedLog < 1000) {
 }
 ok('日志写进一次性临时目录（没碰生产目录 ~/.dsh/arch-canvas）', existsSync(TEST_LOG_DIR), TEST_LOG_DIR)
 
+out('【设置面：Config 必须能被 dsh 的设置服务认出来】')
+// 「插件」页只为**条目上带 config** 的包渲染配置区，而设置服务要的是**真的 schema**
+// （`schema(entry)` 要求它有 toJSON）。只导出一个普通对象，页面那张卡就永远不出现 ——
+// 而且不报错（这正是 0.1.7 之后「设置面板看不见」的一半原因）。
+const mountedPlugin = require(ENTRY)
+ok('导出了 Config', mountedPlugin.Config !== undefined)
+ok('Config 是真 schema（有 toJSON）', mountedPlugin.Config && typeof mountedPlugin.Config.toJSON === 'function')
+ok('dataDir 声明为 volatile（不进设置表单的字段等于没有）',
+  !!(mountedPlugin.Config.dict && mountedPlugin.Config.dict.dataDir
+    && mountedPlugin.Config.dict.dataDir.meta.volatile))
+
+out('【数据目录：设置优先，否则按 $DSH_HOME 算】')
+// 这一条守的是 AGENTS.md「包内资源与数据目录都不要写死本机路径」：设置里给了就用它。
+const customDir = join(TEST_HOME, 'custom-canvas-data')
+registered.length = 0; routes.length = 0; prompts.length = 0; timers.length = 0
+delete require.cache[ENTRY]
+// 用一个 volatile 引用喂进去，与设置页写回的形状一致（`{ get() }`）
+require(ENTRY).apply(ctx, { dataDir: { get: () => customDir } })
+await new Promise((r) => setTimeout(r, 20))
+eq('自定义数据目录下照样注册 4 个工具', registered.length, 4)
+ok('自定义数据目录的日志落在自定义位置（不是 $DSH_HOME 下的默认值）',
+  existsSync(join(customDir, 'logs')) || existsSync(join(customDir, 'arch-canvas')),
+  customDir)
+
 out('【再次挂载（hmr 场景）：还是一行都不出】')
 // 桩不做卸载，所以每次挂载前清一遍 —— 数的是「这一次挂载注册了多少」
 for (let i = 0; i < 3; i++) {
