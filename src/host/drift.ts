@@ -40,6 +40,9 @@ var DRIFT_BUILD_DIRS: Record<string, number> = { lib: 1, es: 1, cjs: 1, esm: 1, 
 
 var driftStoreCache: Record<string, any> = {}
 var driftStoreLoading: Record<string, Promise<any>> = {}
+// 「这张表这一轮读失败了」的标记：读失败与「文件本来就不存在（合法空表）」是两件事，
+// 后者可以照常写新基线，前者再写就是拿一张空表去盖别人的基线。
+var driftStoreLoadFailed: Record<string, number> = {}
 var driftWalkCache: any = { root: '', at: 0, dirs: {}, files: 0, truncated: false }
 
 function driftStorePathFor(file: string): string {
@@ -70,6 +73,10 @@ async function loadDriftStoreFor(file: string): Promise<any> {
         if (info) text = await fs.readText(t)
       } catch (e) {
         data = {}
+        driftStoreLoadFailed[storePath] = 1
+        // 与 notes.ts 同一条样板：读失败**必须留现场**。静默把「读不到」当成「空表」，
+        // 后面的写就会拿一张空表去盖掉整个图库所有图的基线（零日志、零警告）。
+        logEvent('warn', 'drift.load.fail', { path: storePath, error: msgOf(e) })
       }
       if (text && text.trim()) {
         try {
@@ -77,6 +84,9 @@ async function loadDriftStoreFor(file: string): Promise<any> {
           if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) data = parsed
           else data = {}
         } catch (e2) {
+          // **坏表不在这里拒写，交给 writeSidecarJson 的第二道闸**（它才是「已有文件必须能解析」
+          // 这条闸的唯一实现，日志事件是 `drift.save.refused / foreign-content`）——
+          // 在这里提前拒掉会把那条能指路的日志换成一条笼统的 load.fail，守门断言就咬不住了。
           data = {}
           logEvent('warn', 'drift.load.fail', { path: storePath, error: msgOf(e2), head: text.slice(0, 80) })
         }
@@ -142,15 +152,29 @@ async function saveDriftStampsFor(docArg: any, policy?: any): Promise<string | n
   if (!fs || !docArg || !docArg.file) return null
   var root = fileRefRoot()
   var refs = anchoredRefs(docArg)
-  if (!refs.length) return null
+  // **一条锚点都没有也要记基线。** 从前这里 `if (!refs.length) return null`，而基线是
+  // `baseline` 这个字段的唯一来源 —— 于是「什么都没画」的图永远 baseline=false，
+  // 而 computeDrift 又在没有基线时整段 early return ⇒ `uncovered`（有源码却没画到）
+  // 恒为空，偏偏那张图最需要这条信号（2026-09-24 审计第 3 条）。
+  // 空 refs 也写一条 `{ refs: {} }`：它的含义是「这张图落过盘」，不是「锚点都没过期」。
   var stamps: Record<string, string> = {}
   for (var i = 0; i < refs.length; i++) {
     var fp = await fpOfRef(refs[i], root)
     if (fp) stamps[refs[i]] = fp
   }
   var storePath = driftStorePathFor(docArg.file)
-  var store = driftStoreCache[storePath] || {}
-  if (!store || typeof store !== 'object' || Array.isArray(store)) store = {}
+  // **没读过的表一个字节都不许写。** 从前这里 `driftStoreCache[storePath] || {}` 起手，
+  // 而冷进程里第一次写盘（最常见：`doc:open {create:true}` / `arch_switch {create:true}`）
+  // 就把 anchors.json 整表写回成只剩当前这一格 —— 同图库其他所有图的 drift 基线被静默清零，
+  // 此后它们恒 baseline=false、stale 永远不报。notes.ts 的 saveNoteStoreFor 有这道闸，这里也要有。
+  var store = driftStoreCache[storePath]
+  if (!store || typeof store !== 'object' || Array.isArray(store) || driftStoreLoadFailed[storePath]) {
+    try { store = await loadDriftStoreFor(docArg.file) } catch (e) { store = null }
+  }
+  if (!store || typeof store !== 'object' || Array.isArray(store) || driftStoreLoadFailed[storePath]) {
+    logEvent('warn', 'drift.load.fail', { path: storePath, reason: 'store-not-loaded' })
+    return '锚点基线表未加载，已拒绝写入（否则会把别的图的基线覆盖成空）'
+  }
   store[driftKeyFor(docArg.file)] = { refs: stamps, at: Date.now() }
   var err = await writeSidecarJson(storePath, store, policy, 'drift')
   if (err) return err
@@ -226,28 +250,31 @@ async function computeDrift(): Promise<any> {
   var mine = store[driftKeyFor(doc.file)] || null
   var base = (mine && mine.refs && typeof mine.refs === 'object') ? mine.refs : null
   out.baseline = !!base
-  if (!base) return out
 
   var root = fileRefRoot()
   var refs = anchoredRefs(doc)
-  var now: Record<string, string> = {}
-  for (var i = 0; i < refs.length; i++) now[refs[i]] = await fpOfRef(refs[i], root)
-  for (var n = 0; n < doc.nodes.length; n++) {
-    var node = doc.nodes[n]
-    var list = node.files || []
-    var status = (doc.fileStatus && doc.fileStatus[node.id]) || {}
-    for (var j = 0; j < list.length; j++) {
-      var ref = String(list[j] == null ? '' : list[j]).trim()
-      if (!ref) continue
-      if (status[ref] && status[ref] !== 'ok') continue   // 坏掉的由 fileStatus 报，不重复
-      var was = base[ref]
-      var is = now[ref]
-      if (!was || !is) continue                            // 没基线、或这次算不出来 → 不猜
-      if (was !== is) out.stale.push({ node: node.id, ref: ref })
+  // `stale` 需要基线：**没有基线就不猜**（这条不许破，否则用户三天就学会无视这条信号）。
+  if (base) {
+    var now: Record<string, string> = {}
+    for (var i = 0; i < refs.length; i++) now[refs[i]] = await fpOfRef(refs[i], root)
+    for (var n = 0; n < doc.nodes.length; n++) {
+      var node = doc.nodes[n]
+      var list = node.files || []
+      var status = (doc.fileStatus && doc.fileStatus[node.id]) || {}
+      for (var j = 0; j < list.length; j++) {
+        var ref = String(list[j] == null ? '' : list[j]).trim()
+        if (!ref) continue
+        if (status[ref] && status[ref] !== 'ok') continue   // 坏掉的由 fileStatus 报，不重复
+        var was = base[ref]
+        var is = now[ref]
+        if (!was || !is) continue                            // 没基线、或这次算不出来 → 不猜
+        if (was !== is) out.stale.push({ node: node.id, ref: ref })
+      }
     }
   }
 
   // 漏画：有源码、却没被任何锚点覆盖的目录。只报最浅的那一层，并把子目录折进去。
+  // **与基线无关**：它答的是「哪些源码还没画进图」，不是「画过的东西过期了没有」。
   if (!out.external && root) {
     var walked = await sourceDirsOf(root)
     out.files = walked.files

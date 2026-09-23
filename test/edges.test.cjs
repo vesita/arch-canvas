@@ -19,7 +19,7 @@ const src = fs.readFileSync(FILE, 'utf8');
 const api = new Function(src + '\n;return {'
   + ' edgeGeometry: edgeGeometry, edgeSidesOf: edgeSidesOf, perimeterPoint: perimeterPoint,'
   + ' kindOf: kindOf, nodeSize: nodeSize, edgePortOffset: edgePortOffset, edgePathHits: edgePathHits,'
-  + ' edgeGaps: edgeGaps };')();
+  + ' edgeGaps: edgeGaps, EDGE_PAD: EDGE_PAD };')();
 const { edgeGeometry, edgeSidesOf, perimeterPoint, kindOf, nodeSize, edgePathHits } = api;
 
 let pass = 0;
@@ -344,6 +344,60 @@ console.log('\n[7] 真实节点尺寸下也不越界（nodeSize 与落点共用�
   }
   eq('中文标签节点（' + s.w + '×' + s.h + '）一侧 4 条线：都贴在胶囊轮廓上', bad, 0);
   ok('最差偏差 ' + worst.toFixed(2) + 'px', worst < 0.5);
+}
+
+console.log('\n[8] 端口分组与布线器必须问同一个 edgeSidesOf（带障碍的那一份）');
+{
+  // 客户端审计第 2 条：studio 的端口分组交的是 `edgeSidesOf(ga2, gb2, visList)`（带障碍），
+  // 而 edgeGeometry 内部从前是 `edgeSidesOf(a, b)`（不交障碍）—— 两条路选出的侧会分叉：
+  // 端口按一侧均分、线却从另一侧出去；更坏的是布线器会选中代价函数刚判过「这条轴走不通」的
+  // 那条轴，候选车道全被拒、落到硬穿兜底，画出一条穿过第三方方块的线。
+  //
+  // 这里的几何就是审计给出的见证（A 104x45 在原点、B 60x120、障碍 -100,50 220x44）：
+  //   带障碍：{a:'r',b:'l',vertical:false} → 路径 [(52,0),(30,0),(30,120),(8,120)] 不穿
+  //   不交障碍：{a:'b',b:'t',vertical:true} → 路径 [(0,22.5),(0,60),(60,60),(60,97.5)] 穿过
+  const padBox = (o) => ({
+    x1: o.x - o.w / 2 - api.EDGE_PAD, y1: o.y - o.h / 2 - api.EDGE_PAD,
+    x2: o.x + o.w / 2 + api.EDGE_PAD, y2: o.y + o.h / 2 + api.EDGE_PAD,
+  });
+  // 端点落在节点的哪条边上。容差 0.5px：rect 单端口就落在边心上，不用管轮廓那套。
+  const sideOfPoint = (g, p) => {
+    if (Math.abs(p.x - (g.x + g.w / 2)) < 0.5) return 'r';
+    if (Math.abs(p.x - (g.x - g.w / 2)) < 0.5) return 'l';
+    if (Math.abs(p.y - (g.y + g.h / 2)) < 0.5) return 'b';
+    if (Math.abs(p.y - (g.y - g.h / 2)) < 0.5) return 't';
+    return '?';
+  };
+  const s3 = (s) => s.a + s.b + (s.vertical ? 'v' : 'h');
+  const A = { x: 0, y: 0, w: 104, h: 45, shape: 'rect' };
+  const B = { x: 60, y: 120, w: 104, h: 45, shape: 'rect' };
+  const ob = { x: -100, y: 50, w: 220, h: 44, shape: 'rect' };
+  const obBox = padBox(ob);
+  const sidesWith = edgeSidesOf(A, B, [ob]);
+  const geo = edgeGeometry(A, B, [ob], 0, null, []);
+  eq('见证：带障碍时选横轴、出右边进左边', s3(sidesWith), 'rlh');
+  ok('见证：带障碍时折线不穿过那个第三方方块', !edgePathHits(geo.pts, [obBox]), geo.pts);
+  eq('见证：起点落在 edgeSidesOf(...,[障碍]) 选出的 a 侧上', sideOfPoint(A, geo.pts[0]), sidesWith.a);
+  eq('见证：终点落在 edgeSidesOf(...,[障碍]) 选出的 b 侧上',
+    sideOfPoint(B, geo.pts[geo.pts.length - 1]), sidesWith.b);
+  // 负向对照 1：这块障碍真的挡在「不带障碍时选出的那条轴」上 —— 所以上面不是空转，
+  // 而且它把「端口分组与布线器必须传同一份障碍」这件事钉死：不传就选到另一条轴。
+  const sidesNo = edgeSidesOf(A, B);
+  const geoNo = edgeGeometry(A, B, [], 0, null, []);
+  eq('负向对照：不带障碍时选出的是另一条轴（竖轴、出下边进上边）', s3(sidesNo), 'btv');
+  ok('负向对照：拿掉障碍参数 → 选出的侧确实不同（两条路必须传同一份）',
+    s3(sidesNo) !== s3(sidesWith), { with: sidesWith, without: sidesNo });
+  ok('负向对照：那条「不带障碍」的路径正好穿过第三方方块（障碍是真挡路的）',
+    edgePathHits(geoNo.pts, [obBox]), geoNo.pts);
+  // 负向对照 2：障碍不挡路的摆放 → 两种调用必须选出**同一个**侧（证明这条断言不是恒真式）
+  const far = { x: 900, y: 900, w: 100, h: 40, shape: 'rect' };
+  eq('负向对照：斜角远处放一块不挡路的障碍时，两种调用选出同一个侧',
+    s3(edgeSidesOf(A, B, [far])), s3(sidesNo));
+  const A2 = { x: 0, y: 0, w: 104, h: 45, shape: 'rect' };
+  const B2 = { x: 0, y: 400, w: 104, h: 45, shape: 'rect' };
+  const side = { x: 600, y: 200, w: 100, h: 40, shape: 'rect' };
+  eq('负向对照：上下堆叠 + 侧面远处的障碍，仍然选竖轴（与不带障碍一致）',
+    s3(edgeSidesOf(A2, B2, [side])), 'btv');
 }
 
 console.log('\n结果: ' + pass + ' 通过 / ' + fail + ' 失败\n');

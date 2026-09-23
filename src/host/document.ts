@@ -21,7 +21,12 @@ var lastDocLoadKey = ''
 var TOMBSTONE = '%% @deleted'
 // mermaid 的第一来源是包内 assets/（由外层递 mermaidFile），这里是早期手工下载的缓存。
 var MERMAID_CACHE = DSH_ROOT + '/.cache/arch-canvas/mermaid.min.js'
-var ARROW_SET = { '-->': 1, '---': 1, '-.->': 1, '==>': 1, '===': 1, '~~~': 1, '<-->': 1, '<==>': 1 }
+// 合法连接符集合。**从 ARROWS 派生，绝不手抄第二份**：从前这里只有 8 种，而 ARROWS 有 28 种，
+// 于是 `--o` / `o==>` 等 20 种在 normalizeModel / add_edge 里被静默退成 `-->` —— 用户画的是圆头，
+// 落盘成了实线箭头，零警告。归一发生在 adoptModel 里、**早于** persist() 的往返检查，
+// 所以那条检查也看不见。ARROWS（mermaid.ts）与这里在同一段作用域里拼接，是唯一一张表。
+var ARROW_SET = {}
+for (var arrowSetIdx = 0; arrowSetIdx < ARROWS.length; arrowSetIdx++) ARROW_SET[ARROWS[arrowSetIdx]] = 1
 var DIR_SET = { TD: 1, TB: 1, BT: 1, LR: 1, RL: 1 }
 
 var fs = ctx.get('fs')
@@ -44,7 +49,10 @@ var loadQueue: Promise<any> = Promise.resolve()  // 载入/切库的串行队列
 var libraryCache = []
 var libraryCacheAt = 0        // 上次**扫描**的时刻（TTL 门）：扫描只走目录，所以可以几秒一次
 var libraryFiles = []         // 项目里散落的 .mmd / .mermaid（自动扫描的副产物，按路径打开用）
-var libraryFingerprint = ''   // 上次扫描的指纹：变了才去读文件内容算节点数
+var libraryFingerprint = ''   // 上次扫描的**便宜**指纹（目录 + 文件名 + 字节数）
+// 上次**真读了文件**那一趟算出来的内容指纹（节点/边/下钻/总结）。同字节数的改写
+// （改一个词、删两个节点再补个空格）在 `name:bytes` 上看不出来，只有它看得见。
+var libraryItemsFingerprint = ''
 var libraryRev = 0            // 图库清单修订号：界面靠它发现「有新图了」并自动刷新
 
 /**
@@ -152,6 +160,10 @@ var reportedSandboxMissingReasons = {}
 var reportedNoPolicySites = {}
 // 往返检查那条告警的前缀（置顶只留一条用）
 var RT_WARN_PREFIX = '往返检查：写出去再读回来对不上'
+// 「保存失败已回滚」那条警告的前缀。它描述的是一个**瞬时**状态，所以成功落盘时要把它清掉 ——
+// doc.warnings 只在加载时清空，留着的话画布页会一直挂着一条「图可能少了一块」，
+// 里面装的却是一条早就不成立的落盘失败（2026-09-24 客户端审计附带发现）。
+var SAVE_FAIL_PREFIX = '保存失败，本次改动已回滚'
 
 /**
  * 获取会话对应的沙箱执行策略。
@@ -216,9 +228,19 @@ function policyOfSessionId(id) {
  * 落盘。`site` 只是记进检查点标签（谁在哪儿改的），不影响写什么。
  * 写成功之后在这里记一份检查点 —— 这是唯一的收口：所有写入路径都经过 persist，
  * 于是「AI 改的」「用户改的」自动都留档，不需要每个调用点各自记得。
+ *
+ * `expectFile` 是**这次写入认下的那份文档**（调用方在 `await ensureLoaded()` 之后立刻取
+ * `doc.file`）。为什么要有它：`doc`/`lib`/`root` 是模块级全局，而一次请求里只要出现 await，
+ * 别的会话的切库就可能把指针换走 —— 那时这一版改动会写进**别人的项目文件**
+ * （2026-09-24 宿主审计第 1 条，实测 A 会话的 arch_edit 改掉了 B 项目的图）。
+ * 指针切换现在已经排进加载队列（见 ensureLoaded），这里再兜一道：认下的文件变了就拒写。
  */
-async function persist(policy?, site?) {
+async function persist(policy?, site?, expectFile?) {
   if (!fs) return 'fs 服务不可用'
+  if (typeof expectFile === 'string' && expectFile && doc.file !== expectFile) {
+    logEvent('error', 'persist.stale-doc', { site: site || '', expected: expectFile, actual: doc.file })
+    return '文档已被别的会话切换（认下的是 ' + expectFile + '，现在是 ' + doc.file + '），本次改动未写入'
+  }
   // `policy` 缺席意味着这次写是 **agentless call** —— 它会掉到部署默认的可写根，
   // 而不是这个会话的工作区。这正是当初「面板上每一次保存都被拒、日志却照写不误」的形态。
   //
@@ -232,53 +254,108 @@ async function persist(policy?, site?) {
       logEvent('warn', 'persist.no-policy', { site: pk, file: doc.file, scope: lib.scope })
     }
   }
+  // **入口检查一过，立刻把「要写什么」固定成本地快照。** 这之后的每一个 await 都是一个窗口：
+  // 别的会话的切库能把 doc / lib / root 一起换掉。从前的写法在这些 await 之后才取
+  // `var body = serializeDoc(doc)`、`doc.nodes`、`doc.file`，于是：
+  //   · A 项目 absent 时第一次写盘 → 把**B 的图**写进了 A 的 .mmd，A 的编辑一个字没落盘（回执还是 saved:true）；
+  //   · A 的正文被推进 **B 的文件名**下的检查点，B 一退回就把自己的 .mmd 换成 A 的内容。
+  // 快照之后，这一版写入只认它自己那一份；旁路表 / 基线表 / 检查点这些**旁的状态**
+  // 每次落之前还要再复核一次归属，被抢走就记 persist.doc-stolen 并什么都不写。
+  var fileNow = doc.file
+  var scopeNow = lib.scope
+  var absentNow = doc.absent
+  var nodesNow = doc.nodes
+  var body = serializeDoc(doc)
+  // **写盘前的运行时不变式**（见 mermaid.ts 的 roundTripDetail）：`parse(serialize(doc))`
+  // 必须与 doc 在所有会被持久化的字段上一致。它**只报告、不改行为** —— 拒绝保存比丢字段更糟：
+  // 用户当下的编辑一个字都存不下去，而字段在文本里表达不出来就是表达不出来
+  // （检查点回滚也救不了，快照存的就是同一份文本）。所以照旧写盘，但把现场喊出来。
   try {
-    if (doc.absent) {
-      var targetDir = doc.file.slice(0, doc.file.lastIndexOf('/'))
-      if (lib.scope === 'project') {
+    var rt = roundTripDetail(doc)
+    if (rt) {
+      logEvent('error', 'serialize.not-idempotent', {
+        site: site || '', file: fileNow, fields: rt.fields, detail: rt.detail,
+      })
+      var rtWhere = rt.detail ? Object.keys(rt.detail).map(function (k) { return k + '[' + rt.detail[k].join(' ') + ']' }).join(' ') : ''
+      var rtMsg = RT_WARN_PREFIX + '（' + rt.fields.join('、') + '）'
+        + (rtWhere ? ' ' + rtWhere : '') + ' —— 详见日志 serialize.not-idempotent'
+      // 只留一条：这条说的是「当前状态写不出去」，不是历史流水；每保存一次追加一条会刷屏
+      doc.warnings = doc.warnings.filter(function (w) { return String(w).indexOf(RT_WARN_PREFIX) !== 0 })
+      doc.warnings.push(rtMsg)
+    }
+  } catch (e) {
+    logEvent('error', 'serialize.check.fail', { site: site || '', file: fileNow, error: msgOf(e) })
+  }
+  // 软删除过的图再落盘时要把墓碑保住，否则一次无关的写就把「已删除」抹掉了
+  if (doc.tombstoned) body = TOMBSTONE + '\n' + body
+  try {
+    // **墓碑守卫。** 认下的文件此刻已经带着 `%% @deleted`，而内存这份文档并不认为自己是墓碑
+    // （典型：`doc:delete` 把画布从刚打上墓碑的那份内容上撤走之后）—— 再写一次就等于
+    // 把用户的「已删除」静默抹掉。「恢复」是 `doc:restore` 的活，不是一次无关保存的副作用。
+    if (!doc.tombstoned) {
+      try {
+        var guardInfo = await fs.stat(await fs.resolve(fileNow))
+        if (guardInfo) {
+          var guardText = await fs.readText(await fs.resolve(fileNow))
+          if (hasTombstone(guardText)) {
+            logEvent('error', 'persist.tombstone-guard', { site: site || '', file: fileNow })
+            return '目标文件已被软删除（%% @deleted），本次改动未写入；要恢复请先 doc:restore'
+          }
+        }
+      } catch (eGuard) { /* 读不到就不拦：让真正的写入去报那个错 */ }
+    }
+    var inheritedMsg = ''
+    if (absentNow) {
+      var targetDir = fileNow.slice(0, fileNow.lastIndexOf('/'))
+      if (scopeNow === 'project') {
         var inherited = await inheritGlobalOnce({ dir: targetDir }, policy)
-        if (inherited) doc.notes.push(inherited)
+        if (inherited) inheritedMsg = inherited
       }
       await ensureDir(targetDir, policy)
     }
-    var body = serializeDoc(doc)
-    // **写盘前的运行时不变式**（见 mermaid.ts 的 roundTripDetail）：`parse(serialize(doc))`
-    // 必须与 doc 在所有会被持久化的字段上一致。它**只报告、不改行为** —— 拒绝保存比丢字段更糟：
-    // 用户当下的编辑一个字都存不下去，而字段在文本里表达不出来就是表达不出来
-    // （检查点回滚也救不了，快照存的就是同一份文本）。所以照旧写盘，但把现场喊出来。
-    try {
-      var rt = roundTripDetail(doc)
-      if (rt) {
-        logEvent('error', 'serialize.not-idempotent', {
-          site: site || '', file: doc.file, fields: rt.fields, detail: rt.detail,
-        })
-        var rtWhere = rt.detail ? Object.keys(rt.detail).map(function (k) { return k + '[' + rt.detail[k].join(' ') + ']' }).join(' ') : ''
-        var rtMsg = RT_WARN_PREFIX + '（' + rt.fields.join('、') + '）'
-          + (rtWhere ? ' ' + rtWhere : '') + ' —— 详见日志 serialize.not-idempotent'
-        // 只留一条：这条说的是「当前状态写不出去」，不是历史流水；每保存一次追加一条会刷屏
-        doc.warnings = doc.warnings.filter(function (w) { return String(w).indexOf(RT_WARN_PREFIX) !== 0 })
-        doc.warnings.push(rtMsg)
-      }
-    } catch (e) {
-      logEvent('error', 'serialize.check.fail', { site: site || '', file: doc.file, error: msgOf(e) })
+    // 写 .mmd 用**认下的那个路径与那份正文**（不是当下的 doc.file / doc）—— 落盘过程中
+    // 指针被换走时，这一版改动仍然只落在它自己的文件里。
+    await fs.writeText(await fs.resolve(fileNow), body, undefined, undefined, policy)
+    if (doc.file !== fileNow) {
+      // 指针在落盘期间被别的会话换走了。.mmd 已经写对（用的是认下的路径），但**旁路表与检查点都要跳过**：
+      // 它们的键与字段从前取自**当下**的 doc，而那已经是别人的了 ——
+      // 记一条检查点就是把 A 的改动写进 B 的历史（实测：B 的 doc:history 里多一条 site:'doc:set'，
+      // 退回它能把 A 的节点写进 B 的文件）。少一份历史，好过污染别人的历史。
+      logEvent('error', 'persist.doc-stolen', { site: site || '', expected: fileNow, actual: doc.file })
+      return null
     }
-    // 软删除过的图再落盘时要把墓碑保住，否则一次无关的写就把「已删除」抹掉了
-    if (doc.tombstoned) body = TOMBSTONE + '\n' + body
-    await fs.writeText(await fs.resolve(doc.file), body, undefined, undefined, policy)
     doc.absent = false
-    harvestNoteStore(doc.file, doc.nodes)
-    var noteErr = await saveNoteStoreFor(doc.file, policy)
+    if (inheritedMsg) doc.notes.push(inheritedMsg)
+    // **先读表再收表。** 没读过的表在缓存里是空的，收完一写就把整个图库所有图的留言
+    // 覆盖成空（见 notes.ts 的两道闸）。读失败/坏表时 loadNoteStoreFor 会记日志，
+    // 随后 writeSidecarJson 的第二道闸会拒绝覆盖。
+    await loadNoteStoreFor(fileNow)
+    if (doc.file !== fileNow) {
+      logEvent('error', 'persist.doc-stolen', { site: site || '', expected: fileNow, actual: doc.file })
+      return null
+    }
+    // 收表用的是**认下的那份节点**：用当下的 doc.nodes 会把 B 的留言收进 A 的表。
+    harvestNoteStore(fileNow, nodesNow)
+    var noteErr = await saveNoteStoreFor(fileNow, policy)
     if (noteErr) {
-      logEvent('warn', 'notes.persist.fail', { file: doc.file, error: noteErr })
-      doc.warnings.push('留言表保存失败: ' + noteErr)
+      logEvent('warn', 'notes.persist.fail', { file: fileNow, error: noteErr })
+      if (doc.file === fileNow) doc.warnings.push('留言表保存失败: ' + noteErr)
     }
     // 锚点指纹基线（见 drift.ts）：**只在这一条写路径上记** —— 图刚落盘，此刻的代码就是
     // 这张图所描述的那份代码。读路径一个字节都不写（那是这个项目的硬规矩）。
     //
     // 失败**只记日志、不挂警告**：它只是这一轮没记上基线（drift 会如实说 baseline=false），
     // 图本身完好、也没有用户能采取的动作 —— 把它塞进「解析警告」那条横幅只会稀释真正的坏消息。
-    var driftErr = await saveDriftStampsFor(doc, policy)
-    if (driftErr) logEvent('warn', 'drift.persist.fail', { file: doc.file, error: driftErr })
+    var driftErr = await saveDriftStampsFor({ file: fileNow, nodes: nodesNow }, policy)
+    if (driftErr) logEvent('warn', 'drift.persist.fail', { file: fileNow, error: driftErr })
+    if (doc.file !== fileNow) {
+      logEvent('error', 'persist.doc-stolen', { site: site || '', expected: fileNow, actual: doc.file })
+      return null
+    }
+    // 这一次成功落盘了 ⇒ 上一次那条「保存失败，本次改动已回滚」不再成立，别让它继续挂在横幅上。
+    doc.warnings = doc.warnings.filter(function (w) { return String(w).indexOf(SAVE_FAIL_PREFIX) !== 0 })
+    // 走到这里归属已经复核过 ⇒ historyKey() 就是 fileNow（history.ts 不在本次可改范围内，
+    // 「认下自己的文件」这一条由上面三道复核保证）。
     pushHistory(body, site)
     return null
   } catch (e) {
@@ -539,6 +616,11 @@ function baseNameOf(path) {
 async function openExternal(path, create, policy?) {
   if (!fs) return { ok: false, error: 'fs 服务不可用' }
   if (!isDiagramPath(path)) return { ok: false, error: '只支持 .mmd / .mermaid 文件：' + path }
+  // **认下这一趟的归属。** 打开外部文件同样是「换当前文档」：读盘期间别的会话把指针换走之后，
+  // 从前的写法照样 `doc.external = path; adopt(...)` —— 于是 A 打开的外部文件被灌进 **B 的槽**：
+  // B 的画布上出现 A 的文件、B 自己的图消失，用户拖一下保存就把 B 的 .mmd 顶掉了。
+  // 所以：await 之前先拿 ticket，await 之后复核；抢走了就**不 adopt**（记日志）。
+  var ticket = docTicket()
   var text = null
   try {
     var t = await fs.resolve(path)
@@ -550,29 +632,42 @@ async function openExternal(path, create, policy?) {
   if (text === null && !create) {
     return { ok: false, error: '文件不存在：' + path + '（要新建就带上 create）' }
   }
-  doc.external = path
-  doc.name = baseNameOf(path)
-  doc.file = path
-  doc.tombstoned = false
-  doc.absent = false
-  doc.warnings = []
-  doc.notes = []
-  await loadNoteStoreFor(doc.file)
-  if (text !== null) {
-    adopt(parseMermaid(text))
-  } else {
-    adopt(emptyDoc())
-    var err = await persist(policy, 'doc:openPath')
-    if (err) doc.warnings.push('写入失败: ' + err)
-  }
-  bump('switch')
-  lastChange = { by: 'switch', rev: doc.revision, nodes: [] }
-  // 外部文件不改变「内存里这份文档来自哪个图库」：切回图库里的图仍按 loadedFor 判断
-  loadedFor = lib.dir
-  logEvent('info', 'doc.openPath', {
-    path: path, created: text === null, nodes: doc.nodes.length, edges: doc.edges.length,
+  // 留言表按**外部文件自己的路径**定位，与当前指针无关 —— 在这里先读进缓存，
+  // 队列里那一段就不再有文件读（也就不会把别的请求的 await 卡在队列上）。
+  await loadNoteStoreFor(path)
+  // 与 loadDiagramAt 同一条规矩：改「当前文档」这件事排进加载队列，不与别的加载交叉。
+  return enqueueLoad(async function () {
+    if (!ticketHolds(ticket)) {
+      logEvent('error', 'doc.openPath.stolen', { path: path, expected: ticket.file, actual: doc.file })
+      return { ok: false, error: '画布已被别的会话切走，本次打开未生效' }
+    }
+    doc.external = path
+    doc.name = baseNameOf(path)
+    doc.file = path
+    doc.tombstoned = false
+    doc.absent = false
+    doc.warnings = []
+    doc.notes = []
+    if (text !== null) {
+      adopt(parseMermaid(text))
+    } else {
+      adopt(emptyDoc())
+      var err = await persist(policy, 'doc:openPath', path)
+      if (doc.file !== path) {
+        logEvent('error', 'doc.openPath.stolen', { path: path, expected: path, actual: doc.file })
+        return { ok: false, error: '画布已被别的会话切走，本次打开未生效' }
+      }
+      if (err) doc.warnings.push('写入失败: ' + err)
+    }
+    bump('switch')
+    lastChange = { by: 'switch', rev: doc.revision, nodes: [] }
+    // 外部文件不改变「内存里这份文档来自哪个图库」：切回图库里的图仍按 loadedFor 判断
+    loadedFor = lib.dir
+    logEvent('info', 'doc.openPath', {
+      path: path, created: text === null, nodes: doc.nodes.length, edges: doc.edges.length,
+    })
+    return fullOf()
   })
-  return fullOf()
 }
 
 // 往下扫的时候要跳过的目录：不跳的话在 my/ 这种容器根下会扫进 node_modules 和 target
@@ -652,7 +747,7 @@ async function walkProject(absDir, rel, depth, out) {
   }
 }
 
-/** 扫描结果的指纹：谁加了/删了/改了图，指纹就变。 */
+/** 扫描结果的**便宜**指纹（只走目录，不读文件）：谁加了/删了图，指纹就变。 */
 function scanFingerprint(scan: ProjectScan) {
   var parts = []
   for (var i = 0; i < scan.dirs.length; i++) {
@@ -661,6 +756,22 @@ function scanFingerprint(scan: ProjectScan) {
     }
   }
   for (var k = 0; k < scan.files.length; k++) parts.push(scan.files[k].rel + ':' + scan.files[k].bytes)
+  return parts.join('|')
+}
+
+/**
+ * 清单的**内容**指纹：从真读出来的那一份 items 上算。
+ * 它要回答的是「同字节数的改写」——`name:bytes` 判不出内容变过，于是清单里一直写着
+ * 「同图库还有「g」(3 节点)」，而盘上只剩 1 个；连「重新扫描」按钮都因为「便宜指纹相同」直接返回旧 cache。
+ * 只在**真读了文件**的那一趟算，所以「2.5s 轮询只走目录 + 比指纹」这条性质一点没动。
+ */
+function itemsFingerprint(items) {
+  var parts = []
+  for (var i = 0; i < items.length; i++) {
+    var it = items[i] || {}
+    parts.push(String(it.key) + ':' + it.nodes + ':' + it.edges + ':' + it.links + ':' +
+      (it.deleted ? 1 : 0) + ':' + String(it.summary || ''))
+  }
   return parts.join('|')
 }
 
@@ -713,7 +824,9 @@ async function refreshLibrary(force?: boolean) {
   libraryCacheAt = now
 
   if (root.scope !== 'project' || !root.workspace) {
-    // 没有项目根：全局图库是平铺的，既没有子项目图库也没有「散落文件」
+    // 没有项目根：全局图库是平铺的，既没有子项目图库也没有「散落文件」。
+    // listDiagrams 本来就要读全文，所以这一条路天然看得见同字节数的内容变化 ——
+    // 指纹要算**内容**（节点/边/下钻/总结），只算字节数的话 libraryRev 不涨、界面不刷新。
     var flat = await listDiagrams(root.dir)
     for (var i = 0; i < flat.length; i++) {
       flat[i].project = ''
@@ -722,26 +835,36 @@ async function refreshLibrary(force?: boolean) {
     }
     libraryCache = flat
     libraryFiles = []
-    var fpFlat = flat.map(function (x) { return x.name + ':' + x.bytes + ':' + (x.deleted ? 1 : 0) }).join('|')
-    if (fpFlat !== libraryFingerprint) {
-      libraryFingerprint = fpFlat
+    var fpFlat = itemsFingerprint(flat)
+    if (fpFlat !== libraryItemsFingerprint) {
+      libraryItemsFingerprint = fpFlat
       libraryRev += 1
     }
+    libraryFingerprint = fpFlat
     return libraryCache
   }
 
   var scan = await scanProject()
   var fp = scanFingerprint(scan)
-  if (fp !== libraryFingerprint) {
-    libraryCache = await buildLibraryItems(scan)
+  // **force = 真读一遍内容**（「重新扫描」按钮与慢速定时器走这条）：便宜指纹相同**不代表**
+  // 内容没变 —— 同字节数的改写只有真读才看得见。非 force（2.5s 轮询那条路）仍然只走目录 +
+  // 比便宜指纹，指纹没变一个字节都不读、不解析。
+  if (force || fp !== libraryFingerprint) {
+    var nextItems = await buildLibraryItems(scan)
+    var cfp = itemsFingerprint(nextItems)
+    var changed = cfp !== libraryItemsFingerprint
+    libraryCache = nextItems
+    libraryItemsFingerprint = cfp
     libraryFingerprint = fp
-    libraryRev += 1
-    // 高频成功的巡检降为 debug：指纹没变就不读文件、不解析，这条记录的诊断价值只在于
-    // "清单确实变了"。默认门槛（info）下不落盘；把 ARCH_CANVAS_LOG_LEVEL=debug 打开就能看到。
-    logEvent('debug', 'library.scan', {
-      libs: scan.dirs.length, files: scan.files.length, items: libraryCache.length,
-      revision: libraryRev, visited: scan.visited, truncated: scan.truncated,
-    })
+    if (changed) {
+      libraryRev += 1
+      // 高频成功的巡检降为 debug：指纹没变就不读文件、不解析，这条记录的诊断价值只在于
+      // "清单确实变了"。默认门槛（info）下不落盘；把 ARCH_CANVAS_LOG_LEVEL=debug 打开就能看到。
+      logEvent('debug', 'library.scan', {
+        libs: scan.dirs.length, files: scan.files.length, items: libraryCache.length,
+        revision: libraryRev, visited: scan.visited, truncated: scan.truncated,
+      })
+    }
   }
   libraryFiles = scan.files
   return libraryCache
@@ -796,17 +919,35 @@ async function loadInto(name, create, target, policy?) {
         await ensureDir(target.dir, policy)
       }
       await loadNoteStoreFor(doc.file)
-      adopt(emptyDoc())
-      doc.absent = false
-      var err = await persist(policy, 'doc:new')
-      if (err) doc.warnings.push('写入失败: ' + err)
+      // **继承可能正好把同名的那张图放到了这里**（默认名 `architecture` 就是这么命中全局兜底图的）。
+      // 从前这里无条件 `adopt(emptyDoc())` 再落盘，于是刚拷进来的内容被一份空文档当场盖掉 ——
+      // 「新建一张图」把用户已有的图清空了，而日志里一条都不留（2026-09-24 宿主审计第 7 条）。
+      var inheritedText: string | null = null
+      if (fs) {
+        try {
+          var t2 = await fs.resolve(doc.file)
+          var i2 = await fs.stat(t2)
+          if (i2) inheritedText = await fs.readText(t2)
+        } catch (e2) { inheritedText = null }
+      }
+      if (inheritedText !== null && inheritedText !== '') {
+        doc.absent = false
+        doc.tombstoned = hasTombstone(inheritedText)
+        adopt(parseMermaid(inheritedText))
+        pushHistory(inheritedText, 'open', 'open')
+      } else {
+        adopt(emptyDoc())
+        doc.absent = false
+        var err = await persist(policy, 'doc:new', doc.file)
+        if (err) doc.warnings.push('写入失败: ' + err)
+      }
     } else if (target.scope === 'global' && clean === DEFAULT_DIAGRAM) {
       var items = await listDiagrams(target.dir)
       var seed = items.length === 0
       await loadNoteStoreFor(doc.file)
       adopt(seed ? seedDoc() : emptyDoc())
       doc.absent = false
-      var errG = await persist(policy, 'seed')
+      var errG = await persist(policy, 'seed', doc.file)
       if (errG) doc.warnings.push('写入失败: ' + errG)
     } else {
       adopt(emptyDoc())
@@ -869,7 +1010,8 @@ function saveActiveSlot() {
     root: root, lib: lib, loadedFor: loadedFor, everLoaded: everLoaded,
     doc: doc, lastChange: lastChange,
     libraryCache: libraryCache, libraryFiles: libraryFiles, libraryCacheAt: libraryCacheAt,
-    libraryFingerprint: libraryFingerprint, libraryRev: libraryRev,
+    libraryFingerprint: libraryFingerprint, libraryItemsFingerprint: libraryItemsFingerprint,
+    libraryRev: libraryRev,
   }
   var keys = Object.keys(docSlots)
   if (keys.length > DOC_SLOT_MAX) {
@@ -899,6 +1041,7 @@ function activateSlot(key) {
   libraryFiles = s.libraryFiles
   libraryCacheAt = s.libraryCacheAt
   libraryFingerprint = s.libraryFingerprint
+  libraryItemsFingerprint = s.libraryItemsFingerprint || ''
   libraryRev = s.libraryRev
   s.at = Date.now()
   return true
@@ -913,6 +1056,7 @@ function resetToWorkspace(next, key) {
   libraryFiles = []
   libraryCacheAt = 0
   libraryFingerprint = ''
+  libraryItemsFingerprint = ''
   // **换新对象**：旧那份还挂在它自己的工作区槽里，原地改会把别人的图改掉
   doc = newDocState()
   doc.workspace = key
@@ -954,30 +1098,55 @@ function docBelongsTo(where: string) {
  */
 function ensureLoaded(where?: string, sessionId?: string) {
   var policy = policyOfSessionId(sessionId)
-  if (typeof where === 'string') {
-    var next = resolveLib(where)
-    var nextKey = slotKeyOfLib(next)
-    if (nextKey !== activeSlotKey()) {
-      // 换了**项目**：先把这一份存进它自己的槽，再看目标项目有没有存过。
-      // 存过就只是换指针（不读盘、不 bump 修订号、把上一步投递过的留言状态原样留着）；
-      // 没存过才重置并重新加载。
-      saveActiveSlot()
-      if (activateSlot(nextKey)) return Promise.resolve({ ok: true })
-      resetToWorkspace(next, nextKey)
-    } else if (next.dir !== root.dir) {
-      // 同一个项目里换层（下钻的子图库 / 回到根）：沿用旧行为 —— 比的是 root 而不是 lib，
-      // 否则界面每次报会话 cwd 都会把刚下钻的层拽回来。
-      resetToWorkspace(next, nextKey)
+  // 注意：`where: ''` 是**有效输入**（= 全局图库，没有项目根），不能与「没传 where」混为一谈。
+  var hasWhere = typeof where === 'string'
+  var next = hasWhere ? resolveLib(where) : null
+  var nextKey = hasWhere ? slotKeyOfLib(next) : ''
+  // 快路：这一次要的就是当前这份、而且不用换库 —— 界面 2.5s 轮询走的就是这条，别为它排队。
+  if (hasWhere) {
+    if (nextKey === activeSlotKey() && next.dir === root.dir && (doc.external || loadedFor === lib.dir)) {
+      return Promise.resolve({ ok: true })
     }
+  } else if (doc.external || loadedFor === lib.dir) {
+    return Promise.resolve({ ok: true })
   }
-  // 打开的是项目里的外部文件：别被「图库加载」冲掉（界面每次请求都带 where）
-  if (doc.external) return Promise.resolve({ ok: true })
-  if (loadedFor === lib.dir) return Promise.resolve({ ok: true })
   return enqueueLoad(function () {
-    // 排到自己时才看 lib：这时它是最新一次切库的结果
+    // **指针切换必须排进队列。** 它全是同步改全局（doc / lib / root），从前放在队列外面：
+    // 别的请求正在 await 自己的加载时，这一次调用已经把全局换成了自己的目标 ——
+    // 于是那个请求醒来读到的全是别人的 doc/lib，落盘就把 A 的图写进了 B 的图库。
+    // （2026-09-24 宿主审计第 1 条：实测 A 会话的 arch_edit 改掉了 B 项目的 .mmd。）
+    if (hasWhere) {
+      if (nextKey !== activeSlotKey()) {
+        // 换了**项目**：先把这一份存进它自己的槽，再看目标项目有没有存过。
+        // 存过就只是换指针（不读盘、不 bump 修订号、把上一步投递过的留言状态原样留着）；
+        // 没存过才重置并重新加载。
+        saveActiveSlot()
+        if (activateSlot(nextKey)) return { ok: true }
+        resetToWorkspace(next, nextKey)
+      } else if (next.dir !== root.dir) {
+        // 同一个项目里换层（下钻的子图库 / 回到根）：沿用旧行为 —— 比的是 root 而不是 lib，
+        // 否则界面每次报会话 cwd 都会把刚下钻的层拽回来。
+        resetToWorkspace(next, nextKey)
+      }
+    }
+    // 打开的是项目里的外部文件：别被「图库加载」冲掉（界面每次请求都带 where）
+    if (doc.external) return { ok: true }
     if (loadedFor === lib.dir) return { ok: true }
     return loadDiagram(lib, policy)
   })
+}
+
+/**
+ * 这次请求**认下的那份文档**。`doc`/`lib`/`root` 是模块级全局，而一次请求里只要出现 await，
+ * 别的会话的切库就可能把指针换走（切换现在排进队列了，但队列之外的 await 仍然存在）。
+ * 于是：读路径在 await 之后拿它复核一遍，写路径把它交给 persist 当拒写依据。
+ */
+function docTicket() {
+  return { slot: activeSlotKey(), dir: lib.dir, file: doc.file, rev: doc.revision }
+}
+
+function ticketHolds(t) {
+  return activeSlotKey() === t.slot && lib.dir === t.dir && doc.file === t.file
 }
 
 /** 所有加载都排这一条队列 —— 并发进两个库时，内存里的文档与 lib 不会各说各话。 */
@@ -1019,11 +1188,23 @@ async function loadDiagram(target, policy?) {
 function normalizeModel(model) {
   var nodes = []
   var seen = {}
+  // 归一撞名（`a-b` 与 `a.b` → `a_b`，`1` 与 `n1` → `n1`）时给后来者加稳定后缀，两条都活下来。
+  // 从前这里是 `if (seen[id]) continue` —— 静默丢掉一个用户写下的节点。
+  // `idOwners` / `idOfRaw` 由 claimNodeId 与下面那行一起维护：边的两端也必须按
+  // **原始写法**认回被改名的那个（否则 `a.b --> X` 会被挂到 `a-b` 那个节点上）。
+  // 无原型对象：id 来自模型，可能是 `__proto__`（`map['__proto__']` 会拿到 Object.prototype）。
+  var idOwners = Object.create(null)
+  var idOfRaw = Object.create(null)
+  function warnNorm(message) {
+    if (doc.warnings.length < 50) doc.warnings.push(message)
+  }
   var rawNodes = Array.isArray(model.nodes) ? model.nodes : []
   for (var i = 0; i < rawNodes.length; i++) {
     var n = rawNodes[i]
     if (!n || typeof n !== 'object') continue
-    var id = cleanId(n.id)
+    var rawId = String(n.id == null ? '' : n.id)
+    var id = claimNodeId(idOwners, rawId, warnNorm)
+    if (idOfRaw[rawId] === undefined) idOfRaw[rawId] = id
     if (seen[id]) continue
     seen[id] = true
     // 用户注释：从界面/文件进来的自由文本，长度要设闸门 —— 它会被原样注入每一步的提示词，
@@ -1060,8 +1241,12 @@ function normalizeModel(model) {
   for (var j = 0; j < rawEdges.length; j++) {
     var e = rawEdges[j]
     if (!e || typeof e !== 'object') continue
-    var from = cleanId(e.from)
-    var to = cleanId(e.to)
+    // 两端按**原始写法**认节点：归一撞名时 `a.b` 已经被改叫 `a_b_2`，
+    // 直接 cleanId 会把它接到 `a_b`（另一个节点）上 —— 那是把用户的边悄悄挪到错的节点。
+    var rawFrom = String(e.from == null ? '' : e.from)
+    var rawTo = String(e.to == null ? '' : e.to)
+    var from = idOfRaw[rawFrom] !== undefined ? idOfRaw[rawFrom] : cleanId(e.from)
+    var to = idOfRaw[rawTo] !== undefined ? idOfRaw[rawTo] : cleanId(e.to)
     if (!seen[from] || !seen[to]) continue
     if (from === to) continue
     edges.push({
@@ -1074,10 +1259,17 @@ function normalizeModel(model) {
   var known = {}
   for (var a = 0; a < nodes.length; a++) if (nodes[a].group) known[nodes[a].group] = true
   var rawGroups = Array.isArray(model.groups) ? model.groups : []
+  var seenGroupIds = {}
   for (var k = 0; k < rawGroups.length; k++) {
     var g = rawGroups[k]
     if (!g || typeof g !== 'object') continue
     var gid = cleanId(g.id)
+    // 组 id 要去重：重复的组会让同一个节点在文件里出现两遍、`groupCount` 虚高，而往返检查
+    // 因为「parse 回来的也是两个组」判不出异常（2026-09-24 宿主审计第 11 条）。保留第一条。
+    // 注意用**单独的** seen 集合：`known` 里还装着「节点引用了、但还没登记标签的组」，
+    // 拿它去重会把那一组的 label 丢掉、退化成组 id。
+    if (seenGroupIds[gid]) continue
+    seenGroupIds[gid] = true
     groups.push({ id: gid, label: typeof g.label === 'string' && g.label ? g.label : gid })
     known[gid] = true
   }
@@ -1191,6 +1383,16 @@ function removeEdge(from, to) {
   doc.edges = doc.edges.filter(function (e) { return !(e.from === a && e.to === b) })
 }
 
+/** 这两点之间有没有连线（按 cleanId 归一后比）。改标签/删连线要先问它 —— 见 applyOps 里的说明。 */
+function hasEdge(from, to) {
+  var a = cleanId(from)
+  var b = cleanId(to)
+  for (var i = 0; i < doc.edges.length; i++) {
+    if (doc.edges[i].from === a && doc.edges[i].to === b) return true
+  }
+  return false
+}
+
 function setEdgeLabel(from, to, label) {
   var a = cleanId(from)
   var b = cleanId(to)
@@ -1243,9 +1445,15 @@ function restoreModel(saved) {
  * 不恢复的后果：这一版改动只活在内存里，而后续任何一次落盘又会把它写出去 ——
  * 用户看到的是「明明改了，重启之后没了 / 时有时无」。
  */
-async function persistOrRollback(saved, site, policy?) {
-  var err = await persist(policy, site)
+async function persistOrRollback(saved, site, policy?, expectFile?) {
+  var err = await persist(policy, site, expectFile)
   if (!err) return null
+  // **指针被换走时不许回滚。** `restoreModel(saved)` 是把 A 的快照灌回**当下**那份文档 ——
+  // 而它已经是 B 的了，那比「这一次没写成」坏得多（等于拿 A 的状态覆盖 B 的图）。
+  if (typeof expectFile === 'string' && expectFile && doc.file !== expectFile) {
+    logEvent('error', 'persist.rollback.skipped', { site: site || '', expected: expectFile, actual: doc.file })
+    return err
+  }
   restoreModel(saved)
   if (lastChange) lastChange = { by: lastChange.by, rev: doc.revision, nodes: [] }
   doc.warnings.push('保存失败，本次改动已回滚: ' + err)
@@ -1272,13 +1480,18 @@ async function applyRollback(seq, policy?) {
     return { ok: false, error: '那份快照里没有节点也没有内容行，已放弃（图没有变）' }
   }
   var saved = snapshotModel()
+  // **认下这一份文档再用快照覆盖它。** `persistOrRollback` 的闸门要靠 expectFile 才可达：
+  // 从前没传，于是「写盘失败 + 那一刻指针被换走」时 `restoreModel(saved)` 会把 A 的快照灌进
+  // **当下（B 的）文档** —— B 的槽被就地改写，下一次编辑直接写到 A 的文件上，
+  // 而 `persist.rollback.skipped` 一次都不出现。
+  var expectFile = doc.file
   adopt(parsed)
   adoptModel(modelOf())
   doc.tombstoned = hasTombstone(entry.text)
   bump('user')
   noteUserChange()
   doc.notes = ['回到检查点：' + historyLabelOf(entry)]
-  var err = await persistOrRollback(saved, 'rollback:' + seq, policy)
+  var err = await persistOrRollback(saved, 'rollback:' + seq, policy, expectFile)
   if (err) {
     logEvent('error', 'history.rollback.fail', { seq: seq, file: doc.file, error: err })
     return { ok: false, error: err }
@@ -1317,6 +1530,13 @@ function applyOps(ops) {
       var mnNode = mnId ? findNode(mnId) : null
       if (!mnNode) { problems.push(tag + ': 找不到节点 ' + (mnId || '(空)') + '，mark_note 需要有效的 id'); continue }
       if (!mnNode.note) { problems.push(tag + ': 节点 ' + mnId + ' 上没有留言，无需标记'); continue }
+      // `done` 出现就必须是布尔：从前写的是 `op.done === false ? false : true`，于是
+      // `done:0` / `done:"no"` / `done:"false"` 全算「已办」—— 用户的留言被标掉、
+      // 从 AI 的上下文里消失（`"false"` 恰恰是模型最常犯的字符串布尔错）。缺省才是 true。
+      if (op.done !== undefined && typeof op.done !== 'boolean') {
+        problems.push(tag + ': done 必须是布尔（省略 = 标成已办，false = 重新打开）')
+        continue
+      }
       mnNode.noteDone = op.done === false ? false : true
       done.push(mnNode.noteDone ? ('把 ' + mnId + ' 的留言标成已办') : ('重新打开 ' + mnId + ' 的留言'))
       continue
@@ -1324,6 +1544,12 @@ function applyOps(ops) {
     if (kind === 'add_node') {
       var nid = op.id ? cleanId(op.id) : nextNodeId()
       if (findNode(nid)) { problems.push(tag + ': 节点 ' + nid + ' 已存在，改用 set_label'); continue }
+      // 形状与坐标要**显式校验**：从前 shape 传错会静默变矩形（而 set_shape 会拒绝，两兄弟不一致）、
+      // x/y 传 `1e999`（JSON 合法 → Infinity）会写进模型，而 serializeDoc 因 isFinite 为假不写
+      // `%% @pos` —— 坐标从盘上消失、往返检查还判一致（2026-09-24 宿主审计第 5/6 条）。
+      if (op.shape !== undefined && !SHAPE_WRAP[op.shape]) { problems.push(tag + ': 未知形状 ' + String(op.shape)); continue }
+      if (op.x !== undefined && (typeof op.x !== 'number' || !isFinite(op.x))) { problems.push(tag + ': x 必须是有限数字'); continue }
+      if (op.y !== undefined && (typeof op.y !== 'number' || !isFinite(op.y))) { problems.push(tag + ': y 必须是有限数字'); continue }
       // 挂到一个**还不存在的组**上时，必须把组也建出来：serializeDoc 只为 doc.groups 里的组
       // 写 subgraph，落到 loose 里的节点下次解析回来 `group` 就是 null —— 分组被**静默吞掉**。
       // normalizeModel / set_group / add_group 三处都会补，唯独 add_node 从前漏了。
@@ -1366,6 +1592,9 @@ function applyOps(ops) {
       if (kid === null) continue
       var kn = findNode(kid)
       if (!kn) { problems.push(tag + ': 找不到节点 ' + String(op.id)); continue }
+      // 类型错 = **静默清空那个字段**（`link:42` 与「缺 link」从前无法区分，两者都会把已有下钻链接删掉，
+      // 回执还说「取消下钻链接」）。要清空必须显式传空串。
+      if (typeof op.link !== 'string') { problems.push(tag + ': link 必须是字符串（清空传空串）'); continue }
       kn.link = normLink(op.link)
       done.push(kn.link ? '把 ' + kn.id + ' 下钻到「' + kn.link + '」' : '取消 ' + kn.id + ' 的下钻链接')
     } else if (kind === 'move_node') {
@@ -1373,6 +1602,10 @@ function applyOps(ops) {
       if (mid === null) continue
       var mn = findNode(mid)
       if (!mn) { problems.push(tag + ': 找不到节点 ' + String(op.id)); continue }
+      if (op.x !== undefined && (typeof op.x !== 'number' || !isFinite(op.x))) { problems.push(tag + ': x 必须是有限数字'); continue }
+      if (op.y !== undefined && (typeof op.y !== 'number' || !isFinite(op.y))) { problems.push(tag + ': y 必须是有限数字'); continue }
+      // 一个坐标都没给 = 什么都没做，别报「移动了」。
+      if (typeof op.x !== 'number' && typeof op.y !== 'number') { problems.push(tag + ': 至少要给 x 或 y'); continue }
       if (typeof op.x === 'number') mn.x = op.x
       if (typeof op.y === 'number') mn.y = op.y
       done.push('移动 ' + mn.id)
@@ -1403,6 +1636,9 @@ function applyOps(ops) {
       var xf = opRef(op.from, 'from', tag, problems)
       var xt = opRef(op.to, 'to', tag, problems)
       if (xf === null || xt === null) continue
+      // 删不存在的东西从前也报「删除连线 …」—— 回执说做了、图上什么都没变（三个兄弟 op 里
+      // 只有 remove_node 查了存在性）。对不上就明说。
+      if (!hasEdge(xf, xt)) { problems.push(tag + ': 这两点之间没有连线'); continue }
       removeEdge(xf, xt)
       done.push('删除连线 ' + xf + ' -> ' + xt)
     } else if (kind === 'set_edge_label') {
@@ -1411,6 +1647,9 @@ function applyOps(ops) {
       if (lf === null || lt === null) continue
       if (!findNode(lf) || !findNode(lt)) { problems.push(tag + ': from/to 节点不存在'); continue }
       if (lf === lt) { problems.push(tag + ': 不允许自环'); continue }
+      // 从前这里会**顺手建一条边**：from/to 打错时，想改标签却得到一条新连线，而回执只说
+      // 「改连线标签」（用户看不出那是新建的）。改标签就该改标签，没这条边就明说。
+      if (!hasEdge(lf, lt)) { problems.push(tag + ': 这两点之间没有连线（要新建用 add_edge）'); continue }
       setEdgeLabel(lf, lt, typeof op.label === 'string' ? op.label : '')
       done.push('改连线标签 ' + lf + ' -> ' + lt)
     } else if (kind === 'set_group') {
@@ -1418,7 +1657,9 @@ function applyOps(ops) {
       if (gid0 === null) continue
       var gn = findNode(gid0)
       if (!gn) { problems.push(tag + ': 找不到节点 ' + String(op.id)); continue }
-      var want = typeof op.group === 'string' && op.group ? cleanId(op.group) : null
+      // `group:99`（类型错）从前等于「移出分组」——静默改了另一个语义。要移出必须显式传空串。
+      if (typeof op.group !== 'string') { problems.push(tag + ': group 必须是字符串（移出分组传空串）'); continue }
+      var want = op.group ? cleanId(op.group) : null
       gn.group = want
       if (want) {
         var exists = false
@@ -1437,6 +1678,9 @@ function applyOps(ops) {
       var rgRaw = typeof op.group === 'string' && op.group !== '' ? op.group : op.id
       var rgid = opRef(rgRaw, 'group', tag, problems)
       if (rgid === null) continue
+      var rgExists = false
+      for (var rgi = 0; rgi < doc.groups.length; rgi++) if (doc.groups[rgi].id === rgid) { rgExists = true; break }
+      if (!rgExists) { problems.push(tag + ': 找不到分组 ' + rgid); continue }
       doc.groups = doc.groups.filter(function (g) { return g.id !== rgid })
       for (var z = 0; z < doc.nodes.length; z++) if (doc.nodes[z].group === rgid) doc.nodes[z].group = null
       done.push('删除分组 ' + rgid)
@@ -1458,8 +1702,10 @@ function applyOps(ops) {
       if (ffid === null) continue
       var ffn = findNode(ffid)
       if (!ffn) { problems.push(tag + ': 找不到节点 ' + String(op.id)); continue }
+      // 类型错从前等于**清空全部锚点**（`files:'src/b.ts'` 与「缺 files」不可区分）。清空要显式传空数组。
+      if (!Array.isArray(op.files)) { problems.push(tag + ': files 必须是数组（清空传空数组）'); continue }
       var nextFiles = []
-      var rawFs = Array.isArray(op.files) ? op.files : []
+      var rawFs = op.files
       for (var fk = 0; fk < rawFs.length && nextFiles.length < 20; fk++) {
         if (typeof rawFs[fk] !== 'string') continue
         var fsv = rawFs[fk].trim()

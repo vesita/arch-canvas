@@ -50,6 +50,18 @@ let agentMap = new Map()
 const agentsSvc = {
   get: (id) => agentMap.get(id),
 }
+// 故障注入钩子：readText / writeText 之前可以 await 任意动作，用来模拟
+// 「另一个会话在这次 await 期间把全局指针换走了」。默认空数组 = 零行为变化。
+const readHooks = []
+const writeHooks = []
+let hookRunning = false
+async function runHooks(list, key) {
+  if (hookRunning) return
+  for (const h of list) {
+    hookRunning = true
+    try { await h(key) } finally { hookRunning = false }
+  }
+}
 const fsSvc = {
   resolve: async (p) => ({ targetKey: p, displayPath: p }),
   processPath: (t) => (t && t.targetKey) || String(t),
@@ -62,6 +74,7 @@ const fsSvc = {
     return undefined
   },
   readText: async (t) => {
+    await runHooks(readHooks, t.targetKey)
     if (!files.has(t.targetKey)) throw new Error('ENOENT ' + t.targetKey)
     return files.get(t.targetKey)
   },
@@ -88,6 +101,7 @@ const fsSvc = {
     return out
   },
   writeText: async (t, content, expected, signal, sandboxPolicy) => {
+    await runHooks(writeHooks, t.targetKey)
     lastWriteArgs = { target: t, content, expected, signal, sandboxPolicy }
     allWriteArgs.push({ targetKey: t.targetKey, policy: sandboxPolicy })
     if (failWritePaths.has(t.targetKey)) {
@@ -106,13 +120,18 @@ const sysSvc = { context: (c) => { prompts.push(c); return () => { const i = pro
 
 const handlers = new Map()
 const tools = []
+const RPC_PATH_TEST = '/arch-canvas/rpc'
 const harness = {
   handle: (name, fn) => { handlers.set(name, fn); return () => handlers.delete(name) },
   // 宿主逻辑只**登记**路由，真正 register 由外层在 webServer 就绪后做（见 src/package/host.js）。
   route: (path, handler) => { routes.push({ kind: 'exact', path, handler }) },
+  // 与真插件外壳（src/package/host.ts）同构：外壳自己也会往 webServer 上推一条 RPC 路由。
+  // 宿主逻辑靠 describeRoutes() 才能数到它 —— 挂载自检判据是「4 工具 / 3 路由 / 1 提示词上下文」。
+  describeRoutes: () => routes.map((r) => r.path),
   defineTool: (def) => def,
   registerTool: (_ctx, def) => { tools.push(def) },
 }
+routes.push({ kind: 'exact', path: RPC_PATH_TEST, handler: async () => {} })
 
 const disposers = []
 // 记下宿主逻辑问了哪些服务：'webServer' 出现在这里就是回退到「取快照」了 ——
@@ -200,7 +219,10 @@ ok('不再有 setting:get / setting:set（那条闸门已移除）',
 ok('注册了 4 个工具', tools.length === 4, tools.map((t) => t.name))
 ok('工具名单里有 arch_switch', tools.some((t) => t.name === 'arch_switch'))
 ok('注册了 1 条提示词上下文', prompts.length === 1, prompts.map((p) => p.name))
-ok('注册了 2 条静态路由', routes.length === 2, routes.map((r) => r.path))
+ok('注册了 3 条路由（1 RPC + 2 静态；RPC 由外壳直接推，见 src/package/host.ts）',
+  routes.length === 3, routes.map((r) => r.path))
+ok('外壳那条 RPC 路由的路径就是 /arch-canvas/rpc', routes.some((r) => r.path === '/arch-canvas/rpc'),
+  routes.map((r) => r.path))
 ok('mermaid 路由是 exact 且路径正确', routes.some((r) => r.kind === 'exact' && r.path === '/arch-canvas/mermaid.min.js'))
 ok('界面路由是 exact 且路径正确', routes.some((r) => r.kind === 'exact' && r.path === '/arch-canvas/ui.js'))
 ok('没有给 webServer 取快照（那会让装机后路由静默不注册）', !askedServices.includes('webServer'), askedServices)
@@ -538,6 +560,17 @@ const todayLogLines = (logStorage.get(todayLogKey) || '').trim().split('\n').map
 }).filter(Boolean)
 const mountLog = todayLogLines.find((row) => row.ev === 'plugin.mount')
 ok('当天日志包含合法 plugin.mount 行且 toolCount === 4', !!mountLog && mountLog.toolCount === 4, mountLog)
+// 挂载自检判据是「4 工具 / 3 路由 / 1 提示词上下文」，而 routeCount 从前只数了宿主逻辑自己的
+// onRoute（2 条静态），RPC 那条是外壳直接推的 —— 唯一的机器可读记录永远对不上。
+ok('plugin.mount 的 routeCount 反映真实注册数（1 RPC + 2 静态 = 3）',
+  !!mountLog && mountLog.routeCount === 3, mountLog && { routeCount: mountLog.routeCount, routes: mountLog.routes })
+eq('mount 的 routeCount 等于 webServer 真实收到的路由数（日志不许自己编一个数）',
+  mountLog && mountLog.routeCount, routes.length)
+ok('mount 的路由清单与真实注册逐一对应（含外壳那条 RPC）',
+  !!mountLog && String(mountLog.routes).split(',').sort().join('|') === routes.map((r) => r.path).sort().join('|'),
+  mountLog && { logged: mountLog.routes, real: routes.map((r) => r.path) })
+ok('负向对照：外壳那条 RPC 路由确实被注册了（少一条上面两条就红）',
+  routes.some((r) => r.path === '/arch-canvas/rpc'), routes.map((r) => r.path))
 const editLog = todayLogLines.find((row) => row.ev === 'tool.arch_edit')
 ok('当天日志包含 tool.arch_edit 且含 ops 字段', !!editLog && typeof editLog.ops === 'number', editLog)
 const retentionLog = todayLogLines.find((row) => row.ev === 'log.retention')
@@ -1672,6 +1705,476 @@ const writeAllowed = await tool('arch_write').execute({
 }, {})
 eq('建库后 arch_write 成功 (ok !== false)', writeAllowed && writeAllowed.ok !== false, true)
 
+// ============================================================================
+// 宿主修复守门断言（2026-09-24 审计 A~K）
+// 全部放在【提示词模板注入防护】之前：那一节会真的加一个 hex 节点再删掉、推进修订号，
+// 夹在它后面会撞坏前面所有「修订号 == N」的断言。每条都配了负向对照 —— 只有正例的断言
+// 证明不了它不是空转。
+// ============================================================================
+
+console.log('【A. notes.json 不被空表整库覆盖（数据丢失）】')
+{
+  const dirNS = '/tmp/proj-notes-survive'
+  const nsOther = dirNS + '/.arch-canvas/other.mmd'
+  const nsNotes = dirNS + '/.arch-canvas/notes.json'
+  // 盘上：另一张图活着（这样不会触发全局继承），而**当前那张 architecture.mmd 不存在**；
+  // notes.json 里躺着**两张图**的留言。从前 loadInto 的 absent 分支不读留言表，于是任意一次
+  // 无关的 doc:set 都会把这半张空表写回去 = 整个图库所有图的留言被静默清空。
+  files.set(nsOther, 'flowchart TD\n  z9["另一张图的节点"]\n')
+  files.set(nsNotes, JSON.stringify({
+    'architecture.mmd': { a9: { text: '上一轮留的架构留言', done: false, at: 222 } },
+    'other.mmd': { z9: { text: 'other 这张图的留言，绝不能丢', done: false, at: 111 } },
+  }, null, 2))
+  const docNS0 = await call('doc:get', { where: dirNS })
+  eq('A：当前图不存在（走的正是 absent 那条分支）', docNS0.nodeCount, 0, docNS0.nodeCount)
+  const mNS = JSON.parse(JSON.stringify(docNS0.model))
+  mNS.nodes.push({ id: 'a1', label: '架构图新节点', shape: 'rect', group: null, x: 0, y: 0, note: '架构图这条必须写进去', noteDone: false })
+  const setNS = await call('doc:set', { model: mNS, where: dirNS })
+  ok('A：doc:set 成功', setNS && setNS.ok !== false, setNS && setNS.error)
+  const storeNS = JSON.parse(files.get(nsNotes) || '{}')
+  ok('A：other.mmd 那条留言正文逐字未变（这就是从前被整表清掉的那一格）',
+    !!(storeNS['other.mmd'] && storeNS['other.mmd'].z9) &&
+    storeNS['other.mmd'].z9.text === 'other 这张图的留言，绝不能丢' &&
+    storeNS['other.mmd'].z9.done === false &&
+    storeNS['other.mmd'].z9.at === 111,
+    storeNS['other.mmd'])
+  // 负向对照：当前图那条确实被写进去了 —— 证明「表被读到了、写路径确实跑了」，
+  // 而不是「整个写入被跳过」（后者会让上面那条断言变成空转）。
+  ok('A：负向对照 —— 当前图（architecture.mmd）这条留言确实写进去了',
+    !!(storeNS['architecture.mmd'] && storeNS['architecture.mmd'].a1) &&
+    storeNS['architecture.mmd'].a1.text === '架构图这条必须写进去',
+    storeNS['architecture.mmd'])
+}
+
+console.log('【B. {{ 守卫必须走完所有出口】')
+{
+  const dirTpl = '/tmp/proj-tpl-inject'
+  const tplFile = dirTpl + '/.arch-canvas/architecture.mmd'
+  // B1. 空画布的提前 return：@summary 里含 {{hexname}}
+  const docTpl0 = await call('doc:get', { where: dirTpl })
+  const mTpl0 = JSON.parse(JSON.stringify(docTpl0.model))
+  mTpl0.summary = '注入探针 {{hexname}} 结束'
+  const setTpl0 = await call('doc:set', { model: mTpl0, where: dirTpl })
+  ok('B1：空画布 + 含 {{ 的总结 落盘成功', setTpl0 && setTpl0.ok !== false, setTpl0 && setTpl0.error)
+  eq('B1：前提 —— 这张图真的一个节点都没有（否则踩不到那条提前 return）', setTpl0.nodeCount, 0)
+  const b1Text = promptFn()
+  ok('B1：提示词里不含 {{', b1Text.indexOf('{{') < 0,
+    (b1Text.match(/\{\{/g) || []).length + ' 处 {{')
+  // 负向对照：那句话确实进了提示词，而且能看出被拆成了 { { —— 证明「不含 {{」不是「整段没注入」
+  ok('B1：总结那句确实在提示词里，且被拆成了 { {',
+    b1Text.indexOf('注入探针') >= 0 && b1Text.indexOf('结束') >= 0 && b1Text.indexOf('{ {hexname}') >= 0,
+    b1Text.split('\n').filter((l) => l.indexOf('这张图讲的是') >= 0))
+
+  // B2. 连续四个 {{{{：单次 replace 拆不干净（替换文本自己又挨在一起）
+  const mTpl1 = JSON.parse(JSON.stringify(mTpl0))
+  mTpl1.summary = '模板探针'
+  mTpl1.nodes.push({ id: 'tpl1', label: '{{{{a}}}}', shape: 'rect', group: null, x: 0, y: 0 })
+  const setTpl1 = await call('doc:set', { model: mTpl1, where: dirTpl })
+  ok('B2：带 {{{{ 标签的节点落盘成功', setTpl1 && setTpl1.ok !== false, setTpl1 && setTpl1.error)
+  eq('B2：前提 —— 节点确实在（否则走的是空画布那条 return，测不到标签这条路）', setTpl1.nodeCount, 1)
+  ok('B2：前提 —— 文件里真的写着四个花括号', files.get(tplFile).indexOf('{{{{a}}}}') >= 0,
+    files.get(tplFile).split('\n').filter((l) => l.indexOf('tpl1') >= 0))
+  const b2Text = promptFn()
+  ok('B2：提示词里不含 {{（单次 replace 会剩下 "{{"）', b2Text.indexOf('{{') < 0,
+    (b2Text.match(/\{\{/g) || []).length + ' 处 {{')
+  ok('B2：负向对照 —— 拆到了不动为止（四个 { 全被拆开，标签还在上下文里）',
+    b2Text.indexOf('{ { { {a}}}}') >= 0, b2Text.split('\n').filter((l) => l.indexOf('tpl1') >= 0))
+
+  // B3. foreign 出口：对方的图名里含 {{，而且新行为干脆不再报那个图名
+  const dirTplX = '/tmp/proj-tpl-x'
+  const dirTplY = '/tmp/proj-tpl-y'
+  const tplXFile = dirTplX + '/.arch-canvas/含{{漏点}}.mmd'
+  files.set(tplXFile, 'flowchart TD\n  hx["X 的图"]\n')
+  const agentTplX = { session: { id: 'sess-tpl-x', cwd: dirTplX } }
+  const agentTplY = { session: { id: 'sess-tpl-y', cwd: dirTplY } }
+  const parkX = await call('doc:open', { where: dirTplX, key: '含{{漏点}}', session: 'sess-tpl-x' })
+  ok('B3：X 把画布停在图名含 {{ 的那张图上', parkX && parkX.ok !== false, parkX && parkX.error)
+  eq('B3：停的确实是那张图', parkX && parkX.diagram, '含{{漏点}}')
+  // 负向对照：X 自己那一步看得到这个图名（拆开后的样子）——证明这个名字里真的有 {{，
+  // 下面「Y 看不到」才有意义（否则可能只是那个名字压根不存在）。
+  const b3X = promptFn({ agent: agentTplX })
+  ok('B3：负向对照 —— X 自己那一步看得到自己的图名（拆开成 { {）',
+    b3X.indexOf('含{ {漏点}}') >= 0, b3X.slice(0, 200))
+  ok('B3：X 自己那一步同样不含 {{', b3X.indexOf('{{') < 0)
+  const b3Y = promptFn({ agent: agentTplY })
+  ok('B3：Y 那一步不含 {{（foreignCanvasText 从前带着对方的图名，那就是漏点）',
+    b3Y.indexOf('{{') < 0, (b3Y.match(/\{\{/g) || []).length + ' 处 {{')
+  ok('B3：Y 那一步不含那张图的名字', b3Y.indexOf('漏点') < 0, b3Y.slice(0, 300))
+  ok('B3：前提 —— Y 那一步走的确实是 foreign 出口（不是空文本碰巧不含 {{）',
+    b3Y.indexOf('画布现在停在别的项目上') >= 0, b3Y.slice(0, 200))
+  ok('B3：Y 那一步也没拿到 X 的图内容', b3Y.indexOf('X 的图') < 0 && b3Y.indexOf('```mermaid') < 0)
+}
+
+console.log('【C. 缺凭据的破坏性默认】')
+{
+  const dirCred = '/tmp/proj-cred'
+  const credArch = dirCred + '/.arch-canvas/architecture.mmd'
+  const credFile = dirCred + '/.arch-canvas/cred.mmd'
+  const blankFile = dirCred + '/.arch-canvas/blank.mmd'
+  files.set(credArch, 'flowchart TD\n  ca["凭据测试主图"]\n')
+  files.set(credFile, 'flowchart TD\n  cc["待删除的图"]\n')
+  files.set(blankFile, 'flowchart TD\n  cb["待清空的图"]\n')
+  await call('doc:get', { where: dirCred })
+
+  // C1. doc:delete 不带 key：从前 splitKey('') 兜成 architecture，一句无凭据调用就把默认图软删了
+  const delNoKey = await call('doc:delete', { where: dirCred })
+  eq('C1：doc:delete 不带 key 被拒（ok:false）', delNoKey.ok, false)
+  ok('C1：错误信息说明需要 key', String(delNoKey.error).indexOf('需要 key') >= 0, delNoKey.error)
+  eq('C1：默认图正文里没有墓碑', files.get(credArch).indexOf('%% @deleted'), -1)
+
+  // C2. doc:applyText 不带 text：从前会把整张图写成空图并回 ok:true, saved:true
+  const beforeC2 = files.get(credArch)
+  const applyNoText = await call('doc:applyText', { where: dirCred })
+  eq('C2：doc:applyText 不带 text 被拒（ok:false）', applyNoText.ok, false)
+  ok('C2：错误信息说明需要 text', String(applyNoText.error).indexOf('需要 text') >= 0, applyNoText.error)
+  eq('C2：盘上那张图逐字节未变', files.get(credArch), beforeC2)
+  ok('C2：没有变成空图（节点正文还在）', files.get(credArch).indexOf('凭据测试主图') >= 0, files.get(credArch))
+
+  // C3. 负向对照：拒绝的是「缺字段」，不是「这个功能被关掉了」
+  const delOk = await call('doc:delete', { key: 'cred', where: dirCred })
+  ok('C3：带正确 key 的 doc:delete 仍然能删', delOk && delOk.ok === true, delOk && delOk.error)
+  eq('C3：墓碑真的写上了', files.get(credFile).indexOf('%% @deleted'), 0)
+  const restOk = await call('doc:restore', { key: 'cred', where: dirCred })
+  ok('C3：恢复回去', restOk && restOk.ok === true, restOk && restOk.error)
+  await call('doc:open', { key: 'blank', where: dirCred })
+  const clearBlank = await call('doc:applyText', { text: '', where: dirCred })
+  ok('C3：显式传 text:"" 仍然能清空整张图', clearBlank && clearBlank.ok !== false, clearBlank && clearBlank.error)
+  ok('C3：清空真的生效了（负向对照：不是「applyText 整体被关掉」）',
+    files.get(blankFile).indexOf('待清空的图') < 0, files.get(blankFile))
+}
+
+console.log('【D. doc:restore 要把内存里的墓碑也摘掉】')
+{
+  const dirTombR = '/tmp/proj-tomb-restore'
+  const tombRFile = dirTombR + '/.arch-canvas/architecture.mmd'
+  files.set(tombRFile, 'flowchart TD\n  tb1["恢复测试节点"]\n')
+  await call('doc:get', { where: dirTombR })
+
+  // 负向对照：删了不恢复 → 保存时墓碑必须还在（否则下面那条「不再写回墓碑」没有意义）
+  const delKeep = await call('doc:delete', { key: 'architecture', where: dirTombR })
+  ok('D：负向对照的删除成功', delKeep && delKeep.ok !== false, delKeep && delKeep.error)
+  const mKeep = JSON.parse(JSON.stringify((await call('doc:get', { where: dirTombR })).model))
+  const setKeep = await call('doc:set', { model: mKeep, where: dirTombR })
+  ok('D：负向对照的保存成功', setKeep && setKeep.ok !== false, setKeep && setKeep.error)
+  eq('D：没恢复就保存 → 墓碑仍在（负向对照）',
+    files.get(tombRFile).indexOf('%% @deleted'), 0)
+
+  // 正例：删除 → 恢复 → 下一次保存不许把墓碑写回去
+  const delR = await call('doc:delete', { key: 'architecture', where: dirTombR })
+  ok('D：再次删除成功', delR && delR.ok !== false, delR && delR.error)
+  const restR = await call('doc:restore', { key: 'architecture', where: dirTombR })
+  ok('D：恢复成功', restR && restR.ok === true, restR && restR.error)
+  const mRestR = JSON.parse(JSON.stringify((await call('doc:get', { where: dirTombR })).model))
+  mRestR.nodes.push({ id: 'tb2', label: '恢复后新增', shape: 'rect', group: null, x: 10, y: 10 })
+  const setRestR = await call('doc:set', { model: mRestR, where: dirTombR })
+  ok('D：恢复后的保存成功', setRestR && setRestR.ok !== false, setRestR && setRestR.error)
+  eq('D：恢复之后的下一次保存不再写回墓碑（用户的「恢复」不许无声作废）',
+    files.get(tombRFile).indexOf('%% @deleted'), -1)
+  ok('D：负向对照 —— 恢复后的内容确实落了盘（不是整个写入被跳过）',
+    files.get(tombRFile).indexOf('恢复后新增') >= 0, files.get(tombRFile))
+}
+
+console.log('【E. 未办留言超过 20 条时只送列出来的那些】')
+{
+  const dirE25 = '/tmp/proj-note-25'
+  files.set(dirE25 + '/.arch-canvas/other.mmd', 'flowchart TD\n  eo["占位图，避免触发全局继承"]\n')
+  const docE250 = await call('doc:get', { where: dirE25 })
+  const mE25 = JSON.parse(JSON.stringify(docE250.model))
+  for (let i = 0; i < 25; i++) {
+    mE25.nodes.push({ id: 'e' + i, label: 'E' + i, shape: 'rect', group: null, x: i * 10, y: 0, note: '待办条目 ' + i, noteDone: false })
+  }
+  const setE25 = await call('doc:set', { model: mE25, where: dirE25 })
+  ok('E：造出 25 条未办留言', setE25 && setE25.ok !== false, setE25 && setE25.error)
+  eq('E：前提 —— 25 条都在（否则下面全是空断言）', setE25.noteCount, 25)
+
+  // 第一步：列出 20 条，并说明剩下 5 条下一步继续投递
+  const e1Text = promptFn()
+  eq('E：第一步只列 20 条', (e1Text.match(/待办条目 /g) || []).length, 20)
+  ok('E：明说还有 5 条、下一步继续投递',
+    e1Text.indexOf('还有 5 条') >= 0 && e1Text.indexOf('会在下一步继续投递') >= 0,
+    e1Text.split('\n').filter((l) => l.indexOf('还有') >= 0))
+  ok('E：截断点就在第 20 条（下标 19 在、下标 20 不在）',
+    e1Text.indexOf('待办条目 19') >= 0 && e1Text.indexOf('待办条目 20') < 0)
+
+  // 第二步：第 21 条起必须仍然能投递到（从前它们被标成已办、永远消失）
+  const e2Text = promptFn()
+  eq('E：第二步投递剩下那 5 条', (e2Text.match(/待办条目 /g) || []).length, 5)
+  ok('E：剩下的是第 21~25 条',
+    [20, 21, 22, 23, 24].every((i) => e2Text.indexOf('待办条目 ' + i) >= 0),
+    e2Text.split('\n').filter((l) => l.indexOf('待办条目') >= 0))
+  ok('E：负向对照 —— 前 20 条不重送（它们确实已送达）',
+    e2Text.indexOf('待办条目 0') < 0 && e2Text.indexOf('待办条目 19') < 0)
+
+  // 第三步：一条都没有了
+  const e3Text = promptFn()
+  eq('E：第三步一条都没有了', (e3Text.match(/待办条目 /g) || []).length, 0)
+}
+
+console.log('【F. op 传错类型不再静默清空字段】')
+{
+  const dirOps = '/tmp/proj-optypes'
+  const opsFile = dirOps + '/.arch-canvas/architecture.mmd'
+  files.set(opsFile, [
+    'flowchart TD',
+    '  subgraph g1["分组一"]',
+    '    f1["甲"]',
+    '  end',
+    '  f2["乙"]',
+    '  f1 --> f2',
+    '%% @pos f1 10 20',
+    '%% @link f1 "别的图"',
+    '%% @file f1 "src/a.ts"',
+    '',
+  ].join('\n'))
+  const docOps0 = await call('doc:get', { where: dirOps })
+  const opsF1 = docOps0.model.nodes.find((n) => n.id === 'f1')
+  ok('F：夹具就位（f1 带分组 / 坐标 / 下钻 / 锚点）',
+    !!opsF1 && opsF1.group === 'g1' && opsF1.x === 10 && opsF1.y === 20 && opsF1.link === '别的图' &&
+    JSON.stringify(opsF1.files) === JSON.stringify(['src/a.ts']),
+    opsF1)
+
+  // 每条非法 op 都配一个合法的 set_summary：这样批次一定落盘，
+  // 「字段在文件里没变」才是真的断言（否则「一个 op 都没生效 → 不写盘」会让它空转）。
+  const batch = async (title, op, marker) => {
+    const res = await tool('arch_edit').execute({ ops: [op, { op: 'set_summary', label: '类型校验：' + title }] }, {})
+    ok('F：' + title + ' → problems 非空', !!(res && res.problems && res.problems.length > 0), res && res.problems)
+    ok('F：' + title + ' → 问题说了原因', !!(res && res.problems.some((p) => p.indexOf(marker) >= 0)), res && res.problems)
+    eq('F：' + title + ' → 同一批里那条合法 op 照常生效（证明批次真的执行、真的落盘）',
+      res && res.appliedCount, 1)
+    return res
+  }
+
+  await batch('set_link link:42', { op: 'set_link', id: 'f1', link: 42 }, 'link')
+  ok('F：原有 %% @link 仍在文件里（没有静默清空下钻）',
+    files.get(opsFile).indexOf('%% @link f1 "别的图"') >= 0, files.get(opsFile))
+
+  await batch('set_files files:"src/b.ts"', { op: 'set_files', id: 'f1', files: 'src/b.ts' }, 'files')
+  ok('F：原有 %% @file 仍在文件里（没有静默清空锚点）',
+    files.get(opsFile).indexOf('%% @file f1 "src/a.ts"') >= 0, files.get(opsFile))
+
+  await batch('set_group group:99', { op: 'set_group', id: 'f1', group: 99 }, 'group')
+  {
+    const afterG = await call('doc:get', { where: dirOps })
+    eq('F：group 未变（没有被「移出分组」）', afterG.model.nodes.find((n) => n.id === 'f1').group, 'g1')
+    ok('F：文件里 f1 仍在 subgraph g1 里', files.get(opsFile).indexOf('subgraph g1') >= 0, files.get(opsFile))
+  }
+
+  await batch('move_node x:"abc"', { op: 'move_node', id: 'f1', x: 'abc' }, '有限数字')
+  ok('F：坐标没被改掉（%% @pos 仍在文件里）',
+    files.get(opsFile).indexOf('%% @pos f1 10 20') >= 0, files.get(opsFile))
+
+  // 只传错 x、y 合法：从前 x 被静默忽略、y 照样生效（半截改动），现在整个 op 拒绝。
+  await batch('move_node x:"abc" 但 y 合法', { op: 'move_node', id: 'f1', x: 'abc', y: 999 }, '有限数字')
+  ok('F：x 类型错时 y 也不许单独生效（整个 op 一起拒绝）',
+    files.get(opsFile).indexOf('%% @pos f1 10 20') >= 0, files.get(opsFile))
+
+  // `1e999` 在 JSON 里合法、解析出来就是 Infinity —— 从前它会写进模型，而 serializeDoc 因
+  // isFinite 为假不写 @pos，坐标直接从盘上消失且往返检查判一致。
+  ok('F：1e999 是 JSON 合法数字且解析为 Infinity（这条 op 的来源）', JSON.parse('1e999') === Infinity)
+  await batch('move_node x:1e999（Infinity）', { op: 'move_node', id: 'f1', x: 1e999 }, '有限数字')
+  ok('F：Infinity 没有把坐标从盘上抹掉',
+    files.get(opsFile).indexOf('%% @pos f1 10 20') >= 0, files.get(opsFile))
+
+  await batch('remove_edge 不存在的那对点', { op: 'remove_edge', from: 'f2', to: 'f1' }, '没有连线')
+  {
+    const afterE = await call('doc:get', { where: dirOps })
+    eq('F：原来的那条边还在', afterE.model.edges.length, 1)
+    eq('F：方向没被反转', afterE.model.edges[0].from + '->' + afterE.model.edges[0].to, 'f1->f2')
+  }
+
+  await batch('remove_group 不存在', { op: 'remove_group', group: 'nope' }, '找不到分组')
+  ok('F：分组 g1 还在', (await call('doc:get', { where: dirOps })).model.groups.some((g) => g.id === 'g1'))
+
+  await batch('set_edge_label 没有这条边', { op: 'set_edge_label', from: 'f2', to: 'f1' }, '没有连线')
+  {
+    const afterL = await call('doc:get', { where: dirOps })
+    eq('F：没有凭空多出一条连线', afterL.model.edges.length, 1)
+    ok('F：文件里也没有 f2 --> f1', files.get(opsFile).indexOf('f2 --> f1') < 0, files.get(opsFile))
+  }
+
+  await batch('add_node shape:"bogus"', { op: 'add_node', id: 'zzz', shape: 'bogus' }, '未知形状')
+  {
+    const afterA = await call('doc:get', { where: dirOps })
+    ok('F：节点没有被建出来', !afterA.model.nodes.some((n) => n.id === 'zzz'), afterA.model.nodes.map((n) => n.id))
+    ok('F：文件里也没有 zzz', files.get(opsFile).indexOf('zzz') < 0, files.get(opsFile))
+  }
+
+  // 负向对照：同样的 op 传对类型，problems 全空、字段真的变了
+  const fOkLink = await tool('arch_edit').execute({ ops: [{ op: 'set_link', id: 'f1', link: '新目标' }] }, {})
+  eq('F：负向对照 set_link 传字符串 → appliedCount 1', fOkLink.appliedCount, 1)
+  eq('F：负向对照 set_link 传字符串 → 无 problems', fOkLink.problems.length, 0)
+  ok('F：链接真的写进了文件', files.get(opsFile).indexOf('%% @link f1 "新目标"') >= 0, files.get(opsFile))
+
+  const fOkFiles = await tool('arch_edit').execute({ ops: [{ op: 'set_files', id: 'f1', files: ['src/b.ts'] }] }, {})
+  eq('F：负向对照 set_files 传数组 → 无 problems', fOkFiles.problems.length, 0)
+  ok('F：锚点真的换了', files.get(opsFile).indexOf('%% @file f1 "src/b.ts"') >= 0, files.get(opsFile))
+
+  const fOkGroup = await tool('arch_edit').execute({ ops: [{ op: 'set_group', id: 'f1', group: 'g2' }] }, {})
+  eq('F：负向对照 set_group 传字符串 → 无 problems', fOkGroup.problems.length, 0)
+  eq('F：分组真的换了', (await call('doc:get', { where: dirOps })).model.nodes.find((n) => n.id === 'f1').group, 'g2')
+
+  const fOkMove = await tool('arch_edit').execute({ ops: [{ op: 'move_node', id: 'f1', x: 111, y: 222 }] }, {})
+  eq('F：负向对照 move_node 传有限数字 → 无 problems', fOkMove.problems.length, 0)
+  ok('F：坐标真的改了', files.get(opsFile).indexOf('%% @pos f1 111 222') >= 0, files.get(opsFile))
+
+  const fOkLabel = await tool('arch_edit').execute({ ops: [{ op: 'set_edge_label', from: 'f1', to: 'f2', label: '标注' }] }, {})
+  eq('F：负向对照 set_edge_label 对已有的边 → 无 problems', fOkLabel.problems.length, 0)
+  eq('F：连线标签真的改了', (await call('doc:get', { where: dirOps })).model.edges.find((e) => e.from === 'f1' && e.to === 'f2').label, '标注')
+
+  const fOkDel = await tool('arch_edit').execute({ ops: [{ op: 'remove_edge', from: 'f1', to: 'f2' }] }, {})
+  eq('F：负向对照 remove_edge 对已有的边 → 无 problems', fOkDel.problems.length, 0)
+  eq('F：连线真的删了', (await call('doc:get', { where: dirOps })).model.edges.length, 0)
+
+  const fOkRg = await tool('arch_edit').execute({ ops: [{ op: 'remove_group', group: 'g1' }] }, {})
+  eq('F：负向对照 remove_group 对已有的组 → 无 problems', fOkRg.problems.length, 0)
+  ok('F：分组真的删了', !(await call('doc:get', { where: dirOps })).model.groups.some((g) => g.id === 'g1'))
+
+  const fOkAdd = await tool('arch_edit').execute({ ops: [{ op: 'add_node', id: 'zzz', shape: 'hex' }] }, {})
+  eq('F：负向对照 add_node 传合法形状 → 无 problems', fOkAdd.problems.length, 0)
+  eq('F：节点真的建出来了，形状也对',
+    (await call('doc:get', { where: dirOps })).model.nodes.find((n) => n.id === 'zzz').shape, 'hex')
+}
+
+console.log('【G. 零生效的 arch_edit 不写盘、不推修订号】')
+{
+  const dirOpsG = '/tmp/proj-optypes'
+  const beforeG = await call('doc:get', { where: dirOpsG })
+  const writesBeforeG = allWriteArgs.length
+  const gRes = await tool('arch_edit').execute({
+    ops: [
+      { op: 'set_label', id: '查无此节点', label: 'x' },
+      { op: 'remove_node' },
+      { op: 'set_edge_label', from: 'f1', to: '不存在的点' },
+    ],
+  }, {})
+  ok('G：全部非法 → appliedCount = 0', gRes && gRes.appliedCount === 0, gRes && gRes.appliedCount)
+  ok('G：problems 非空（不是静默什么都没做）', gRes && gRes.problems.length >= 3, gRes && gRes.problems)
+  eq('G：回执里的修订号一点没动', gRes && gRes.revision, beforeG.revision)
+  eq('G：零生效 → 一次写盘都没发生', allWriteArgs.length - writesBeforeG, 0)
+  ok('G：lastChange.nodes 为空（界面不该继续脉动上一次的改动）',
+    !!(gRes && gRes.lastChange) && gRes.lastChange.nodes.length === 0, gRes && gRes.lastChange)
+  eq('G：再读一次，修订号仍然没动', (await call('doc:get', { where: dirOpsG })).revision, beforeG.revision)
+
+  // 负向对照：同一张图上一个合法 op 仍然生效、仍然推进修订号、仍然写盘
+  const gOk = await tool('arch_edit').execute({ ops: [{ op: 'set_summary', label: '合法一次' }] }, {})
+  eq('G：负向对照 —— 合法 op 生效且无 problems', gOk && gOk.appliedCount, 1)
+  eq('G：负向对照 —— 合法 op 无 problems', gOk && gOk.problems.length, 0)
+  ok('G：负向对照 —— 合法 op 推进了修订号', gOk.revision > beforeG.revision, { before: beforeG.revision, after: gOk.revision })
+  ok('G：负向对照 —— 合法 op 确实写了盘', allWriteArgs.length > writesBeforeG, allWriteArgs.length - writesBeforeG)
+}
+
+console.log('【H. drift：一张锚点都没有的图也要报「漏画」】')
+{
+  const dirDr0 = '/tmp/proj-drift-zero'
+  const dr0File = dirDr0 + '/.arch-canvas/xxx.mmd'
+  const dr0Store = dirDr0 + '/.arch-canvas/anchors.json'
+  files.set(dr0File, 'flowchart TD\n  z0["零锚点的图"]\n')
+  files.set(dirDr0 + '/src/a.ts', 'export const a = 1\n')
+  const openDr0 = await call('doc:open', { key: 'xxx', where: dirDr0 })
+  ok('H：打开零锚点的那张图', openDr0 && openDr0.ok !== false, openDr0 && openDr0.error)
+  const preDr0 = await call('doc:get', { where: dirDr0 })
+  ok('H：前提 —— 还没落盘时没有基线（否则下面那条是空断言）',
+    !!(preDr0.drift && preDr0.drift.baseline === false), preDr0.drift)
+  eq('H：前提 —— 这张图一条锚点都没有', Object.keys(preDr0.fileStatus || {}).length, 0)
+
+  const mDr0 = JSON.parse(JSON.stringify(preDr0.model))
+  const setDr0 = await call('doc:set', { model: mDr0, where: dirDr0 })
+  ok('H：落盘成功', setDr0 && setDr0.ok !== false, setDr0 && setDr0.error)
+  ok('H：零锚点也记了基线（从前 `if (!refs.length) return null` 让它永远没有基线）',
+    files.has(dr0Store), [...files.keys()].filter((k) => k.indexOf(dirDr0) === 0))
+
+  const afterDr0 = await call('doc:get', { where: dirDr0 })
+  ok('H：这张零锚点的图现在有基线了', !!(afterDr0.drift && afterDr0.drift.baseline === true), afterDr0.drift)
+  ok('H：漏画非空（有源码却没有任何锚点指向）',
+    !!(afterDr0.drift && afterDr0.drift.uncovered && afterDr0.drift.uncovered.length > 0),
+    afterDr0.drift && afterDr0.drift.uncovered)
+  ok('H：漏画点在 src 目录上',
+    !!(afterDr0.drift && (afterDr0.drift.uncovered || []).find((x) => x.dir === 'src')),
+    afterDr0.drift && afterDr0.drift.uncovered)
+  eq('H：负向对照 —— stale 仍必须为空（没基线也不许猜「过期」，这条不许破）',
+    (afterDr0.drift && afterDr0.drift.stale.length) || 0, 0)
+}
+
+console.log('【I. 继承全局图库不再把同名新图清空】')
+{
+  const dirInh = '/tmp/proj-inherit-fix'
+  const inhFile = dirInh + '/.arch-canvas/architecture.mmd'
+  const freshFile = dirInh + '/.arch-canvas/fresh-i.mmd'
+  const globalArch = TEST_DATA_DIR + '/architecture.mmd'
+  const agentInh = { session: { id: 'sess-inh', cwd: dirInh } }
+  ok('I：前提 —— 全局图库那张同名图是有内容的',
+    /[A-Za-z0-9_\u00C0-\uFFFF]+\["/.test(files.get(globalArch) || ''), files.get(globalArch))
+  ok('I：前提 —— 这个全新项目里一个 .mmd 都没有',
+    ![...files.keys()].some((k) => k.indexOf(dirInh + '/') === 0),
+    [...files.keys()].filter((k) => k.indexOf(dirInh) === 0))
+
+  const swInh = await tool('arch_switch').execute({ key: 'architecture', create: true }, { agent: agentInh })
+  ok('I：建图成功', swInh && swInh.ok !== false, swInh && swInh.error)
+  ok('I：继承来的内容被保住了（节点数 > 0）', !!(swInh && swInh.nodeCount > 0), swInh && swInh.nodeCount)
+  eq('I：新项目里那份与全局那份逐字节相同（不是被一份空文档当场盖掉）',
+    files.get(inhFile), files.get(globalArch))
+
+  // 负向对照：全局没有同名的新图仍然是一张空图 —— 证明「保住内容」不是「永远不建空图」
+  const swFresh = await tool('arch_switch').execute({ key: 'fresh-i', create: true }, { agent: agentInh })
+  ok('I：负向对照 —— 新建一张全局没有同名的图成功', swFresh && swFresh.ok !== false, swFresh && swFresh.error)
+  eq('I：负向对照 —— 那是一张空图（0 节点）', swFresh && swFresh.nodeCount, 0)
+  ok('I：负向对照 —— 盘上那份也是空的（没有任何节点声明）',
+    files.has(freshFile) && (files.get(freshFile) || '').indexOf('["') < 0,
+    files.get(freshFile))
+}
+
+console.log('【J. saved:false 的回执形状】')
+{
+  const dirJ = '/tmp/proj-receipt'
+  const fileJ = dirJ + '/.arch-canvas/architecture.mmd'
+  files.set(fileJ, 'flowchart TD\n  j1["回执契约节点"]\n')
+  const beforeJ = await call('doc:get', { where: dirJ })
+  const mJ = JSON.parse(JSON.stringify(beforeJ.model))
+  mJ.nodes.find((n) => n.id === 'j1').label = '这次不该生效'
+  failWritePaths.add(fileJ)
+  const jFail = await call('doc:set', { model: mJ, where: dirJ })
+  failWritePaths.delete(fileJ)
+
+  eq('J：saved === false', jFail && jFail.saved, false)
+  ok('J：回执里带 mermaid（客户端靠它重画）', !!(jFail && typeof jFail.mermaid === 'string' && jFail.mermaid.length > 0))
+  eq('J：回执里的 mermaid 就是改动前那一份', jFail && jFail.mermaid, beforeJ.mermaid)
+  ok('J：回执里带 model（回滚后的那一份）', !!(jFail && jFail.model))
+  eq('J：回执里的 model 等于改动前那一份', JSON.stringify(jFail && jFail.model), JSON.stringify(beforeJ.model))
+  ok('J：warnings 里含「回滚」', !!(jFail && jFail.warnings.some((w) => w.indexOf('回滚') >= 0)), jFail && jFail.warnings)
+  eq('J：revision 没有前进', jFail && jFail.revision, beforeJ.revision)
+
+  // 负向对照：成功那次 saved === true 且 model 是新的
+  const jOk = await call('doc:set', { model: mJ, where: dirJ })
+  eq('J：负向对照 —— 成功那次 saved === true', jOk && jOk.saved, true)
+  eq('J：负向对照 —— 成功那次的 model 是新标签',
+    jOk.model.nodes.find((n) => n.id === 'j1').label, '这次不该生效')
+  ok('J：负向对照 —— 成功那次 revision 前进了', jOk.revision > beforeJ.revision,
+    { before: beforeJ.revision, after: jOk.revision })
+}
+
+console.log('【K. 落盘失败那条警告在成功之后要消失】')
+{
+  const dirK = '/tmp/proj-warn-clear'
+  const fileK = dirK + '/.arch-canvas/architecture.mmd'
+  files.set(fileK, 'flowchart TD\n  k1["警告清空节点"]\n')
+  const docK0 = await call('doc:get', { where: dirK })
+  const mK = JSON.parse(JSON.stringify(docK0.model))
+  mK.nodes.find((n) => n.id === 'k1').label = '失败的那次'
+  failWritePaths.add(fileK)
+  const kFail = await call('doc:set', { model: mK, where: dirK })
+  failWritePaths.delete(fileK)
+  ok('K：失败那次 warnings 里出现「保存失败，本次改动已回滚…」',
+    !!(kFail && kFail.warnings.some((w) => w.indexOf('保存失败，本次改动已回滚') >= 0)), kFail && kFail.warnings)
+
+  const kOk = await call('doc:set', { model: mK, where: dirK })
+  ok('K：随后一次成功保存', !!(kOk && kOk.saved !== false), kOk && kOk.saved)
+  ok('K：成功之后那条警告不再挂在回执的 warnings 上',
+    !!(kOk && !kOk.warnings.some((w) => w.indexOf('保存失败，本次改动已回滚') >= 0)), kOk && kOk.warnings)
+  const kGet = await call('doc:get', { where: dirK })
+  ok('K：doc:get 回给界面的 warnings 里也没有它（画布页的横幅不再装一个早就不成立的状态）',
+    !kGet.warnings.some((w) => w.indexOf('保存失败，本次改动已回滚') >= 0), kGet.warnings)
+}
+
 // ---------- 提示词模板注入防护 ----------
 // 放在**最后**：这一节要真的往图里加一个 hex 节点再删掉，会推进修订号与节点数，
 // 夹在中间会污染后续所有「doc:set 后修订号 == N」这类断言（第一次就是这么撞的）。
@@ -1734,6 +2237,453 @@ eq('落盘失败后修订号没有被推进', afterFail.revision, revWas)
 eq('落盘失败后作者没有被改写', afterFail.updatedBy, byWas)
 ok('落盘失败后标签也没变（内存已回滚）', afterFail.model.nodes[0].label !== '这次不该生效',
   afterFail.model.nodes[0].label)
+
+// ============================================================================
+// 宿主缺陷修复守门（2026-09-24 第二批：并发归属 / 类型闸门 / 清单指纹 / 墓碑 / 留言搬家）
+// 放在【会话隔离】之前：每节都在**独立项目目录**上跑，不碰前面那些「修订号 == N」的断言；
+// 每条都配了负向对照 —— 只有正例的断言证明不了它不是空转。
+// ============================================================================
+
+console.log('【L. persist：认下的文件 + 快照的正文，await 之后被换指针也不串台】')
+{
+  // 变体一：目标项目 absent（第一次写盘）。从前 body 在 await 之后才取，
+  // 于是把 B 的图写进了 A 的 .mmd、A 用户自己的编辑一个字没落盘，回执还是 saved:true。
+  const dirLA = '/tmp/proj-steal-absent'
+  const dirLB = '/tmp/proj-steal-b'
+  const fileLA = dirLA + '/.arch-canvas/architecture.mmd'
+  files.set(dirLB + '/.arch-canvas/architecture.mmd', 'flowchart TD\n  b1["B 的图"]\n')
+  agentMap.set('sess-steal', { session: { id: 'sess-steal', cwd: dirLA } })
+  await call('doc:get', { where: dirLB, session: 'sess-steal' })
+  const laAbsent = await call('doc:get', { where: dirLA, session: 'sess-steal' })
+  eq('L1：前提 —— A 是 absent 空图（踩的正是「第一次写盘」那条分支）', laAbsent.nodeCount, 0)
+  let stealL1 = 0
+  const stealToB = async (key) => {
+    if (stealL1 || String(key).indexOf(dirLA + '/') !== 0) return
+    stealL1++
+    await call('doc:get', { where: dirLB, session: 'sess-steal' })
+  }
+  readHooks.push(stealToB)
+  writeHooks.push(stealToB)
+  const l1Set = await call('doc:set', {
+    where: dirLA, session: 'sess-steal',
+    model: { nodes: [{ id: 'mine', label: 'A 用户刚画的节点' }], edges: [], groups: [], direction: 'TD' },
+  })
+  readHooks.length = 0
+  writeHooks.length = 0
+  ok('L1：负向对照 —— 钩子确实把指针换走过（否则这一节是空转）', stealL1 > 0, stealL1)
+  ok('L1：doc:set 回执说保存了', l1Set && l1Set.saved === true, l1Set && l1Set.saved)
+  ok('L1：★ A 自己的节点落盘了（正文取自认下的快照，不是当下的 doc）',
+    String(files.get(fileLA)).indexOf('A 用户刚画的节点') >= 0, String(files.get(fileLA)).slice(-140))
+  ok('L1：★ A 的 .mmd 里没有 B 的节点', String(files.get(fileLA)).indexOf('B 的图') < 0)
+  ok('L1：记了一条 persist.doc-stolen（不是静默跳过）',
+    (logStorage.get(todayLogKey) || '').indexOf('persist.doc-stolen') >= 0)
+
+  // 变体二：旁路表读盘期间的 await —— 从前 A 的正文被推进 **B 的文件名**下的检查点，
+  // B 一「退回」自己的检查点就把 B 的 .mmd 换成 A 的内容。
+  const dirLC = '/tmp/proj-steal-c'
+  const dirLD = '/tmp/proj-steal-d'
+  const fileLC = dirLC + '/.arch-canvas/architecture.mmd'
+  const fileLD = dirLD + '/.arch-canvas/architecture.mmd'
+  files.set(fileLC, 'flowchart TD\n  c1["C 的图"]\n')
+  files.set(fileLD, 'flowchart TD\n  d1["D 的图"]\n')
+  agentMap.set('sess-steal2', { session: { id: 'sess-steal2', cwd: dirLC } })
+  await call('doc:get', { where: dirLC, session: 'sess-steal2' })
+  await call('doc:get', { where: dirLD, session: 'sess-steal2' })
+  await call('doc:get', { where: dirLC, session: 'sess-steal2' })
+  let stealL2 = 0
+  const stealOnNotes = async (key) => {
+    if (stealL2 || String(key).indexOf('/.arch-canvas/notes.json') < 0) return
+    stealL2++
+    await call('doc:get', { where: dirLD, session: 'sess-steal2' })
+  }
+  readHooks.push(stealOnNotes)
+  writeHooks.push(stealOnNotes)
+  const l2Set = await call('doc:set', {
+    where: dirLC, session: 'sess-steal2',
+    model: { nodes: [{ id: 'c1', label: 'C 改过的标签' }], edges: [], groups: [], direction: 'TD' },
+  })
+  readHooks.length = 0
+  writeHooks.length = 0
+  ok('L2：负向对照 —— 钩子确实在旁路表那条 await 上换过指针', stealL2 > 0, stealL2)
+  ok('L2：C 的 .mmd 写的是 C 的新正文', String(files.get(fileLC)).indexOf('C 改过的标签') >= 0)
+  const histD = await call('doc:history', { where: dirLD, session: 'sess-steal2' })
+  ok('L2：★ D 的检查点里没有 site:doc:set（A 的正文没被推进别人的历史）',
+    !histD.entries.some((e) => e.site === 'doc:set'), histD.entries.map((e) => e.site))
+  // 退回**最新**那个检查点：修好之后它就是 D 自己的「打开」那份，退回不会带进 C 的正文；
+  // 从前它是 A 那次 doc:set 的快照，一退就把 C 的正文写进 D 的 .mmd。
+  const newest = histD.entries[0]
+  const rbD = await call('doc:rollback', { where: dirLD, session: 'sess-steal2', seq: newest.seq })
+  ok('L2：退回 D 自己的最新检查点成功', rbD && rbD.ok === true, rbD && rbD.error)
+  ok('L2：★ 退回之后 D 的 .mmd 仍是 D 的内容（没被 C 的正文覆盖）',
+    String(files.get(fileLD)).indexOf('C 改过的标签') < 0 && String(files.get(fileLD)).indexOf('D 的图') >= 0,
+    String(files.get(fileLD)).slice(-140))
+  ok('L2：★ 退回的回执里也没有 C 的正文',
+    String(rbD.mermaid || '').indexOf('C 改过的标签') < 0)
+  ok('L2：负向对照 —— C 的那次改动确实落了盘', l2Set && l2Set.saved === true, l2Set && l2Set.saved)
+
+  // 变体三：回滚 + 写盘失败 + 那一刻指针被换走 —— applyRollback 从前不传 expectFile，
+  // 于是 persistOrRollback 的「指针被换走不许回滚」闸门不可达：restoreModel(E 的快照) 会灌进
+  // 当下（F 的）文档，F 的槽被就地改写、下一次编辑写到 E 的文件上。
+  const dirLE = '/tmp/proj-steal-e'
+  const dirLF = '/tmp/proj-steal-f'
+  const fileLE = dirLE + '/.arch-canvas/architecture.mmd'
+  const fileLF = dirLF + '/.arch-canvas/architecture.mmd'
+  files.set(fileLE, 'flowchart TD\n  e1["E 的图"]\n')
+  files.set(fileLF, 'flowchart TD\n  f1["F 的图"]\n')
+  agentMap.set('sess-steal3', { session: { id: 'sess-steal3', cwd: dirLE } })
+  await call('doc:get', { where: dirLE, session: 'sess-steal3' })
+  await call('doc:set', {
+    where: dirLE, session: 'sess-steal3',
+    model: { nodes: [{ id: 'e1', label: 'E 改过一版' }], edges: [], groups: [], direction: 'TD' },
+  })
+  const histE = await call('doc:history', { where: dirLE, session: 'sess-steal3' })
+  const openSeqE = histE.entries[histE.entries.length - 1].seq
+  await call('doc:get', { where: dirLF, session: 'sess-steal3' })
+  await call('doc:get', { where: dirLE, session: 'sess-steal3' })
+  failWritePaths.add(fileLE)
+  let stealL3 = 0
+  const stealOnWriteE = async (key) => {
+    if (stealL3 || String(key) !== fileLE) return
+    stealL3++
+    await call('doc:get', { where: dirLF, session: 'sess-steal3' })
+  }
+  writeHooks.push(stealOnWriteE)
+  const rbE = await call('doc:rollback', { where: dirLE, session: 'sess-steal3', seq: openSeqE })
+  writeHooks.length = 0
+  failWritePaths.delete(fileLE)
+  ok('L3：负向对照 —— 写盘时指针确实被换走过（否则这一节是空转）', stealL3 > 0, stealL3)
+  ok('L3：回滚如实回报失败', rbE && rbE.ok === false, rbE && rbE.error)
+  ok('L3：★ 记了一条 persist.rollback.skipped（persistOrRollback 的闸门真的可达了）',
+    (logStorage.get(todayLogKey) || '').indexOf('persist.rollback.skipped') >= 0)
+  const fNow = await call('doc:get', { where: dirLF, session: 'sess-steal3' })
+  ok('L3：★ F 的画布没被灌进 E 的快照',
+    fNow.model.nodes.length === 1 && fNow.model.nodes[0].id === 'f1',
+    fNow.model.nodes.map((n) => n.id + ':' + n.label))
+  ok('L3：★ F 的文件完好', String(files.get(fileLF)).indexOf('F 的图') >= 0)
+  const fEdit = await call('doc:set', {
+    where: dirLF, session: 'sess-steal3',
+    model: { nodes: [{ id: 'f2', label: 'F 再编辑' }], edges: [], groups: [], direction: 'TD' },
+  })
+  ok('L3：F 再编辑一次照常落盘到自己的文件',
+    fEdit && fEdit.saved === true && String(files.get(fileLF)).indexOf('F 再编辑') >= 0, fEdit && fEdit.error)
+  ok('L3：★ E 的文件没有被 F 的编辑覆盖', String(files.get(fileLE)).indexOf('F 再编辑') < 0)
+}
+
+console.log('【M. doc:openPath：读盘期间指针被换走就不 adopt】')
+{
+  const dirM = '/tmp/proj-openpath-steal'
+  const dirMB = '/tmp/proj-openpath-b'
+  const extFile = dirM + '/docs/one.mmd'
+  const mbFile = dirMB + '/.arch-canvas/architecture.mmd'
+  files.set(dirM + '/.arch-canvas/architecture.mmd', 'flowchart TD\n  homeM["M 的主图"]\n')
+  files.set(extFile, 'flowchart TD\n  fromOne["按路径打开的文件"]\n')
+  files.set(dirM + '/docs/notes.json', '{}\n')
+  files.set(mbFile, 'flowchart TD\n  homeB["B 的主图"]\n')
+  agentMap.set('sess-open', { session: { id: 'sess-open', cwd: dirM } })
+  await call('doc:get', { where: dirM, session: 'sess-open' })
+  await call('doc:get', { where: dirMB, session: 'sess-open' })
+  await call('doc:get', { where: dirM, session: 'sess-open' })
+  let stealM = 0
+  const stealOnExtNotes = async (key) => {
+    if (stealM || String(key) !== dirM + '/docs/notes.json') return
+    stealM++
+    await call('doc:get', { where: dirMB, session: 'sess-open' })
+  }
+  readHooks.push(stealOnExtNotes)
+  writeHooks.push(stealOnExtNotes)
+  const openM = await call('doc:openPath', { path: extFile, where: dirM, session: 'sess-open' })
+  readHooks.length = 0
+  writeHooks.length = 0
+  ok('M：负向对照 —— 钩子确实在打开外部文件的 await 里换过指针', stealM > 0, stealM)
+  ok('M：★ 被抢走就拒绝这次打开（不 adopt）', openM && openM.ok === false, openM && openM.error)
+  const mB = await call('doc:get', { where: dirMB, session: 'sess-open' })
+  ok('M：★ B 的画布仍然是 B 自己的图（没被灌进 A 打开的文件）',
+    mB.model.nodes.some((n) => n.id === 'homeB'), mB.model.nodes.map((n) => n.id))
+  const mBModel = JSON.parse(JSON.stringify(mB.model))
+  mBModel.nodes[0].x = 10
+  mBModel.nodes[0].y = 10
+  await call('doc:set', { where: dirMB, session: 'sess-open', model: mBModel })
+  ok('M：★ B 拖一下保存之后盘上仍是 B 的图（没被外部文件顶掉）',
+    String(files.get(mbFile)).indexOf('B 的主图') >= 0 && String(files.get(mbFile)).indexOf('按路径打开的文件') < 0,
+    String(files.get(mbFile)).slice(-120))
+  const openOk = await call('doc:openPath', { path: extFile, where: dirM, session: 'sess-open' })
+  ok('M：负向对照 —— 没人抢指针时同一条路照旧能打开那个外部文件',
+    openOk && openOk.ok === true && openOk.external === extFile, openOk && openOk.error)
+}
+
+console.log('【N. doc:delete 当前图之后，画布不许停在墓碑内容上】')
+{
+  const dirN = '/tmp/proj-delete-current'
+  const fileN = dirN + '/.arch-canvas/architecture.mmd'
+  files.set(fileN, 'flowchart TD\n  n1["唯一的图"]\n')
+  const n0 = await call('doc:get', { where: dirN })
+  eq('N：前提 —— 当前就是这张唯一的默认图', n0.diagram, 'architecture')
+  const nDel = await call('doc:delete', { key: 'architecture', where: dirN })
+  ok('N：删除成功', nDel && nDel.ok === true, nDel && nDel.error)
+  const n1 = await call('doc:get', { where: dirN })
+  eq('N：★ 画布不再停在墓碑内容上（nodeCount 0）', n1.nodeCount, 0)
+  eq('N：★ tombstoned 为 false（不是「停在一张已删除的图上」）', n1.tombstoned, false)
+  ok('N：盘上那份文件保持墓碑、正文一字未动',
+    String(files.get(fileN)).indexOf('%% @deleted') === 0 && String(files.get(fileN)).indexOf('唯一的图') >= 0,
+    String(files.get(fileN)).slice(0, 70))
+  const nEdit = await call('doc:set', { where: dirN, model: { nodes: [{ id: 'x', label: '删掉之后又改的' }], edges: [] } })
+  eq('N：★ 对墓碑文件的编辑不再落盘（saved:false）', nEdit && nEdit.saved, false)
+  ok('N：★ 墓碑文件没有被这次编辑改写', String(files.get(fileN)).indexOf('%% @deleted') === 0,
+    String(files.get(fileN)).slice(0, 70))
+  await new Promise((r) => setTimeout(r, 60))
+  ok('N：负向对照 —— 拒绝在日志里留了现场（persist.tombstone-guard），不是静默跳过',
+    (logStorage.get(todayLogKey) || '').indexOf('persist.tombstone-guard') >= 0)
+  const nRestore = await call('doc:restore', { key: 'architecture', where: dirN })
+  ok('N：doc:restore 仍然能把它弄回来', nRestore && nRestore.ok === true, nRestore && nRestore.error)
+  const nBack = await call('doc:get', { where: dirN })
+  ok('N：恢复之后画布上又是那张图的内容（不是空画布）', nBack.nodeCount === 1, nBack.nodeCount)
+  const n2Model = JSON.parse(JSON.stringify(nBack.model))
+  n2Model.nodes.push({ id: 'n2', label: '恢复后新增', shape: 'rect', group: null, x: 0, y: 0 })
+  const nSet2 = await call('doc:set', { where: dirN, model: n2Model })
+  ok('N：恢复之后编辑照常落盘', nSet2 && nSet2.saved === true, nSet2 && nSet2.error)
+  ok('N：恢复之后文件里不再有墓碑、且新节点在里面',
+    String(files.get(fileN)).indexOf('%% @deleted') < 0 && String(files.get(fileN)).indexOf('恢复后新增') >= 0,
+    String(files.get(fileN)).slice(-120))
+}
+
+console.log('【O. doc:rename：缺 from / to 不许退化成默认图名】')
+{
+  const dirO = '/tmp/proj-rename-guard'
+  const libO = dirO + '/.arch-canvas'
+  const fileO = libO + '/architecture.mmd'
+  const seedO = 'flowchart TD\n  o1["用户的主图"]\n'
+  files.set(fileO, seedO)
+  files.set(libO + '/third.mmd', 'flowchart TD\n  t1["第三张"]\n')
+  await call('doc:get', { where: dirO })
+  const oBad = await call('doc:rename', { where: dirO, to: 'zzz' })
+  ok('O：缺 from 被拒', oBad && oBad.ok === false, oBad && oBad.error)
+  const oBad2 = await call('doc:rename', { where: dirO, from: '', to: 'zzz' })
+  ok('O：from 是空串也被拒', oBad2 && oBad2.ok === false, oBad2 && oBad2.error)
+  const oBad3 = await call('doc:rename', { where: dirO, from: 'third', to: 42 })
+  ok('O：to 类型错被拒', oBad3 && oBad3.ok === false, oBad3 && oBad3.error)
+  eq('O：★ 主图没有被软删（文件仍是原内容）', files.get(fileO), seedO)
+  ok('O：★ 没有凭空空建出 zzz.mmd', !files.has(libO + '/zzz.mmd'))
+  const oGood = await call('doc:rename', { where: dirO, from: 'third', to: 'third2' })
+  ok('O：负向对照 —— 带 from/to 的改名照旧可用', oGood && oGood.ok !== false, oGood && oGood.error)
+  ok('O：负向对照 —— 新名字的文件真的建出来了', files.has(libO + '/third2.mmd'))
+}
+
+console.log('【P. 改名搬留言：目标键已有孤儿条目时按节点 id 合并，一条都不许丢】')
+{
+  const dirP = '/tmp/proj-rename-notes-merge'
+  const libP = dirP + '/.arch-canvas'
+  const storeP = libP + '/notes.json'
+  files.set(libP + '/draft.mmd', 'flowchart TD\n  d1["草稿"]\n  d2["草稿二"]\n')
+  files.set(storeP, JSON.stringify({
+    'draft.mmd': { d1: { text: '用户写给草稿的留言', done: false, at: 0 } },
+    'old.mmd': { o1: { text: '老图的孤儿留言', done: false, at: 0 } },
+  }, null, 2) + '\n')
+  await call('doc:get', { where: dirP })
+  await call('doc:open', { key: 'draft', where: dirP })
+  const pRen = await call('doc:rename', { where: dirP, from: 'draft', to: 'old' })
+  ok('P：改名成功', pRen && pRen.ok !== false, pRen && pRen.error)
+  const pStore = JSON.parse(files.get(storeP) || '{}')
+  ok('P：★ 用户写给源图的留言还在（按 id 合并进目标键）',
+    !!(pStore['old.mmd'] && pStore['old.mmd'].d1 && pStore['old.mmd'].d1.text === '用户写给草稿的留言'),
+    pStore['old.mmd'])
+  ok('P：★ 目标键原有的孤儿条目也没丢',
+    !!(pStore['old.mmd'] && pStore['old.mmd'].o1 && pStore['old.mmd'].o1.text === '老图的孤儿留言'),
+    pStore['old.mmd'])
+  ok('P：负向对照 —— 旧键已经搬走（不留孤儿）', !pStore['draft.mmd'], Object.keys(pStore))
+  const pOpen = await call('doc:open', { key: 'old', where: dirP })
+  const pNote = (pOpen.model.nodes.find((n) => n.note) || {}).note
+  eq('P：负向对照 —— 改名后的图真的能读到那条留言', pNote, '用户写给草稿的留言')
+}
+
+console.log('【Q. doc:set / doc:applyText 的形状闸门：错类型不许清空整张图】')
+{
+  const dirQ = '/tmp/proj-model-gate'
+  const fileQ = dirQ + '/.arch-canvas/architecture.mmd'
+  const seedQ = 'flowchart TD\n  a["甲"]\n  b["乙"]\n  a --> b\n'
+  files.set(fileQ, seedQ)
+  await call('doc:get', { where: dirQ })
+  for (const m of [[], {}, { nodes: 'x', edges: [] }, { nodes: [], edges: 'x' }, null]) {
+    const r = await call('doc:set', { where: dirQ, model: m })
+    ok('Q：doc:set model=' + JSON.stringify(m) + ' 被拒', r && r.ok === false, r && (r.error || r.ok))
+  }
+  eq('Q：★ 这几次拒绝之后盘上文件一字未动', files.get(fileQ), seedQ)
+  const qNow = await call('doc:get', { where: dirQ })
+  eq('Q：★ 画布也还是原来那两个节点', qNow.nodeCount, 2)
+  const qClear = await call('doc:set', {
+    where: dirQ,
+    model: { nodes: [], edges: [], groups: [], direction: 'TD', summary: '' },
+  })
+  ok('Q：负向对照 —— 显式空数组照旧能清空（闸门不误伤「用户把节点全删了」）',
+    qClear && qClear.saved === true, qClear && qClear.error)
+  eq('Q：清空确实落了盘', (await call('doc:get', { where: dirQ })).nodeCount, 0)
+  files.set(fileQ, seedQ)
+  await call('doc:open', { key: 'architecture', where: dirQ })
+  const qBlank = await call('doc:applyText', { where: dirQ, text: '   ' })
+  ok('Q：★ doc:applyText("   ") 被拒（清空只认显式空串）', qBlank && qBlank.ok === false, qBlank && qBlank.error)
+  eq('Q：★ 纯空白串之后盘上文件一字未动', files.get(fileQ), seedQ)
+  const qEmpty = await call('doc:applyText', { where: dirQ, text: '' })
+  ok('Q：负向对照 —— 显式空串照旧能清空整张图', qEmpty && qEmpty.saved === true, qEmpty && qEmpty.error)
+  eq('Q：显式空串确实清空了', (await call('doc:get', { where: dirQ })).nodeCount, 0)
+}
+
+console.log('【R. 入参类型闸门：同一族口径统一（错类型一律拒绝）】')
+{
+  const dirR2 = '/tmp/proj-type-gate'
+  const fileR2 = dirR2 + '/.arch-canvas/architecture.mmd'
+  files.set(fileR2, 'flowchart TD\n  r1["甲"]\n')
+  await call('doc:get', { where: dirR2 })
+  const rBase = await call('doc:set', {
+    where: dirR2,
+    model: { nodes: [{ id: 'z', label: 'Z', note: '要保留的留言', noteDone: false }], edges: [], groups: [], direction: 'TD' },
+  })
+  ok('R：前提 —— 留言写进去了', rBase && rBase.saved === true, rBase && rBase.error)
+  for (const bad of [0, 'no', 'false', 1, null]) {
+    const r = await tool('arch_edit').execute({ ops: [{ op: 'mark_note', id: 'z', done: bad }] }, {})
+    ok('R1：mark_note done=' + JSON.stringify(bad) + ' 进 problems 且不改状态',
+      r && r.appliedCount === 0 && (r.problems || []).some((p) => p.indexOf('done 必须是布尔') >= 0),
+      r && { applied: r.appliedCount, problems: r.problems })
+  }
+  const rAfter = await call('doc:get', { where: dirR2 })
+  eq('R1：★ 错类型的 done 之后留言仍是未办（没被静默标掉）',
+    rAfter.model.nodes.find((n) => n.id === 'z').noteDone, false)
+  const rTrue = await tool('arch_edit').execute({ ops: [{ op: 'mark_note', id: 'z' }] }, {})
+  ok('R1：负向对照 —— 省略 done 照旧标成已办', rTrue && rTrue.appliedCount === 1, rTrue && rTrue.problems)
+  const rFalse = await tool('arch_edit').execute({ ops: [{ op: 'mark_note', id: 'z', done: false }] }, {})
+  ok('R1：负向对照 —— done:false 照旧重新打开',
+    rFalse && rFalse.appliedCount === 1 && (rFalse.done || []).some((d) => d.indexOf('重新打开') >= 0), rFalse && rFalse.done)
+
+  const rHist = await call('doc:history', { where: dirR2 })
+  const rSeq = rHist.entries[rHist.entries.length - 1].seq
+  for (const bad of ['1', true, [2], 1.5, 0, -1]) {
+    const r = await call('doc:rollback', { where: dirR2, seq: bad })
+    ok('R2：doc:rollback seq=' + JSON.stringify(bad) + ' 被拒', r && r.ok === false, r && (r.error || r.ok))
+  }
+  const rGood = await call('doc:rollback', { where: dirR2, seq: rSeq })
+  ok('R2：负向对照 —— 正确的整数 seq 照旧能退回', rGood && rGood.ok === true, rGood && rGood.error)
+
+  ok('R3：doc:get where=42 被拒（不再静默读当前图）', (await call('doc:get', { where: 42 })).ok === false)
+  ok('R3：负向对照 —— where:""（全局图库）这条有效输入没被误拒',
+    (await call('doc:get', { where: '' })).ok === true)
+
+  const rRead = await tool('arch_read').execute({ diagram: 42 }, {})
+  ok('R4：arch_read diagram=42 被拒（不再静默读当前图）', rRead && rRead.ok === false, rRead)
+  ok('R4：负向对照 —— arch_read 省略 diagram 照旧读当前图',
+    (await tool('arch_read').execute({}, {})).ok === true)
+  const rSwitchBad = await tool('arch_switch').execute({ key: '新图X', create: 'false' }, {})
+  ok('R4：arch_switch create:"false" 被拒（字符串布尔不许当成「要新建」）', rSwitchBad && rSwitchBad.ok === false, rSwitchBad)
+  ok('R4：★ 而且没有把图真的建出来', !files.has(dirR2 + '/.arch-canvas/新图X.mmd'))
+  ok('R4：负向对照 —— 切到不存在的图（不带 create）照旧被拒并列出可用的图',
+    (await tool('arch_switch').execute({ key: '不存在的图' }, {})).ok === false)
+
+  const rFileBad = await call('doc:file', { where: dirR2, save: 'no' })
+  ok('R5：doc:file save:"no" 被拒（不再把字符串当真值照落盘）', rFileBad && rFileBad.ok === false, rFileBad)
+  ok('R5：负向对照 —— save:true 照旧落盘', (await call('doc:file', { where: dirR2, save: true })).saved === true)
+}
+
+console.log('【S. anchors.json：没读过的表不许整表覆盖（同图库其他图的 drift 基线）】')
+{
+  const dirS9 = '/tmp/proj-drift-cold'
+  const libS9 = dirS9 + '/.arch-canvas'
+  const anchorsS9 = libS9 + '/anchors.json'
+  files.set(libS9 + '/architecture.mmd', 'flowchart TD\n  a1["主图"]\n')
+  files.set(libS9 + '/other.mmd', 'flowchart TD\n  o1["别的图"]\n')
+  files.set(libS9 + '/notes.json', JSON.stringify({
+    'other.mmd': { o1: { text: '另一张图上的留言', done: false, at: 0 } },
+  }, null, 2) + '\n')
+  files.set(anchorsS9, JSON.stringify({
+    'architecture.mmd': { refs: { 'src/x.ts': '10:abc' }, at: 1 },
+    'other.mmd': { refs: { 'src/y.ts': '20:def' }, at: 2 },
+  }, null, 2) + '\n')
+  // **冷启动**：这一节的第一个动作就是写盘（没有 doc:get 先把表读进缓存）。
+  // 从前 saveDriftStampsFor 用 `driftStoreCache[storePath] || {}` 起手，整表被覆盖成只剩当前这一格。
+  const setS9 = await call('doc:set', {
+    where: dirS9,
+    model: { nodes: [{ id: 'a1', label: '主图改过' }], edges: [], groups: [], direction: 'TD' },
+  })
+  ok('S：冷启动第一次写盘成功', setS9 && setS9.saved === true, setS9 && setS9.error)
+  const afterS9 = files.get(anchorsS9) || ''
+  ok('S：★ other.mmd 的基线还在（没被整表覆盖成只剩当前这一格）',
+    afterS9.indexOf('other.mmd') >= 0 && afterS9.indexOf('"20:def"') >= 0, afterS9.replace(/\s+/g, ' '))
+  ok('S：负向对照 —— 当前这张图的基线确实写进去了（不是整个写入被跳过）',
+    afterS9.indexOf('architecture.mmd') >= 0, afterS9.replace(/\s+/g, ' '))
+  ok('S：同目录的留言表也没被清（notes.ts 那条闸一直在）',
+    String(files.get(libS9 + '/notes.json')).indexOf('另一张图上的留言') >= 0)
+  await call('doc:open', { key: 'other', where: dirS9 })
+  const gS9 = await call('doc:get', { where: dirS9 })
+  eq('S：别的图之后打开仍然有基线（stale 才有得可比）', gS9.drift && gS9.drift.baseline, true)
+}
+
+console.log('【T. 图库清单：同字节数的内容变化要看得见；写路径收尾不许被 TTL 吞掉】')
+{
+  const dirT = '/tmp/proj-lib-fp'
+  const libT = dirT + '/.arch-canvas'
+  const fileGT = libT + '/g.mmd'
+  const origT = 'flowchart TD\n  a["第一个节点"]\n  b["第二个节点"]\n  c["第三个节点"]\n'
+  const baseT = 'flowchart TD\n  a["只剩一个节点了"]\n'
+  const shrunkT = baseT + '\n'.repeat(origT.length - baseT.length)
+  files.set(fileGT, origT)
+  files.set(libT + '/architecture.mmd', 'flowchart TD\n  home["主图"]\n')
+  await call('doc:get', { where: dirT })
+  const listT1 = await call('doc:list', { where: dirT, rescan: true })
+  eq('T：前提 —— g 一开始是 3 个节点', (listT1.items.find((i) => i.name === 'g') || {}).nodes, 3)
+  files.set(fileGT, shrunkT)
+  eq('T：负向对照的前提 —— 改写后字节数一模一样', shrunkT.length, origT.length)
+  const listT2 = await call('doc:list', { where: dirT, rescan: true })
+  eq('T：★「重新扫描」看得见同字节数的内容变化（3 → 1 节点）',
+    (listT2.items.find((i) => i.name === 'g') || {}).nodes, 1)
+  ok('T：★ libraryRev 涨了（界面据此自动刷新）', listT2.libraryRev > listT1.libraryRev,
+    { before: listT1.libraryRev, after: listT2.libraryRev })
+  const tpT = prompts[0].text()
+  ok('T：★ 提示词里的节点数也不再是旧的 3 个（同图库那行已经更新）',
+    tpT.indexOf('「g」(1 节点)') >= 0, tpT.split('\n').find((l) => l.indexOf('同图库还有') >= 0))
+
+  // 「2.5s 轮询只走目录 + 比指纹」这条性质不许破坏：TTL 之内非 rescan 的 doc:list 一个字节都不读。
+  // 注意：测试的 call('doc:list', …) 会给不带 rescan 的调用补上 rescan:true（历史上是为了让
+  // 断言看到最新清单），所以这里必须直接调 handler —— 界面 2.5s 轮询走的就是这条**非 force** 的路。
+  let gReads = 0
+  const gReadKeys = []
+  const countG = (k) => { gReadKeys.push(String(k)); if (String(k) === fileGT) gReads++ }
+  readHooks.push(countG)
+  await handlers.get('doc:list')({ where: dirT })
+  const readsAfterFirst = gReads
+  await handlers.get('doc:list')({ where: dirT })
+  readHooks.pop()
+  eq('T：★ 2.5s 轮询那次（非 rescan、TTL 之内）一次都没读 g.mmd', gReads, 0)
+  eq('T：负向对照的前提 —— 连续两次非 force 轮询都没读（证明走的确实是 TTL 那条缓存路）', readsAfterFirst, 0)
+
+  // 写路径收尾的强制扫：删掉一张非当前图，回执与紧随的 doc:list 都要立刻看到。
+  const delT = await call('doc:delete', { key: 'g', where: dirT })
+  ok('T：★ 删除回执里 g 已经是「已删」（写路径收尾没被 TTL 吞掉）',
+    !!delT && Array.isArray(delT.items) && delT.items.some((i) => i.name === 'g' && i.deleted === true),
+    delT && delT.items && delT.items.map((i) => i.name + (i.deleted ? '(已删)' : '')))
+  const listT4 = await call('doc:list', { where: dirT })
+  ok('T：★ 紧接着的 doc:list（界面默认就是它）也立刻看到 g 已删',
+    listT4.items.some((i) => i.name === 'g' && i.deleted === true),
+    listT4.items.map((i) => i.name + (i.deleted ? '(已删)' : '')))
+  const resT = await call('doc:restore', { key: 'g', where: dirT })
+  ok('T：★ 恢复回执里 g 立刻活了',
+    !!resT && Array.isArray(resT.items) && resT.items.some((i) => i.name === 'g' && i.deleted === false),
+    resT && resT.items && resT.items.map((i) => i.name + (i.deleted ? '(已删)' : '')))
+  const listT5 = await call('doc:list', { where: dirT })
+  ok('T：★ 紧接着的 doc:list 也立刻看到它活了',
+    listT5.items.some((i) => i.name === 'g' && i.deleted === false),
+    listT5.items.map((i) => i.name + (i.deleted ? '(已删)' : '')))
+}
+
+console.log('【U. arch_edit：一个 op 都没生效时不许设 doc.notes】')
+{
+  const dirU = '/tmp/proj-notes-truth'
+  files.set(dirU + '/.arch-canvas/architecture.mmd', 'flowchart TD\n  u1["节点"]\n')
+  await call('doc:get', { where: dirU })
+  const uBad = await tool('arch_edit').execute({ ops: [{ op: 'nope' }], note: '这句会显示在状态栏吗' }, {})
+  eq('U：零生效的 arch_edit appliedCount === 0', uBad && uBad.appliedCount, 0)
+  ok('U：★ 零生效时 doc.notes 为空（状态栏不显示与事实相反的说明）',
+    Array.isArray(uBad.notes) && uBad.notes.length === 0, uBad && uBad.notes)
+  const uOk = await tool('arch_edit').execute({ ops: [{ op: 'add_node', id: 'u2', label: '新节点' }], note: '这次真的改了' }, {})
+  eq('U：负向对照 —— 有 op 生效时 appliedCount === 1', uOk && uOk.appliedCount, 1)
+  ok('U：负向对照 —— 那句说明确实进了 notes',
+    Array.isArray(uOk.notes) && uOk.notes.indexOf('这次真的改了') >= 0, uOk && uOk.notes)
+}
 
 console.log('【会话隔离：画布属于项目、不属于进程（2026-09-23 跨项目丢留言事故）】')
 {
@@ -1812,6 +2762,225 @@ console.log('【会话隔离：画布属于项目、不属于进程（2026-09-23
   const pNoAgent = promptOf(undefined)
   ok('没有会话上下文时照旧注入当前画布（不被这句说明顶掉）',
     pNoAgent.indexOf('停在别的项目上') < 0 && pNoAgent.indexOf('```mermaid') >= 0)
+}
+
+console.log('【P0 连接符唯一真相：ARROWS 里每一个都要经 doc:set 原样落盘】')
+{
+  // 事故形态：`ARROWS`（mermaid.ts）有 28 种，而 document.ts 的 `ARROW_SET` 从前只手抄了 8 种，
+  // `normalizeModel` / `add_edge` 用 `ARROW_SET[e.arrow] ? e.arrow : '-->'` —— `--o` / `o==>` 等
+  // 20 种被**静默退成 `-->`**。归一发生在 adoptModel 里、**早于** persist() 的往返检查，
+  // 所以那条检查也看不见（P0：丢数据 / 静默改写用户文件）。
+  // 守门断言必须走**生产路径**：纯函数层 `parseMermaid(serializeDoc(doc))` 那条直连路径
+  // 在生产里没有调用点，正是这个 bug 潜伏至今的原因。
+  //
+  // ARROWS 从构建产物里取（`lib/host-logic.js` 就是被测试执行的那份真身）：
+  // 拿产物的表去驱动产物的路径，加一种新连接符而忘了同步，这条断言立刻红。
+  // ARROWS 从**正在被执行的那份产物**（dist/host.js 的原文 `code`）里取：
+  // 拿产物的表去驱动产物的路径，加一种新连接符而忘了同步，这条断言立刻红。
+  const arrowsSrc = /var ARROWS = \[([\s\S]*?)\];/.exec(code)
+  ok('能从宿主构建产物里取出 ARROWS 表', !!arrowsSrc && !!arrowsSrc[1])
+  // 逐项取单引号字面量：数组字面量末尾有逗号（JSON.parse 不接受），而且箭头里不含逗号。
+  const ARROW_LIST = (arrowsSrc ? arrowsSrc[1] : '')
+    .replace(/\/\/[^\n]*/g, '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => /^'[^']*'$/.test(s))
+    .map((s) => s.slice(1, -1))
+  ok('ARROWS 至少 28 种（条数不对说明抽取坏了）', ARROW_LIST.length >= 28, ARROW_LIST.length)
+  const arrowFile = TEST_DATA_DIR + '/arrow-probe.mmd'
+  files.set(arrowFile, 'flowchart TD\n  A["A"]\n  B["B"]\n')
+  await call('doc:openPath', { path: arrowFile })
+  for (const arrow of ARROW_LIST) {
+    const model = {
+      direction: 'TD', summary: '', extras: [], groups: [],
+      nodes: [
+        { id: 'A', label: 'A', shape: 'rect', group: null, x: 0, y: 0, link: null, files: [] },
+        { id: 'B', label: 'B', shape: 'rect', group: null, x: 0, y: 0, link: null, files: [] },
+      ],
+      edges: [{ id: 'e1', from: 'A', to: 'B', label: '', arrow: arrow }],
+    }
+    const r = await call('doc:set', { model })
+    const body = files.get(arrowFile) || ''
+    const edgeLines = body.split('\n').filter((l) => l.trim().indexOf('A ') === 0)
+    ok('连接符 ' + arrow + '：盘上就是它自己（不许被退成 -->）',
+      edgeLines.length === 1 && edgeLines[0].trim() === 'A ' + arrow + ' B',
+      { edgeLines, warn: r && r.warnings })
+    // 内存/回执里的箭头也必须还是它（回读一遍文件才行 —— `r.model` 是归一后的内存态）
+    const reopened = await call('doc:openPath', { path: arrowFile })
+    ok('连接符 ' + arrow + '：重新打开文件后箭头仍是它',
+      !!reopened && reopened.model.edges.length === 1 && reopened.model.edges[0].arrow === arrow,
+      reopened && reopened.model.edges)
+  }
+  // 负向对照：这份表驱动的断言不是空转 —— 手工把某个箭头改成 `-->` 必须让上面的形状对不上
+  await call('doc:set', {
+    model: {
+      direction: 'TD', summary: '', extras: [], groups: [],
+      nodes: [
+        { id: 'A', label: 'A', shape: 'rect', group: null, x: 0, y: 0, link: null, files: [] },
+        { id: 'B', label: 'B', shape: 'rect', group: null, x: 0, y: 0, link: null, files: [] },
+      ],
+      edges: [{ id: 'e1', from: 'A', to: 'B', label: '', arrow: 'o--' }],
+    },
+  })
+  const badArrow = (files.get(arrowFile) || '').split('\n').filter((l) => l.trim().indexOf('A ') === 0)
+  ok('负向对照：非法连接符 o-- 会被挡回 -->（说明上面那条真的在比对箭头本体）',
+    badArrow.length === 1 && badArrow[0].trim() === 'A --> B', badArrow)
+}
+
+console.log('【P1 指令闸门：link中 经「打开→保存」4 轮不再无界增长】')
+{
+  // 事故形态：指令闸门用 `\b`（`k` 是 \w、`中` 不是 → 词边界成立），`link中["L"]` 被当指令塞进
+  // extras：节点只能靠别处的边活下来、label 退化成 id；重开时 `%% @pos link中` / `%% @file link中`
+  // 被当「指向不存在节点」丢掉；而 extras 那行每「打开→保存」一轮就多写一遍 —— 实测 4 轮
+  // 3 行 / 350B → 6 行 / 401B。文件整份进提示词，越长越贵。
+  const growFile = TEST_DATA_DIR + '/grow-probe.mmd'
+  const growText = ['flowchart TD', '  subgraph A["组"]', '    link中["L"]', '  end', '  B --- link中'].join('\n') + '\n'
+  files.set(growFile, growText)
+  const sizes = []
+  for (let cycle = 1; cycle <= 4; cycle++) {
+    const r = await call('doc:openPath', { path: growFile })
+    ok('第 ' + cycle + ' 轮：link中 是节点 n_link中（不是 extras、label 不退化、没有「节点丢了」的警告）',
+      !!r && r.model.nodes.some((n) => n.id === 'n_link中' && n.label === 'L') &&
+      r.model.extras.length === 0 &&
+      !r.warnings.some((w) => w.indexOf('指向图里不存在的节点') >= 0 || w.indexOf('原样保留') >= 0),
+      r && { n: r.model.nodes.map((n) => [n.id, n.label]), e: r.model.extras, w: r.warnings })
+    const e = await tool('arch_edit').execute({ ops: [{ op: 'move_node', id: 'B', x: cycle * 10, y: 0 }] }, {})
+    ok('第 ' + cycle + ' 轮：保存成功', e && e.ok !== false, e && e.problems)
+    const body = files.get(growFile)
+    sizes.push({ lines: body.split('\n').length, bytes: body.length })
+    ok('第 ' + cycle + ' 轮：link中 的声明行只有一行',
+      body.split('\n').filter((l) => l.indexOf('n_link中[') >= 0).length === 1, body)
+  }
+  ok('4 轮之后行数与字节数都不再涨（第 1 轮与第 4 轮完全相同）',
+    sizes[0].lines === sizes[3].lines && sizes[0].bytes === sizes[3].bytes, sizes)
+  ok('负向对照：这一节真的在改坐标（否则上面是空转）',
+    (files.get(growFile) || '').indexOf('@pos B 40 0') >= 0, (files.get(growFile) || '').split('\n').filter((l) => l.indexOf('@pos') >= 0))
+}
+
+// ---------- 真 Mermaid 校验脚手架（下面两节要用）----------
+// host.e2e 其余断言都跑在桩 fs 上，只有「落盘产物真 Mermaid 认不认」非真解析器不可。
+let realMermaid = null
+async function realAccepts(text) {
+  if (!realMermaid) return { ok: false, err: 'mermaid 未加载' }
+  try { await realMermaid.parse(text); return { ok: true } } catch (e) { return { ok: false, err: String((e && e.message) || e).split('\n')[0] } }
+}
+try {
+  const { JSDOM } = await import('jsdom')
+  const dom = new JSDOM('<!doctype html><html><body></body></html>')
+  global.window = dom.window
+  global.document = dom.window.document
+  // Node 21+ 的 globalThis.navigator 是只读 getter：ESM 严格模式下直接赋值会抛，必须 defineProperty
+  Object.defineProperty(globalThis, 'navigator', { value: dom.window.navigator, configurable: true })
+  const mod = await import(new URL('../node_modules/mermaid/dist/mermaid.esm.mjs', import.meta.url).href)
+  realMermaid = mod.default
+  realMermaid.initialize({ startOnLoad: false, securityLevel: 'loose' })
+} catch (e) {
+  // 加载不了必须**报失败**，不许静默跳过 —— 跳过就是一个空测试。
+  ok('真 Mermaid 校验脚手架（jsdom + mermaid）能加载', false, String((e && e.message) || e))
+}
+
+console.log('【P1 emoji id：宿主落盘后真 mermaid.parse 必须通过】')
+{
+  // 事故形态：`cleanId` 的字符类按 UTF-16 码元判，`😀` 的两个码元都 ≥ \u00C0 → 被当合法 CJK 放行，
+  // 盘上写出 `🚀["发布"]`，真 Mermaid 直接 Lexical error，而我们零警告。
+  const emojiFile = TEST_DATA_DIR + '/emoji-probe.mmd'
+  files.set(emojiFile, 'flowchart TD\n  A["a"]\n')
+  await call('doc:openPath', { path: emojiFile })
+  const e = await tool('arch_edit').execute({
+    ops: [
+      { op: 'add_node', id: '🚀', label: '发布' },
+      { op: 'add_node', id: 'a😀', label: '第二个 emoji id' },
+    ],
+  }, {})
+  ok('emoji id 的 add_node 生效', e && e.ok !== false, e && e.problems)
+  const body = files.get(emojiFile)
+  ok('盘上不再有 emoji 当 id 的行', body.indexOf('🚀[') < 0 && body.indexOf('a😀[') < 0,
+    body.split('\n').filter((l) => /[\uD800-\uDFFF]/.test(l) && l.indexOf('[') >= 0))
+  ok('盘上的产物真 mermaid.parse 通过', (await realAccepts(body)).ok, { err: (await realAccepts(body)).err, body })
+  ok('label 里的中文没丢（发布 / 第二个 emoji id 都在）',
+    body.indexOf('发布') >= 0 && body.indexOf('第二个 emoji id') >= 0, body)
+  // label 里的 emoji 必须继续合法（第 [23] 节钉着的那条，这里从宿主路径再验一次）
+  const e2 = await tool('arch_edit').execute({ ops: [{ op: 'set_label', id: 'A', label: '😀 emoji 标题' }] }, {})
+  ok('label 里的 emoji 设置成功', e2 && e2.ok !== false, e2 && e2.problems)
+  const body2 = files.get(emojiFile)
+  ok('label 里的 emoji 落盘后真 mermaid.parse 通过', (await realAccepts(body2)).ok, { err: (await realAccepts(body2)).err, body2 })
+  // 负向对照：原样把 emoji 当 id 写出去，真 Mermaid 确实拒收（上面那条不是空测试）
+  const bad = await realAccepts('flowchart TD\n  🚀["发布"]')
+  ok('负向对照：emoji 原样当 id 确实被真 Mermaid 拒收', !bad.ok, bad)
+}
+
+console.log('【P1 重复组 id：一次 move_node 后成员行与 %% @pos 各只出现一次】')
+{
+  // 事故形态：模型里有两个同 id 的组时一致（重解析还是会合并），roundTripDiff 判不出 →
+  // 零警告；加载路径（openPath → adopt(parseMermaid(text))）从前不做组去重，
+  // serializeDoc 每个组各写一遍成员行 / `%% @pos` / `%% @link` / `%% @file`。
+  const dupFile = TEST_DATA_DIR + '/dup-group-probe.mmd'
+  files.set(dupFile, [
+    'flowchart TD',
+    '  subgraph g1["A 组"]',
+    '    n1["一"]',
+    '  end',
+    '  subgraph g1["B 组"]',
+    '    n2["二"]',
+    '  end',
+  ].join('\n') + '\n')
+  const opened = await call('doc:openPath', { path: dupFile })
+  ok('打开时重复的组 id 只留一个（保留第一次的组名）',
+    opened.model.groups.length === 1 && opened.model.groups[0].label === 'A 组', opened.model.groups)
+  ok('两个成员都还在、都挂在这个组上',
+    opened.model.nodes.length === 2 && opened.model.nodes.every((n) => n.group === 'g1'), opened.model.nodes)
+  const mv = await tool('arch_edit').execute({ ops: [{ op: 'move_node', id: 'n1', x: 1, y: 2 }] }, {})
+  ok('重复组文件上 move_node 成功', mv && mv.ok !== false, mv && mv.problems)
+  const body = files.get(dupFile)
+  ok('落盘后 subgraph 只有一块', body.split('\n').filter((l) => l.indexOf('subgraph ') >= 0).length === 1, body)
+  ok('落盘后 n1 的成员行只有一次', body.split('\n').filter((l) => l.indexOf('n1[') >= 0).length === 1, body)
+  ok('落盘后 n2 的成员行只有一次', body.split('\n').filter((l) => l.indexOf('n2[') >= 0).length === 1, body)
+  ok('落盘后 @pos n1 只有一次', body.split('\n').filter((l) => l.indexOf('@pos n1') >= 0).length === 1, body)
+  ok('落盘后产物真 Mermaid 合法', (await realAccepts(body)).ok, { err: (await realAccepts(body)).err, body })
+}
+
+console.log('【P1 归一撞名：doc:set 送进来的两个写法也必须都活下来】')
+{
+  // 界面/模型边界（normalizeModel）从前是 `if (seen[id]) continue` —— 静默丢掉一个用户写下的节点。
+  // 与解析器那条同一个口径：后来者加稳定后缀 + 出声；边的两端按**原始写法**认回被改名的那个。
+  const collideFile = TEST_DATA_DIR + '/collide-probe.mmd'
+  files.set(collideFile, 'flowchart TD\n  A["a"]\n')
+  await call('doc:openPath', { path: collideFile })
+  const r = await call('doc:set', {
+    model: {
+      direction: 'TD', summary: '', extras: [], groups: [],
+      nodes: [
+        { id: 'a-b', label: '甲', shape: 'rect', group: null, x: 1, y: 2, link: null, files: [] },
+        { id: 'a.b', label: '乙', shape: 'rect', group: null, x: 3, y: 4, link: null, files: [] },
+      ],
+      edges: [{ id: 'e1', from: 'a.b', to: 'a-b', label: '', arrow: '-->' }],
+    },
+  })
+  ok('两个写法都活成节点', r.model.nodes.length === 2 &&
+    r.model.nodes.map((n) => n.id).join(',') === 'a_b,a_b_2', r.model.nodes.map((n) => [n.id, n.label]))
+  ok('label 不互相覆盖', r.model.nodes.map((n) => n.label).join(',') === '甲,乙', r.model.nodes.map((n) => n.label))
+  ok('撞名出声了', (r.warnings || []).some((w) => w.indexOf('撞名') >= 0), r.warnings)
+  ok('边按原始写法认回了被改名的那个节点（a.b → a_b_2 是 from）',
+    r.model.edges.length === 1 && r.model.edges[0].from === 'a_b_2' && r.model.edges[0].to === 'a_b', r.model.edges)
+  const body = files.get(collideFile)
+  ok('落盘产物真 Mermaid 合法', (await realAccepts(body)).ok, { err: (await realAccepts(body)).err, body })
+  // 同一个原始写法重复出现仍旧只留一个节点（normalizeModel 的既有口径：保留第一条），
+  // 而且**不算撞名** —— 它不是「两个不同写法归一到一个」那种情况。
+  const dupRaw = await call('doc:set', {
+    model: {
+      direction: 'TD', summary: '', extras: [], groups: [],
+      nodes: [
+        { id: 'z1', label: '先', shape: 'rect', group: null, x: 0, y: 0, link: null, files: [] },
+        { id: 'z1', label: '后', shape: 'rect', group: null, x: 0, y: 0, link: null, files: [] },
+      ],
+      edges: [],
+    },
+  })
+  ok('同一个原始写法重复送进来仍旧只留一个节点（保留第一条）',
+    dupRaw.model.nodes.length === 1 && dupRaw.model.nodes[0].id === 'z1' && dupRaw.model.nodes[0].label === '先',
+    dupRaw.model.nodes)
+  ok('同一个原始写法不会多出带回后缀的节点', !dupRaw.model.nodes.some((n) => n.id.indexOf('z1_') === 0),
+    dupRaw.model.nodes.map((n) => n.id))
 }
 
 console.log('【写盘前的往返守恒检查：整套测试跑下来一次都不该报】')

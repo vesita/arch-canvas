@@ -93,8 +93,15 @@ var NOTE_HISTORY_MAX = 6
 function harvestNoteStore(file: string, nodes: any[]) {
   if (!file || !Array.isArray(nodes)) return
   var storePath = noteStorePathFor(file)
-  if (!noteStoreCache[storePath]) noteStoreCache[storePath] = {}
+  // **没读过的表一个字节都不许写。** 从前这里对没读过的表直接 `= {}`，落盘紧接着把这张空表
+  // 写回去 —— 而「当前 .mmd 不存在」时 loadInto 的 absent 分支**不读**留言表，于是任意一次
+  // 无关的写都会把整个图库所有图的留言**整表覆盖成空**（零日志、零警告）。
+  // 现在：表不在缓存里就什么都不做，落盘前由 persist() 先 await loadNoteStoreFor()。
   var store = noteStoreCache[storePath]
+  if (!store || typeof store !== 'object') {
+    logEvent('warn', 'notes.harvest.skipped', { file: file, reason: 'store-not-loaded' })
+    return
+  }
   var diagramKey = noteKeyFor(file)
   if (!store[diagramKey]) store[diagramKey] = {}
   var diagramNotes = store[diagramKey]
@@ -218,7 +225,13 @@ async function saveNoteStoreFor(file: string, policy?: any): Promise<string | nu
   if (!file) return null
   if (!fs) return 'fs 服务不可用'
   var storePath = noteStorePathFor(file)
-  var store = noteStoreCache[storePath] || {}
+  // 与 harvestNoteStore 同一道闸：没读过的表不许写。空表写回去不是「没有留言」，
+  // 是「把别的图的留言删掉」—— 这里宁可拒绝并让调用方看到一条警告。
+  if (!noteStoreCache[storePath]) {
+    logEvent('warn', 'notes.save.skipped', { path: storePath, reason: 'store-not-loaded' })
+    return '留言表未加载，已拒绝写入（否则会把别的图的留言覆盖成空）'
+  }
+  var store = noteStoreCache[storePath]
   var err = await writeSidecarJson(storePath, store, policy, 'notes')
   return err
 }
@@ -243,7 +256,24 @@ async function renameNoteStoreFor(fromFile: string, toFile: string, policy?: any
   }
   if (!store || typeof store !== 'object') return null
   if (!store[fromKey]) return null  // 这张图本来就没留言 —— 不写盘，别凭空造一个空表出来
-  if (!store[toKey]) store[toKey] = store[fromKey]
+  if (!store[toKey]) {
+    store[toKey] = store[fromKey]
+  } else {
+    // **目标键已存在**（那张 .mmd 被人手工 rm 过之后，它的留言按「孤儿保留」还躺在表里）。
+    // 从前这里只在 `!store[toKey]` 时搬，然后**无条件** `delete store[fromKey]` ——
+    // 于是用户写给源图的留言被丢掉，反而留下了孤儿那条。按节点 id 合并，源图同 id 优先，
+    // 一条都不许丢。
+    var src = store[fromKey]
+    var dst = store[toKey]
+    if (!dst || typeof dst !== 'object' || Array.isArray(dst)) {
+      store[toKey] = src
+    } else if (src && typeof src === 'object' && !Array.isArray(src)) {
+      for (var nid in src) {
+        if (Object.prototype.hasOwnProperty.call(src, nid)) dst[nid] = src[nid]
+      }
+    }
+    logEvent('info', 'notes.rename.merge', { from: fromKey, to: toKey })
+  }
   delete store[fromKey]
   return saveNoteStoreFor(toFile, policy)
 }

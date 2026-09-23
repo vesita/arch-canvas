@@ -27,7 +27,13 @@ var STUDIO_CSS = [
   '.ac-body{flex:1 1 auto;min-height:0;display:flex;flex-direction:column}',
   '.ac-stage{flex:1 1 auto;min-height:140px;position:relative;overflow:hidden}',
   '.ac-svg{width:100%;height:100%;display:block;touch-action:none;cursor:grab;background:radial-gradient(circle at 1px 1px,var(--dsw-alias-border-l1,#2a2e35) 1px,transparent 0) 0 0/22px 22px}',
-  '.ac-node{cursor:pointer}',
+  // 可拖的东西给 move，不给 pointer：pointer（手型）在浏览器里的意思是「点一下会跳走」，
+  // 而这里按下去是**抓住它**。图里能拖的一律 move，和 Figma / Excalidraw 一致。
+  '.ac-node{cursor:move}',
+  // 拖动期间（在 .ac-svg 上挂 .dragging）：光标才是「抓着」的意思。
+  // 节点自己的 cursor 权重更高，所以这一条要跟着写一遍，否则抓着方块时光标还是 move。
+  '.ac-svg.dragging{cursor:grabbing}',
+  '.ac-svg.dragging .ac-node{cursor:grabbing}',
   '.ac-node .ac-shape{fill:var(--dsw-alias-bg-layer-2,#232830);stroke:var(--ac-line);stroke-width:1.5}',
   '.ac-node.sel .ac-shape{stroke:var(--dsw-alias-brand-primary,#4c8dff);stroke-width:2.5}',
   // 节点卡片：第一段是标题（.ac-lbl —— 保持既有契约，它的 textContent 就是标题本身），
@@ -40,7 +46,11 @@ var STUDIO_CSS = [
   '.ac-edge{fill:none;stroke:var(--ac-line);stroke-width:1.6}',
   '.ac-edge.dashed{stroke-dasharray:6 5}',
   '.ac-edge.sel{stroke:var(--dsw-alias-brand-primary,#4c8dff);stroke-width:2.6}',
+  // 命中区**故意做宽**（14px）：线只有 1.6px，靠它自己几乎点不中。这里只补一条悬停反馈 ——
+  // 光标扫过时那条细线才现形（平时完全透明），否则用户根本不知道这条线是可以点的。
+  // **stroke-width 不许动**：实测 14px 的命中区是「细线可点」的全部依据。
   '.ac-edge-hit{fill:none;stroke:transparent;stroke-width:14;cursor:pointer}',
+  '.ac-edge-hit:hover{stroke:var(--dsw-alias-brand-primary,#4c8dff);stroke-opacity:.35}',
   '.ac-arrowhead{fill:var(--ac-line)}',
   '.ac-elbl{fill:var(--dsw-alias-label-secondary,#9aa3af);font-size:11.5px;text-anchor:middle;dominant-baseline:central;pointer-events:none;user-select:none}',
   '.ac-elbl-bg{fill:var(--dsw-alias-bg-base,#14161a)}',
@@ -231,6 +241,11 @@ var STUDIO_CSS = [
   '.ac-ref-status .ac-ref-bad{color:#e5534b}',
   '.ac-statusbar{flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:4px 10px;border-top:1px solid var(--dsw-alias-border-l1,#2a2e35);font-size:11px;color:var(--dsw-alias-label-secondary,#9aa3af);white-space:nowrap;overflow:hidden}',
   '.ac-statusbar .grow{flex:1 1 auto;overflow:hidden;text-overflow:ellipsis}',
+  // 缩放比例：数字要能一眼扫到，所以给它等宽字 + 固定不缩。
+  '.ac-zoom{flex:0 0 auto;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;color:var(--dsw-alias-label-primary,#e8eaed);opacity:.85}',
+  // 「? 快捷键与隐藏手势」那块静态清单：复用 .ac-lib 外壳，行是普通文本（不是按钮）。
+  '.ac-help-row{padding:3px 8px;font-size:11.5px;line-height:1.6;color:var(--dsw-alias-label-secondary,#9aa3af)}',
+  '.ac-help-row+.ac-help-row{border-top:1px solid var(--dsw-alias-border-l1,#2a2e35)}',
   '.ac-dot{display:inline-block;width:6px;height:6px;border-radius:99px;background:var(--dsw-alias-state-success-primary,#3fb950);flex:0 0 auto}',
   '.ac-dot.busy{background:var(--dsw-alias-state-warning-primary,#d29922)}',
   // 侧栏底部入口按钮
@@ -1278,7 +1293,11 @@ function edgeGeometry(a, b, obstacles, offset, ports, usedLanes) {
     return { d: lc.d, mid: { x: loopL, y: a.y }, pts: lc.pts, lanes: edgePathLanes(lc.pts) }
   }
   // 选边（两端同轴）→ 落点（投到真实轮廓上，而不是包围盒）
-  var sides = edgeSidesOf(a, b)
+  // **必须把 obstacles 交进去**：studio 的端口分组用的是带障碍的那一份（它决定每个端口落在哪条边、
+  // 以及同一侧多端口怎么均分），这里不交就会挑出另一条轴 —— 端口按 A 侧均分、线却从 B 侧出去，
+  // 更坏的是会选中代价函数刚判过「这条轴根本走不通」的那条轴，候选车道全被拒、落到硬穿兜底，
+  // 画出一条穿过第三方方块的线（2026-09-24 客户端审计第 2 条，是上一轮改动留下的回归）。
+  var sides = edgeSidesOf(a, b, obstacles)
   var vertical = sides.vertical
   var p0 = portPointOf(a, sides.a, pA)
   var p1 = portPointOf(b, sides.b, pB)
@@ -1487,7 +1506,11 @@ function buildExportSvg(worldNode, box) {
   // （留言 ✎ / 锚点 ▤ / 下钻 ↗）全是界面装饰。它们从前既没被剔掉、EXPORT_CSS 里也没有
   // 对应规则 —— 而导出的 SVG 是一份脱离主题的独立文档，circle/text 缺省就是纯黑，
   // 于是节点角上会出现一坨黑斑。（2026-09-20 客户端逻辑审计第 4 条。）
-  var drop = ['.ac-handle', '.ac-link-preview', '.ac-pulse', '.ac-snapline', '.ac-note-badge', '.ac-file-badge', '.ac-jump']
+  // `.ac-edge-hit` 是连线的**命中区**（透明、宽 14 的描边）—— 也是界面装饰，导出时一并剔掉。
+  // 从前它既不在这张表里、EXPORT_CSS 里也没有规则，而 path 的缺省 fill 是**纯黑**：
+  // 导出的 SVG/PNG 里每条折线旁边都多出一块黑（栅格化实测 7230 个纯黑像素，加一条规则后 0）。
+  // 2026-09-24 客户端审计第 3 条 —— 与上面角标黑斑是同一类，只是漏了这个元素。
+  var drop = ['.ac-handle', '.ac-link-preview', '.ac-pulse', '.ac-snapline', '.ac-note-badge', '.ac-file-badge', '.ac-jump', '.ac-edge-hit']
   for (var i = 0; i < drop.length; i++) {
     var hits = clone.querySelectorAll(drop[i])
     for (var j = 0; j < hits.length; j++) hits[j].parentNode.removeChild(hits[j])

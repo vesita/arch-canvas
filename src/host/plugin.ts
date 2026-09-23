@@ -48,23 +48,42 @@ function labelTitle(label) {
 var lastForeignCanvasLogged = ''
 
 /**
+ * 把 `{{` 拆开 —— **提示词注入的最后一道关，必须走完所有 return**。
+ *
+ * DSH 的 `systemPrompt.context` 会把这段文本当 `{{变量}}` 模板渲染，而这条通道**没有关掉插值的
+ * 开关**（见 AGENTS.md「提示词模板注入」）。源文本里合法地出现 `{{` 时（Mermaid 的 hexagon
+ * 形状就是 `id{{"标签"}}`），变量名不匹配就直接抛错 —— 整条注入失败、插件当场崩、会话起不来。
+ *
+ * 2026-09-24 审计第 2 条：从前只有**最后一个** return 做了这件事，空画布的提前 return 与
+ * `foreignCanvasText` 两条路都没做（后者里还带着别的项目的图名，名字里有 `{{` 就炸）。
+ * 所以收口成一个函数，三个出口都必须过它；而且 `{{{{` 用单次 replace 是拆不干净的
+ * （替换文本自己又挨在一起），要**循环到不动为止**。
+ */
+function promptSafe(s: string): string {
+  var out = String(s == null ? '' : s)
+  for (var i = 0; i < 8 && out.indexOf('{{') >= 0; i++) out = out.split('{{').join('{ {')
+  return out
+}
+
+/**
  * 「画布停在别的项目上」时这一步只注入这一段 —— 不含任何别人的图内容、锚点、留言。
  * 内容与留言都可能涉及另一个会话正在进行的工作，而且留言是**一次性投递**：投给错的会话
  * 就等于丢了（2026-09-23 真的这样丢过 3 条）。所以这里只说清状态和下一步该干什么。
  */
 function foreignCanvasText(sessWhere: string) {
-  var parked = doc.external ? doc.external : keyOf(doc.name)
+  // 只说「停在哪个项目」——**不报对方那张图的名字**：名字也是别人的内容，而且它是用户可控文本，
+  // 曾经是 `{{` 漏网的入口（审计第 14 条）。
   var parkedWhere = doc.external
     ? ('项目文件 ' + doc.external)
     : ((lib.scope === 'project' ? '项目图库 ' : '全局图库 ') + lib.dir)
-  var sig = parked + '|' + sessWhere
+  var sig = sessWhere + '|' + lib.dir
   if (sig !== lastForeignCanvasLogged) {
     lastForeignCanvasLogged = sig
-    logEvent('info', 'prompt.foreign-canvas', { parked: parked, parkedDir: lib.dir, session: sessWhere })
+    logEvent('info', 'prompt.foreign-canvas', { parkedDir: lib.dir, session: sessWhere })
   }
   return [
     '## 逻辑框架画布（arch-canvas）',
-    '**画布现在停在别的项目上**：`' + parked + '`（' + parkedWhere + '）。你这个会话的项目是 `' + sessWhere + '`。',
+    '**画布现在停在别的项目上**（' + parkedWhere + '）。你这个会话的项目是 `' + sessWhere + '`。',
     '提示词这一侧**不会**把别的项目的图读给你，也不会替它消费留言（留言是「读一次即送达」，投给错的会话就没了）——' +
       '所以这一轮你看不到任何画布内容，别对上面那张图做任何操作。',
     '要看你这个项目的图：调一次 `arch_read`（工具会按你的工作目录把画布切过来；那个项目还没有图库的话它会说是空的）。' +
@@ -93,7 +112,7 @@ function promptText(asctx?) {
       // 别的会话的切库抢同一个「当前文档」（宿主只有一份活动指针），实测会把一份**空文档**
       // 当成某个项目的槽存下来。要自己的画布，走 `arch_read` —— 那条路带着会话 cwd，
       // 目标明确、也不会把中间态写进别人的槽。
-      if (!syncWorkspaceFor(sessWhere)) return foreignCanvasText(sessWhere)
+      if (!syncWorkspaceFor(sessWhere)) return promptSafe(foreignCanvasText(sessWhere))
     }
   }
   var curKey = doc.external || keyOf(doc.name)
@@ -153,14 +172,19 @@ function promptText(asctx?) {
     // 宁可多送一次，也不丢用户写的东西（和「检查点：安全靠退得回去」同一个取向）。
     head.push('**这几条本轮之后就会从你的上下文里消失**（读一次即送达，历史只留最近 '
       + NOTE_HISTORY_MAX + ' 条）。所以**本轮一次处理完**：没处理完的当场说清楚，别指望下一轮还看得到。')
-    for (var on = 0; on < openNotes.length && on < 20; on++) {
+    var listed = openNotes.length > 20 ? 20 : openNotes.length
+    for (var on = 0; on < listed; on++) {
       var ot = String(openNotes[on].note)
       if (ot.length > 400) ot = ot.slice(0, 400) + '…（已截断，完整内容见文件）'
       head.push('- `' + openNotes[on].id + '`（' + labelTitle(openNotes[on].label) + '）：' + ot.replace(/\r?\n/g, ' / '))
     }
-    if (openNotes.length > 20) head.push('- …还有 ' + (openNotes.length - 20) + ' 条未解决的留言，完整内容见文件。')
-    // **送达**：把这一批在内存里标成已办。放在最后，保证上面那段清单已经拼进去了。
-    for (var dn = 0; dn < openNotes.length; dn++) openNotes[dn].noteDone = true
+    if (openNotes.length > listed) {
+      head.push('- …还有 ' + (openNotes.length - listed) + ' 条未处理的留言：**它们会在下一步继续投递**，这一轮先处理上面这些。')
+    }
+    // **送达的只是「列出来的这些」。** 从前这里把 openNotes 全标成已办，而清单只列了 20 条 ——
+    // 第 21 条起既不进上下文、又永远不会再投递，用户写的东西就这么静默消失
+    // （2026-09-24 审计第 8 条）。一次投递 20 条是刻意的上下文预算，那就只送 20 条。
+    for (var dn = 0; dn < listed; dn++) openNotes[dn].noteDone = true
   }
   if (nc.done > 0) {
     head.push('- 另有 ' + nc.done + ' 条留言已经投递过（在历史里）：**没有列出来，也不要据此行动**；需要回看用 `arch_read`。')
@@ -230,7 +254,7 @@ function promptText(asctx?) {
   }
   if (doc.nodes.length === 0) {
     head.push('', '画布目前是空的。可以用 `arch_write` 画一版初稿，或用 `arch_edit` 逐块搭建。')
-    return head.join('\n')
+    return promptSafe(head.join('\n'))
   }
   var src = serializeDoc(doc).replace(/\n+$/, '')
   // 「注入用的视图」与文件不逐字相同，为的都是别把噪音灌给 AI（文件里一切都在，要看原文用 `arch_read`）：
@@ -249,18 +273,8 @@ function promptText(asctx?) {
     '',
     '工具用法与图库规则见 `arch-canvas` skill（用 `skill` 工具加载）。',
   ]).join('\n')
-  // ==================== 最后一道关：把 `{{` 拆开 ====================
-  // DSH 的 `systemPrompt.context` 会把这段文本当 `{{变量}}` 模板渲染，而**这条通道没有关掉插值的开关**：
-  // `dsh-system-prompt/lib/index.js:150` 对 context 一律 interpolate，
-  // 只有 `:115` 的 section 通道认 `interpolate: false`（README:66 说的是后者）。
-  // 而 AC 注入的是**用户的源文本**，里面完全可能合法地出现 `{{` ——
-  // Mermaid 的 hexagon 形状就是 `id{{"标签"}}`。变量名不匹配 `/^[a-z][a-z0-9_]*$/` 就直接抛错，
-  // 于是整条提示词注入失败、插件当场崩（2026-09-20 实测：图上加了一个 hex 节点，会话就起不来了）。
-  //
-  // 所以这里是**唯一一处必须改动用户文本**的地方。选「`{{` → `{ {`」而不是删字符或塞零宽，
-  // 是因为它可读、看得见、可解释；而 AI 改图走的是 op（`add_node` 自带 shape），
-  // 不会照抄这里的写法去拼语法。改动收口在这一行，别在别处再开第二个口子。
-  return out.split('{{').join('{ {')
+  // 最后一道关：把 `{{` 拆开（唯一一处必须改动用户文本的地方，实现与理由见 promptSafe）。
+  return promptSafe(out)
 }
 
 // ==================== 静态资源路由 ====================
@@ -379,7 +393,9 @@ async function afterSwitch() {
   loadedFor = lib.dir
   bump('switch')
   lastChange = { by: 'switch', rev: doc.revision, nodes: [] }
-  await refreshLibrary()
+  // 强制扫：这是「刚换了一张图」的收尾 —— 清单里必须立刻有它（新建的图更要立刻出现）。
+  // 走 TTL 的话，回执与紧随其后的 doc:list 会拿着最长 15 秒前的旧清单。
+  await refreshLibrary(true)
   await verifyFileRefs()
   logEvent('info', 'doc.switch', {
     diagram: doc.name, key: keyOf(doc.name), dir: lib.dir, scope: lib.scope,
@@ -390,8 +406,22 @@ async function afterSwitch() {
 
 ctx.effect(function () {
   return onRpc('doc:get', async function (args) {
+    // `where` 出现但类型不对（`{where:42}`）从前会静默退回「当前文档」—— 调用方以为自己读的是
+    // 那个项目，实际读的是别人/上一次留下的那张图。缺凭据不许退化成默认值。
+    // 注意：`where: ''` 是**有效输入**（= 全局图库，没有项目根），不能一起拒掉。
+    if (args && args.where !== undefined && typeof args.where !== 'string') {
+      return { ok: false, error: 'where 必须是字符串（项目目录路径）' }
+    }
     await ensureLoaded(args && args.where, args && args.session)
+    var ticket = docTicket()
     await verifyFileRefs()
+    if (!ticketHolds(ticket)) {
+      // **复核。** verifyFileRefs 是异步的（要走目录算指纹），别的会话的切库可能在这中间把
+      // 全局指针换走 —— 那样这次读返回的就是**别人的图**（2026-09-24 审计第 1 条的读泄漏）。
+      // 换回来重算一次；指针切换现在排在加载队列里，所以这条窗口很窄，但窄不等于没有。
+      await ensureLoaded(args && args.where, args && args.session)
+      await verifyFileRefs()
+    }
     var out = summaryOf()
     out.model = modelOf()
     out.mermaid = serializeDoc(doc)
@@ -405,7 +435,12 @@ ctx.effect(function () {
     // 顺手按 TTL 重扫一次图库（只走目录 + 比指纹，很便宜）：别人新加的图要能自己冒出来。
     // 界面轮询这个 RPC，所以「自动扫描」在面板开着时就有人驱动；面板关着时由定时器兜住。
     await ensureLoaded(args && args.where, args && args.session)
+    var ticket = docTicket()
     await refreshLibrary()
+    if (!ticketHolds(ticket)) {
+      await ensureLoaded(args && args.where, args && args.session)
+      await refreshLibrary()
+    }
     return {
       revision: doc.revision, updatedBy: doc.updatedBy, diagram: doc.name, dir: lib.dir,
       libraryRev: libraryRev, external: doc.external || null,
@@ -417,14 +452,26 @@ ctx.effect(function () {
   return onRpc('doc:set', async function (args) {
     await ensureLoaded(args && args.where, args && args.session)
     var model = args && args.model
-    if (!model || typeof model !== 'object') return { ok: false, error: '需要 model' }
+    // **形状闸门**：闸门从前只判 `typeof model !== 'object'`，而**数组也是 object** ——
+    // `{model:[]}` 会走 adoptModel → normalizeModel 把非数组的 nodes 当空 → 静默清空整张图并落盘，
+    // 回执还是 `ok:true, saved:true`、修订号前进。`{model:{}}` / `{model:{nodes:'x'}}` 同样清。
+    // 界面从来只发 `{nodes:[…], edges:[…], …}` 这个形状，所以这不误伤「用户把节点全删了」。
+    if (!model || typeof model !== 'object' || Array.isArray(model)) {
+      return { ok: false, error: '需要 model（一个对象）' }
+    }
+    if (!Array.isArray(model.nodes) || !Array.isArray(model.edges)) {
+      return { ok: false, error: 'model.nodes 与 model.edges 必须是数组（要清空整张图就显式传空数组）' }
+    }
+    // 认下这一份文档：落盘时指针若已被别的会话换走，persist 会拒写而不是把这次改动
+    // 灌进别人的项目文件（审计第 1 条）。
+    var expectFile = doc.file
     var saved = snapshotModel()
     adoptModel(model)
     if (args && typeof args.note === 'string' && args.note) doc.notes = [args.note]
     bump('user')
     noteUserChange()
     var policy = policyOfSessionId(args && args.session)
-    var saveError = await persistOrRollback(saved, 'doc:set', policy)
+    var saveError = await persistOrRollback(saved, 'doc:set', policy, expectFile)
     await verifyFileRefs()
     var out = summaryOf()
     out.mermaid = serializeDoc(doc)
@@ -437,10 +484,16 @@ ctx.effect(function () {
 ctx.effect(function () {
   return onRpc('doc:applyText', async function (args) {
     await ensureLoaded(args && args.where, args && args.session)
-    var text = args && typeof args.text === 'string' ? args.text : ''
+    // 缺 text 与「显式清空整张图」从前不可区分：不带参调用就把当前图写成空图并落盘
+    // （`ok:true, saved:true`，零警告 —— 审计第 5 条）。要清空必须显式传空串。
+    if (!args || typeof args.text !== 'string') return { ok: false, error: '需要 text（要清空整张图就显式传空串）' }
+    var text = args.text
+    var expectFile = doc.file
     var parsed = inheritPositions(parseMermaid(text))
-    if (parsed.nodes.length === 0 && text.trim() !== '') {
-      return { ok: false, error: '没能从这段文本里解析出任何节点', mermaid: serializeDoc(doc) }
+    // **清空只认显式空串。** 从前判据是 `text.trim() !== ''`，于是纯空白串 `"   "` trim 后为空
+    // ⇒ 跳过拒绝 ⇒ 整张图被清空并落盘（回执 ok:true, saved:true，零警告）。
+    if (parsed.nodes.length === 0 && text !== '') {
+      return { ok: false, error: '没能从这段文本里解析出任何节点（要清空整张图就传空串）', mermaid: serializeDoc(doc) }
     }
     var saved = snapshotModel()
     adopt(parsed)
@@ -448,7 +501,7 @@ ctx.effect(function () {
     bump('user')
     noteUserChange()
     var policy = policyOfSessionId(args && args.session)
-    var saveError = await persistOrRollback(saved, 'doc:applyText', policy)
+    var saveError = await persistOrRollback(saved, 'doc:applyText', policy, expectFile)
     await verifyFileRefs()
     var out = summaryOf()
     out.mermaid = serializeDoc(doc)
@@ -473,8 +526,14 @@ ctx.effect(function () {
 ctx.effect(function () {
   return onRpc('doc:file', async function (args) {
     await ensureLoaded(args && args.where, args && args.session)
-    if (args && args.save) {
-      var err = await persist(policyOfSessionId(args && args.session))
+    // `save` 出现就必须是布尔：从前 `if (args && args.save)` 会把字符串 `"no"` 当真值照落盘。
+    if (args && args.save !== undefined && typeof args.save !== 'boolean') {
+      return { ok: false, error: 'save 必须是布尔' }
+    }
+    if (args && args.save === true) {
+      // 认下这一份文档 + 站点：从前连 site 都没传，日志里被记成 site:'unknown'（出问题查不到是谁写的）。
+      var expectFile = doc.file
+      var err = await persist(policyOfSessionId(args && args.session), 'doc:file', expectFile)
       var out = summaryOf()
       out.saved = !err
       if (err) out.error = err
@@ -488,8 +547,15 @@ ctx.effect(function () {
 ctx.effect(function () {
   return onRpc('doc:list', async function (args) {
     await ensureLoaded(args && args.where, args && args.session)
+    var ticket = docTicket()
     // rescan 为真时忽略 TTL 立刻重扫（选择器上的「重新扫描」按钮走这条路）
     var items = await refreshLibrary(!!(args && args.rescan))
+    if (!ticketHolds(ticket)) {
+      // 同 doc:get：扫描是异步的，别的会话的切库可能在这中间把指针换走 ——
+      // 那样返回的清单与 dir 就是**别人的图库**。换回来重扫一次。
+      await ensureLoaded(args && args.where, args && args.session)
+      items = await refreshLibrary(!!(args && args.rescan))
+    }
     return {
       ok: true, dir: lib.dir, scope: lib.scope, workspace: lib.workspace,
       current: doc.name, external: doc.external || null,
@@ -536,9 +602,18 @@ ctx.effect(function () {
   return onRpc('doc:rename', async function (args) {
     await ensureLoaded(args && args.where, args && args.session)
     if (!fs) return { ok: false, error: 'fs 服务不可用' }
-    var a = resolveKey(args && args.from)
-    var b = resolveKey(args && args.to)
-    if (!a || !b) return { ok: false, error: '需要 from 与 to（图名，或 `子项目/图名`）' }
+    // **缺凭据不许退化成默认值。** `resolveKey(undefined)` 的 name 会兜成默认图名
+    // （`splitKey('')` → `architecture`）：一句 `{"method":"doc:rename","args":{"to":"zzz"}}`
+    // 就把用户的主图软删了、还建出一张 zzz.mmd，回执却是 ok:true。照 doc:delete 抄校验。
+    var fromRaw = args && args.from
+    var toRaw = args && args.to
+    if (typeof fromRaw !== 'string' || fromRaw.trim() === '' ||
+        typeof toRaw !== 'string' || toRaw.trim() === '') {
+      return { ok: false, error: '需要 from 与 to（图名，或 `子项目/图名`）' }
+    }
+    var a = resolveKey(fromRaw)
+    var b = resolveKey(toRaw)
+    if (!a || !b) return { ok: false, error: '当前没有项目根，无法引用子项目的图' }
     if (a.project !== b.project) {
       return { ok: false, error: '改名不能跨图库（' + (a.project || '根') + ' → ' + (b.project || '根') + '）；跨库请手工移动文件' }
     }
@@ -570,7 +645,8 @@ ctx.effect(function () {
       doc.file = fileAt(b.dir, b.name)
       doc.tombstoned = hasTombstone(text)
     }
-    await refreshLibrary()
+    // 强制扫：改名后的回执与紧随的 doc:list 必须立刻看到新名字（TTL 会拿着旧清单最长 15 秒）。
+    await refreshLibrary(true)
     return fullOf()
   })
 })
@@ -579,7 +655,12 @@ ctx.effect(function () {
   return onRpc('doc:delete', async function (args) {
     await ensureLoaded(args && args.where, args && args.session)
     if (!fs) return { ok: false, error: 'fs 服务不可用' }
-    var dk = resolveKey(args && (args.key || args.name))
+    // 缺 key 从前会**退化成默认图名**（`splitKey('')` → name 兜成 architecture），一句不带 key 的
+    // `{"method":"doc:delete"}` 就把默认图软删了（审计第 4 条）。缺凭据一律拒绝。
+    // 下面 `if (!dk)` 那条**不是**死代码：全局图库里 `resolveKey('子/图')` 会因没有项目根返回 null。
+    var dkRaw = args && (args.key || args.name)
+    if (typeof dkRaw !== 'string' || dkRaw.trim() === '') return { ok: false, error: '需要 key（图名，或 `子项目/图名`）' }
+    var dk = resolveKey(dkRaw)
     if (!dk) return { ok: false, error: '需要 key（图名，或 `子项目/图名`）' }
     var name = dk.name
     var text
@@ -595,15 +676,53 @@ ctx.effect(function () {
         return { ok: false, error: '删除失败：' + msgOf(e) }
       }
     }
-    // 删的正好是当前这张 → 换回默认图，别让界面停在已删除的内容上
+    // 删的正好是当前这张 → **别让画布停在刚打上墓碑的那份内容上**。
+    // 从前这里是 `doc.name = DEFAULT_DIAGRAM; loadedFor = null; ensureLoaded()` —— 于是 loadInto
+    // 又把那份带 `%% @deleted` 的文件读回来：画布照旧显示它的节点、`tombstoned:true`，还能继续编辑，
+    // 而清单里它已经 `deleted:true`（与这句注释说的正好相反）。
     if (doc.name === name && lib.dir === dk.dir) {
+      var target = { dir: dk.dir, scope: dk.scope, workspace: dk.workspace }
+      if (lib.dir !== target.dir) { lib = target; loadedFor = null }
+      // 同一图库里还有活着的图就切过去（用户的画布落在真内容上）；一张都不剩才清空成空文档。
+      var lives = []
+      try {
+        var all = await listDiagrams(dk.dir)
+        for (var dl = 0; dl < all.length; dl++) if (!all[dl].deleted) lives.push(all[dl].name)
+      } catch (eLives) { lives = [] }
+      if (lives.length > 0) {
+        var rl = await loadDiagramAt(target, lives[0], false, policyOfSessionId(args && args.session))
+        if (rl && rl.ok) {
+          var outSw = await afterSwitch()
+          outSw.items = libraryCache
+          return outSw
+        }
+      }
+      // 一张活图都不剩：画布清成一份**空文档**（不 adopt 墓碑内容、不落盘）。
+      // doc.file 仍写着默认图名，但它此刻带墓碑 —— 写路径的墓碑守卫会拒绝把它当活图改写，
+      // 用户的软删除不会被一次无关保存抹掉；要拿回来走 doc:restore。
+      adopt(emptyDoc())
       doc.name = DEFAULT_DIAGRAM
-      loadedFor = null
-      await ensureLoaded(undefined, args && args.session)
-      return fullOf()
+      doc.file = fileAt(dk.dir, DEFAULT_DIAGRAM)
+      doc.external = null
+      doc.workspace = projectKeyOfTarget(target)
+      doc.tombstoned = false
+      doc.absent = true
+      doc.warnings = []
+      doc.notes = []
+      doc.fileStatus = {}
+      doc.drift = null
+      // loadedFor 设上，这条空画布才「粘得住」：下一次 doc:get 不会又把墓碑文件读回来。
+      loadedFor = lib.dir
+      lastChange = { by: 'user', rev: doc.revision, nodes: [] }
+      await refreshLibrary(true)
+      var outDel = fullOf()
+      outDel.items = libraryCache
+      return outDel
     }
-    await refreshLibrary()
-    return fullOf()
+    await refreshLibrary(true)
+    var outDel2 = fullOf()
+    outDel2.items = libraryCache
+    return outDel2
   })
 })
 
@@ -611,7 +730,9 @@ ctx.effect(function () {
   return onRpc('doc:restore', async function (args) {
     await ensureLoaded(args && args.where, args && args.session)
     if (!fs) return { ok: false, error: 'fs 服务不可用' }
-    var rk = resolveKey(args && (args.key || args.name))
+    var rkRaw = args && (args.key || args.name)
+    if (typeof rkRaw !== 'string' || rkRaw.trim() === '') return { ok: false, error: '需要 key（图名，或 `子项目/图名`）' }
+    var rk = resolveKey(rkRaw)
     if (!rk) return { ok: false, error: '需要 key（图名，或 `子项目/图名`）' }
     var text
     try {
@@ -625,8 +746,22 @@ ctx.effect(function () {
       } catch (e) {
         return { ok: false, error: '恢复失败：' + msgOf(e) }
       }
+      // **内存里那个墓碑也要摘掉。** 只改盘不清内存的话，恢复之后的下一次保存又会把
+      // `%% @deleted` 写回去 —— 用户点了「恢复」，看起来成功了，过一会儿它自己又变回已删除
+      // （审计第 6 条）。
+      if (doc.name === rk.name && lib.dir === rk.dir) {
+        doc.tombstoned = false
+        // 画布可能刚被「删掉当前图」清空过（doc.absent）——那就把它重新读回来，
+        // 否则用户点了「恢复」，清单里它活了、画布却还空着。
+        if (doc.absent) {
+          loadedFor = null
+          await ensureLoaded(undefined, args && args.session)
+        }
+      }
     }
-    await refreshLibrary()
+    // 强制扫：刚「恢复」的图必须立刻回到清单里（走 TTL 的话回执 items 里它还写着 deleted:true，
+    // 而界面默认 rescan:false，最长 15 秒都看不到它回来）。
+    await refreshLibrary(true)
     return { ok: true, dir: lib.dir, scope: lib.scope, workspace: lib.workspace, current: doc.name, items: libraryCache }
   })
 })
@@ -644,8 +779,13 @@ ctx.effect(function () {
 ctx.effect(function () {
   return onRpc('doc:rollback', async function (args) {
     await ensureLoaded(args && args.where, args && args.session)
-    var seq = Number(args && args.seq)
-    if (!isFinite(seq) || seq <= 0) return { ok: false, error: '需要 seq（检查点编号，见 doc:history）' }
+    // **必须是有限整数。** 从前是 `Number(args.seq)`：`"1"` / `true` / `[2]` 全被强转成合法编号
+    // 并能真的把图退回去 —— 一个类型错的入参不该产生一次真实的回滚。
+    var rawSeq = args && args.seq
+    if (typeof rawSeq !== 'number' || !isFinite(rawSeq) || Math.floor(rawSeq) !== rawSeq || rawSeq <= 0) {
+      return { ok: false, error: '需要 seq（检查点编号，见 doc:history）' }
+    }
+    var seq = rawSeq
     var r = await applyRollback(seq, policyOfSessionId(args && args.session))
     if (!r.ok) return r
     await verifyFileRefs()
@@ -682,6 +822,13 @@ var readTool = harness.defineTool({
   },
   execute: async function (args, exec) {
     await ensureLoaded(whereOfExec(exec), sessionIdOfExec(exec))
+    // `diagram` 出现就必须是非空字符串：`{diagram:42}` 从前静默读了**当前这张**还回 ok:true，
+    // 而 `arch_switch {key:42}` 是拒绝的 —— 同一族入参两套口径，AI 会以为它读了别的图。
+    if (args && args.diagram !== undefined) {
+      if (typeof args.diagram !== 'string' || args.diagram.trim() === '') {
+        return { ok: false, error: '需要 diagram（要读的图名，非空字符串；省略则读当前这张）', diagram: doc.name }
+      }
+    }
     var want = args && typeof args.diagram === 'string' ? args.diagram.trim() : ''
     var wantParts = want ? splitKey(want) : null
     var wantKey = wantParts ? keyOf(wantParts.name, wantParts.project) : ''
@@ -739,6 +886,11 @@ var switchTool = harness.defineTool({
     var raw = args && typeof args.key === 'string' ? args.key
       : (args && typeof args.name === 'string' ? args.name : '')
     if (!raw.trim()) return { ok: false, error: '需要 key' }
+    // `create` 出现就必须是布尔：`create:"false"` 是真值，从前会**真的把图建出来**
+    // （实测 新图.mmd 存在）—— 模型给字符串布尔是常态，不能把 "false" 当成「要新建」。
+    if (args && args.create !== undefined && typeof args.create !== 'boolean') {
+      return { ok: false, error: 'create 必须是布尔（true 才新建）' }
+    }
     var k = resolveKey(raw)
     if (!k) return { ok: false, error: '当前没有项目根，无法引用子项目的图' }
     if (k.dir !== lib.dir) {
@@ -801,13 +953,14 @@ var writeTool = harness.defineTool({
     }
     var before = snapshotNodes()
     var saved = snapshotModel()
+    var expectFile = doc.file
     adopt(parsed)
     adoptModel(modelOf())
     bump('ai')
     noteAiChange(before)
     if (args && typeof args.note === 'string' && args.note) doc.notes = [args.note]
     var policy = policyOfAgent(exec && exec.agent)
-    var saveError = await persistOrRollback(saved, 'arch_write', policy)
+    var saveError = await persistOrRollback(saved, 'arch_write', policy, expectFile)
     var out = summaryOf()
     out.mermaid = serializeDoc(doc)
     out.keptNotes = keptNotes
@@ -893,14 +1046,25 @@ var editTool = harness.defineTool({
     }
     var ops = args && Array.isArray(args.ops) ? args.ops : []
     if (ops.length === 0) return toolReject('arch_edit', 'ops 不能为空', t0)
+    var expectFile = doc.file
     var before = snapshotNodes()
     var saved = snapshotModel()
     var result = applyOps(ops)
-    if (args && typeof args.note === 'string' && args.note) doc.notes = [args.note]
-    bump('ai')
-    noteAiChange(before)
-    var policy = policyOfAgent(exec && exec.agent)
-    var saveError = await persistOrRollback(saved, 'arch_edit', policy)
+    // **一个 op 都没生效时不写盘、不推修订号**（上面那轮已经修对），但 `doc.notes` 从前照设 ——
+    // 面板状态栏于是显示「AI 说：…」，而盘上什么都没变：AI 的说明与事实相反。
+    // 所以它必须跟「至少一个 op 生效」绑在一起。
+    var saveError = null
+    if (result.done.length > 0) {
+      if (args && typeof args.note === 'string' && args.note) doc.notes = [args.note]
+      bump('ai')
+      noteAiChange(before)
+      var policy = policyOfAgent(exec && exec.agent)
+      saveError = await persistOrRollback(saved, 'arch_edit', policy, expectFile)
+    } else {
+      // 一个 op 都没生效：不写盘、不推修订号，但**要把上一次的高亮清掉** ——
+      // 留着 lastChange.nodes 会让界面继续脉动「AI 刚改了这几个节点」，而这一轮 AI 什么都没改成。
+      lastChange = { by: 'ai', rev: doc.revision, nodes: [] }
+    }
     // 改完锚点要立刻重算校验状态：`summaryOf()` 会把 doc.fileStatus 一起带回去，
     // 少了这一行，AI 下一步读到的还是**旧锚点字符串**对应的那份缓存 ——
     // 新锚点在缓存里没有条目，于是全部显示「未能校验」，而界面走 doc:get 重算后是 ok。
@@ -950,13 +1114,26 @@ if (systemPromptSvc) {
 // 判据用 `globalThis` 上的一个标记，而**不是**模块级变量：模块被清缓存重载后模块级变量会归零，
 // 那正是 4 连发的成因之一。挂载形状（工具/路由/图库/形态）一变，判据就变，于是照旧落一行。
 var MOUNT_MARK_KEY = '__archCanvasMountMark'
-var mountShape = registeredTools.join(',') + '|' + registeredRoutes.join(',') + '|' + lib.dir + '|' + lib.scope
+// **路由数必须反映真实注册数。** RPC 路由（`/arch-canvas/rpc`）是外壳直接推给 webServer 的，
+// 不经过宿主逻辑的 `onRoute` —— 只数 `registeredRoutes` 会恒为 2，而实际注册了 3 条：
+// AGENTS 把「4 工具 / 3 路由 / 1 提示词上下文」当挂载自检判据，唯一的机器可读记录却永远对不上。
+// 外壳实现了 `describeRoutes` 就把它报的也算进来（动态形态没这条路由，自然还是 2）。
+var mountRoutePaths = registeredRoutes.slice()
+try {
+  if (harness && typeof (harness as any).describeRoutes === 'function') {
+    var extraRoutes = (harness as any).describeRoutes() || []
+    for (var mr = 0; mr < extraRoutes.length; mr++) {
+      if (mountRoutePaths.indexOf(extraRoutes[mr]) < 0) mountRoutePaths.push(extraRoutes[mr])
+    }
+  }
+} catch (eMountRoutes) { /* 外壳没提供就退回 registeredRoutes，不影响挂载 */ }
+var mountShape = registeredTools.join(',') + '|' + mountRoutePaths.join(',') + '|' + lib.dir + '|' + lib.scope
 var mountMark = null
 try { mountMark = (globalThis as any)[MOUNT_MARK_KEY] || null } catch (e) { mountMark = null }
 if (!mountMark || mountMark.shape !== mountShape) {
   logEvent('info', 'plugin.mount', {
     tools: registeredTools.join(','), toolCount: registeredTools.length,
-    routes: registeredRoutes.join(','), routeCount: registeredRoutes.length,
+    routes: mountRoutePaths.join(','), routeCount: mountRoutePaths.length,
     dir: lib.dir, scope: lib.scope, logDir: logDir(), logBackend: logBackend ? 'file' : 'none',
     mounts: (mountMark && mountMark.shape === mountShape && mountMark.n ? mountMark.n : 0) + 1,
   })
