@@ -882,7 +882,9 @@ async function loadInto(name, create, target, policy?) {
   doc.name = clean
   doc.file = fileAt(target.dir, clean)
   doc.external = null      // 从图库载入：之前打开的外部文件就此让位
-  doc.workspace = projectKeyOfTarget(target)   // 这份文档属于哪个项目（提示词注入据此判归属）
+  // 这份文档属于哪个项目。**只写不读**：归属判定走 `layerForSession` 的 want.dir 对比 lib.dir
+  // （是不是同一个项目另看 `sameProjectAsCurrent`）。留着它是为了让日志与排查能一眼看出归属。
+  doc.workspace = projectKeyOfTarget(target)
   doc.tombstoned = false
   doc.warnings = []
   var text = null

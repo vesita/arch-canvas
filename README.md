@@ -53,12 +53,12 @@
 cd /home/vesita/coding/my/arch-canvas          # 仓库根目录
 dsh plugin --profile web add  "$PWD"           # 装开发目录（链接部署）
 npm run pack                                   # 打 tgz，落点 ${DSH_HOME:-$HOME/.dsh}/packages
-dsh plugin --profile web add  "${DSH_HOME:-$HOME/.dsh}/packages/arch-canvas-0.6.13.tgz"   # 装分发包（快照）
+dsh plugin --profile web add  "${DSH_HOME:-$HOME/.dsh}/packages/arch-canvas-0.6.14.tgz"   # 装分发包（快照）
 dsh plugin --profile web update arch-canvas
 dsh plugin --profile web remove arch-canvas
 ```
 
-版本号取自 `package.json`（当前 0.6.13）。`dsh plugin` 是 pnpm 的转发器：在 profile 里跑 pnpm，
+版本号取自 `package.json`（当前 0.6.14）。`dsh plugin` 是 pnpm 的转发器：在 profile 里跑 pnpm，
 再按安装结果对齐 `dsh.profile.bundles`。目录依赖（`link:`）给的是符号链接；
 `file:...tgz` 是**把包解成真目录的快照**。
 
