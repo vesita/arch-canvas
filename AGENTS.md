@@ -257,9 +257,31 @@ add <本目录>`）下 `node_modules` 指向项目目录，`npm run build` 之�
 | `uiFile` / `mermaidFile` | `path.join(__dirname, …)` | `<项目>/dist/ui.js`、`<项目>/assets/…` |
 | `dataDir` | `$DSH_HOME`（否则 `~/.dsh`）+ `/arch-canvas` | 本机字面量（这一层本来就写死项目路径） |
 | `logBackend` | `node:fs`：真 append、真 unlink | `fs` 服务：读全文写回、清理=清空 |
+| `skillFile` / `skillText` | `require('fs')` 同步读 `<包>/skills/arch-canvas/SKILL.md` | `fs` 服务读 `<项目>/skills/...`（沙箱里没有 `node:fs`） |
 
 `dataDir` 缺失时宿主逻辑**直接抛错**（`src/host/document.ts` 开头）：它不是可选项。宿主逻辑里出现任何 /home/<某人> 都是 bug ——
 写死就只在装机那一台能用。守门人：`test/plugin-mount.e2e.mjs` 的「设置里给了就用它」那一条。
+
+## 随包 skill 由插件自己注册（照 dsh-collab 的做法）
+
+`skills/arch-canvas/SKILL.md` 只随包分发是**不够的**：没有任何东西会去扫插件包里的 `skills/`，而
+`promptText` 每一步都在说「见 `arch-canvas` skill（用 `skill` 工具加载）」—— 那会指向一个加载不到的名字
+（2026-10-01 实测：本部署的 skill 根只有项目 `.dsh/skills`、用户 `~/.dsh/skills` 与 preset 自带的 `customSkillDirs`）。
+
+规矩三条：
+
+1. **读盘在外壳、解析与注册收口在宿主逻辑**（`src/host/plugin.ts`）：两个形态各读各的
+   （真插件同步读包内文件、动态形态走 `fs` 服务），**只有一份注册实现**，不会各自漂移。
+2. **`skills` 是可选服务**，走 `ctx.get('skills')`（**不进 `inject`**）：拿不到就静默跳过 ——
+   headless、测试桩、没装 skill 插件都不该因此挂不上。注册挂在 `ctx.effect` 上，卸载即撤销。
+3. **失败一律静默降级**：文件缺失 / frontmatter 不合法 / 缺 `name` / 注册抛错，都只记一行日志
+   （`skill.register` / `skill.register.fail`），工具与路由照常可用。
+
+`parseSkillFrontmatter()` 是极简标量解析（只认开头 `---` 块里的 `name` / `description` / `whenToUse`，
+正文是闭合 `---` 之后的原文，一字不改），与 dsh-collab 的 `src/skill.ts` 同构。
+**`description` 是 catalog 里唯一给模型看的字段**（`whenToUse` 不进 catalog），所以「什么时候该用」必须写在
+`description` 里。守门人：`test/host.e2e.mjs`【随包 skill：注册给 skills 服务】+ 两条负向对照（缺 `name` /
+没有服务都不注册、也不抛）、`test/plugin-mount.e2e.mjs`【真插件形态读的是真 SKILL.md】。
 
 ## Package 里只应该有引导层
 

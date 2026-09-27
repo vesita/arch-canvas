@@ -53,12 +53,12 @@
 cd /home/vesita/coding/my/arch-canvas          # 仓库根目录
 dsh plugin --profile web add  "$PWD"           # 装开发目录（链接部署）
 npm run pack                                   # 打 tgz，落点 ${DSH_HOME:-$HOME/.dsh}/packages
-dsh plugin --profile web add  "${DSH_HOME:-$HOME/.dsh}/packages/arch-canvas-0.6.15.tgz"   # 装分发包（快照）
+dsh plugin --profile web add  "${DSH_HOME:-$HOME/.dsh}/packages/arch-canvas-0.6.16.tgz"   # 装分发包（快照）
 dsh plugin --profile web update arch-canvas
 dsh plugin --profile web remove arch-canvas
 ```
 
-版本号取自 `package.json`（当前 0.6.15）。`dsh plugin` 是 pnpm 的转发器：在 profile 里跑 pnpm，
+版本号取自 `package.json`（当前 0.6.16）。`dsh plugin` 是 pnpm 的转发器：在 profile 里跑 pnpm，
 再按安装结果对齐 `dsh.profile.bundles`。目录依赖（`link:`）给的是符号链接；
 `file:...tgz` 是**把包解成真目录的快照**。
 
@@ -104,7 +104,7 @@ npm run check     # 上面全部 + 工具 schema 校验（改完必须过这一�
 再核对 README / PROJECT_STATE 的基线行与实测一致 —— **加了断言就要一起改这两份文档**，
 对不上时它会把该贴的那一行直接打出来。
 
-当前基线：**解析器 1067 · 布局 19 · 连线几何 44 · 宿主 943 · 引导层 20 · 插件挂载 16 · 配置卡 37 · 构建守门人 35 · 界面渲染 558 · 工具 schema 全通过 = 2739 条断言，EXIT=0**。
+当前基线：**解析器 1067 · 布局 19 · 连线几何 44 · 宿主 953 · 引导层 20 · 插件挂载 23 · 配置卡 37 · 构建守门人 35 · 界面渲染 558 · 工具 schema 全通过 = 2756 条断言，EXIT=0**。
 
 每个测试文件顶部的注释说明它守什么；各套件的守门断言见 `AGENTS.md`。
 

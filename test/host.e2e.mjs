@@ -50,6 +50,16 @@ let agentMap = new Map()
 const agentsSvc = {
   get: (id) => agentMap.get(id),
 }
+// 随包 skill 的注册出口。**可选服务**：宿主逻辑走 ctx.get（不进 inject），
+// 拿不到就静默跳过 —— 这里给一个，才能断言「真的注册了」。
+const registeredSkills = []
+const skillsSvc = {
+  register: (def) => {
+    registeredSkills.push(def)
+    return () => { const i = registeredSkills.indexOf(def); if (i >= 0) registeredSkills.splice(i, 1) }
+  },
+}
+const FAKE_SKILL_TEXT = '---\nname: arch-canvas\ndescription: 与用户共用一张 Mermaid 逻辑框架图\nwhenToUse: 用户提到「画布」时\n---\n\n# 架构画布\n\n工具怎么用…\n'
 // 故障注入钩子：readText / writeText 之前可以 await 任意动作，用来模拟
 // 「另一个会话在这次 await 期间把全局指针换走了」。默认空数组 = 零行为变化。
 const readHooks = []
@@ -141,7 +151,7 @@ const intervals = []
 const ctx = {
   get: (k) => {
     askedServices.push(k)
-    return ({ fs: fsSvc, webServer: webSvc, systemPrompt: sysSvc, sandboxPolicy: sandboxPolicySvc, agents: agentsSvc })[k]
+    return ({ fs: fsSvc, webServer: webSvc, systemPrompt: sysSvc, sandboxPolicy: sandboxPolicySvc, agents: agentsSvc, skills: skillsSvc })[k]
   },
   effect: (fn) => { const d = fn(); if (typeof d === 'function') disposers.push(d); return d },
   on: () => () => {},
@@ -197,6 +207,8 @@ const hostEnv = {
   dataDir: TEST_DATA_DIR,
   uiFile: '/home/vesita/coding/my/arch-canvas/dist/ui.js',
   mermaidFile: CACHE,
+  skillFile: '/tmp/fake-skill/SKILL.md',
+  skillText: FAKE_SKILL_TEXT,
 }
 
 // ---------- 执行 host 半边 ----------
@@ -226,6 +238,23 @@ ok('外壳那条 RPC 路由的路径就是 /arch-canvas/rpc', routes.some((r) =>
 ok('mermaid 路由是 exact 且路径正确', routes.some((r) => r.kind === 'exact' && r.path === '/arch-canvas/mermaid.min.js'))
 ok('界面路由是 exact 且路径正确', routes.some((r) => r.kind === 'exact' && r.path === '/arch-canvas/ui.js'))
 ok('没有给 webServer 取快照（那会让装机后路由静默不注册）', !askedServices.includes('webServer'), askedServices)
+
+console.log('【随包 skill：注册给 skills 服务（照 dsh-collab 的做法）】')
+{
+  ok('skill 注册了一次', registeredSkills.length === 1, registeredSkills.length)
+  const sk = registeredSkills[0] || {}
+  eq('name 取自 frontmatter', sk.name, 'arch-canvas')
+  eq('description 取自 frontmatter', sk.description, '与用户共用一张 Mermaid 逻辑框架图')
+  eq('whenToUse 取自 frontmatter', sk.whenToUse, '用户提到「画布」时')
+  ok('正文是闭合 --- 之后的原文（frontmatter 不进正文）',
+    String(sk.content).indexOf('# 架构画布') >= 0 && String(sk.content).indexOf('whenToUse') < 0,
+    JSON.stringify(String(sk.content).slice(0, 24)))
+  ok('来源与提供者标成 bundled / arch-canvas', sk.source === 'bundled' && sk.provider === 'arch-canvas')
+  ok('resourceBase 指向 skill **目录**而不是文件',
+    !!sk.resourceBase && sk.resourceBase.kind === 'directory' && sk.resourceBase.path === '/tmp/fake-skill', sk.resourceBase)
+  ok('两个调用面都开着（模型可调 / 用户可调）',
+    !!sk.invocation && sk.invocation.modelInvocable === true && sk.invocation.userInvocable === true)
+}
 
 const call = (name, args) => {
   if (name === 'doc:list' && args && args.rescan === undefined) {
@@ -3158,6 +3187,42 @@ console.log('【子图库交叉污染 · 槽淘汰 / 天花板 / 建库后的同
   // 收尾：把活动文档留在**存在**的库上 —— 下面【提示词模板注入防护】拿不到 agent，
   // 靠的就是「沿用当前那一份」，落在 absent 的空库上会让它直接拒绝写。
   await call('doc:get', { where: FP, session: 'file-sess' })
+}
+
+console.log('【随包 skill：负向对照（缺 name / 没有服务都不注册、也不抛）】')
+{
+  // 用**独立**的 harness / ctx：这两次挂载会各写一条 plugin.mount 日志，
+  // 放在文件靠后处，免得把前面那些「routeCount 必须等于真实注册数」的断言带偏。
+  const harness2 = {
+    handle: () => () => {}, route: () => {}, describeRoutes: () => [],
+    defineTool: (d) => d, registerTool: () => {},
+  }
+  const noSkill = []
+  const mkCtx2 = (skills) => ({
+    get: (k) => (k === 'skills' ? skills : undefined),
+    effect: (fn) => { const d = fn(); if (typeof d === 'function') d(); return () => {} },
+    on: () => () => {},
+    inject: (_n, cb) => cb({ effect: (fn) => { fn(); return () => {} }, interval: () => () => {} }),
+  })
+  const mkEnv = (skillText) => ({
+    logBackend, dataDir: TEST_DATA_DIR,
+    uiFile: '/home/vesita/coding/my/arch-canvas/dist/ui.js', mermaidFile: CACHE,
+    skillFile: '/tmp/fake-skill/SKILL.md', skillText,
+  })
+  const mount = async (env, ctx2, name) => {
+    const box = vm.createContext({ harness: harness2, console, hostEnv: env })
+    const plug = await vm.runInContext(`(async () => {\n${code}\n})()`, box, { filename: name })
+    plug.apply(ctx2)
+  }
+  await mount(mkEnv('---\ndescription: 没有名字\n---\n\n正文\n'),
+    mkCtx2({ register: (def) => { noSkill.push(def); return () => {} } }), 'host-skill-noname.js')
+  eq('负向对照：frontmatter 缺 name 时不注册', noSkill.length, 0)
+  let boom = null
+  try {
+    await mount(mkEnv(FAKE_SKILL_TEXT), mkCtx2(undefined), 'host-skill-noservice.js')
+  } catch (e) { boom = e }
+  ok('负向对照：没有 skills 服务时不注册、也不抛（附加能力不阻断挂载）',
+    boom === null && noSkill.length === 0, boom && boom.message)
 }
 
 console.log('【提示词模板注入防护】')

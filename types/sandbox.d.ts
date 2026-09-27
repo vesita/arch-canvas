@@ -76,6 +76,13 @@ declare const hostEnv: {
    * 认不出的取值在 log.ts 里退回 `info`。
    */
   logLevel?: string
+  /**
+   * 随包 skill 的落点与正文。真插件那半用 node:fs 同步读 `<包>/skills/arch-canvas/SKILL.md`，
+   * 动态形态走 fs 服务读 `<项目>/skills/...`；**解析与注册收口在宿主逻辑里**，所以这里只递原文。
+   * 读不到就给空串，宿主逻辑静默跳过 —— 少一个 skill 不该让插件挂不上。
+   */
+  skillFile?: string
+  skillText?: string
 } | undefined
 
 /** 真插件形态是普通 Node，靠它读 $DSH_HOME 定数据目录。 */

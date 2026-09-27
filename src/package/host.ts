@@ -228,11 +228,18 @@ module.exports = {
     // hmr 只重新 import 本文件，CJS 缓存会把 host-logic 的改动挡住；加载前清掉。
     var logicPath = require.resolve('./host-logic.js')
     delete require.cache[logicPath]
+    // 随包 skill 的正文：**读盘留在本层**（真 Node 有 fs），解析与注册收口在宿主逻辑里 ——
+    // 两个形态只有一份注册实现。读不到就交空串，宿主逻辑静默跳过：少一个 skill 不该挂不上。
+    var skillFile = path.join(pkgDir, 'skills', 'arch-canvas', 'SKILL.md')
+    var skillText = ''
+    try { skillText = require('fs').readFileSync(skillFile, 'utf8') } catch (e) { skillText = '' }
     var plugin = require(logicPath)(harness, {
       uiFile: path.join(__dirname, 'ui.js'),
       mermaidFile: path.join(pkgDir, 'assets', 'mermaid.min.js'),
       dataDir: dataDir,
       logBackend: nodeLogBackend,
+      skillFile: skillFile,
+      skillText: skillText,
       // 日志门槛：真插件形态在真 Node 里，所以读得到环境变量。
       // 缺省 info（高频巡检走 debug，默认不落盘）；认不出的取值在 log.ts 里退回 info。
       logLevel: process.env.ARCH_CANVAS_LOG_LEVEL || 'info',

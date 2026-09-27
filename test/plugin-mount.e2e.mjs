@@ -51,6 +51,10 @@ const fsSvc = {
 const toolsSvc = { register: (def) => { registered.push(def); return () => {} } }
 const sysSvc = { context: (c) => { prompts.push(c); return () => {} } }
 const webSvc = { register: (r) => { routes.push(r); return () => {} } }
+// 随包 skill 的注册出口：这里挂的是**真插件**、读的是**真 SKILL.md**，
+// 所以这条断言能挡住「frontmatter 写坏 ⇒ 静默不注册」这个失效模式。
+const registeredSkills = []
+const skillsSvc = { register: (def) => { registeredSkills.push(def); return () => {} } }
 
 const timers = []
 const ctx = {
@@ -58,7 +62,7 @@ const ctx = {
   fs: fsSvc,
   tools: toolsSvc,
   systemPrompt: sysSvc,
-  get: (k) => ({ fs: fsSvc, tools: toolsSvc, systemPrompt: sysSvc })[k],
+  get: (k) => ({ fs: fsSvc, tools: toolsSvc, systemPrompt: sysSvc, skills: skillsSvc })[k],
   effect: (fn) => { fn() },
   on: () => () => {},
   // 外壳只给 webServer 做一次 inject；宿主逻辑自己再 inject 一次 timer 挂周期扫描。
@@ -139,6 +143,19 @@ for (let i = 0; i < 3; i++) {
 await new Promise((r) => setTimeout(r, 20))
 eq('重挂后仍然注册了 4 个工具', registered.length, 4)
 eq('重挂后仍然注册了 3 条路由', routes.length, 3)
+
+out('【随包 skill：真插件形态读的是真 SKILL.md】')
+ok('每次挂载都注册了 skill（4 次重挂 + 1 次自定义数据目录）', registeredSkills.length >= 4, registeredSkills.length)
+ok('注册的名字只有一个：arch-canvas', registeredSkills.every((x) => x.name === 'arch-canvas'), registeredSkills.map((x) => x.name))
+const sk = registeredSkills[registeredSkills.length - 1] || {}
+eq('name 就是 frontmatter 里的 arch-canvas', sk.name, 'arch-canvas')
+ok('description 非空（空 description 会让 skills 服务直接抛错）',
+  typeof sk.description === 'string' && sk.description.length > 10, sk.description)
+ok('whenToUse 非空（catalog 之外的触发说明）',
+  typeof sk.whenToUse === 'string' && sk.whenToUse.length > 10, sk.whenToUse)
+ok('正文来自真文件（认得正文标题）', String(sk.content).indexOf('# 架构画布（arch-canvas）') >= 0,
+  JSON.stringify(String(sk.content).slice(0, 40)))
+ok('path 指向安装目录里的 SKILL.md', typeof sk.path === 'string' && sk.path.endsWith('/skills/arch-canvas/SKILL.md'), sk.path)
 
 console.log = say; console.error = say; console.warn = say; console.info = say; console.debug = say
 out('【异步加载不许留下无主 rejection】')

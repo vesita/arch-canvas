@@ -90,7 +90,15 @@ var __plugin = {
       var info = await fs.stat(target)
       if (!info) throw new Error('找不到 ' + HOST_FILE + '（在项目里跑 npm run build）')
       var code = await fs.readText(target)
-      var hostEnv = { uiFile: PROJECT + '/dist/ui.js', mermaidFile: PROJECT + '/assets/mermaid.min.js', dataDir: DATA_DIR, logBackend: fsLogBackend }
+      // 随包 skill 的正文：沙箱里没有 node:fs，只能走注入的 fs 服务（真插件那半用同步读）。
+      // 读不到就给空串 —— 宿主逻辑静默跳过注册，绝不阻断挂载。
+      var skillFile = PROJECT + '/skills/arch-canvas/SKILL.md'
+      var skillText = ''
+      try {
+        var skillTarget = await fs.resolve(skillFile)
+        if (await fs.stat(skillTarget)) skillText = await fs.readText(skillTarget)
+      } catch (eSkill) { skillText = '' }
+      var hostEnv = { uiFile: PROJECT + '/dist/ui.js', mermaidFile: PROJECT + '/assets/mermaid.min.js', dataDir: DATA_DIR, logBackend: fsLogBackend, skillFile: skillFile, skillText: skillText }
       var plugin = hostFactory(code)(ctx, dynHarness, hostEnv)
       if (!plugin || typeof plugin.apply !== 'function') {
         throw new Error('dist/host.js 没有导出 apply —— 是不是把 src/host/*.js 直接拷过来了？')
