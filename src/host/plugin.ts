@@ -70,7 +70,7 @@ function promptSafe(s: string): string {
  * 内容与留言都可能涉及另一个会话正在进行的工作，而且留言是**一次性投递**：投给错的会话
  * 就等于丢了（2026-09-23 真的这样丢过 3 条）。所以这里只说清状态和下一步该干什么。
  */
-function foreignCanvasText(sessWhere: string) {
+function foreignCanvasText(sessWhere: string, sameProject?: boolean) {
   // 只说「停在哪个项目」——**不报对方那张图的名字**：名字也是别人的内容，而且它是用户可控文本，
   // 曾经是 `{{` 漏网的入口（审计第 14 条）。
   var parkedWhere = doc.external
@@ -80,6 +80,16 @@ function foreignCanvasText(sessWhere: string) {
   if (sig !== lastForeignCanvasLogged) {
     lastForeignCanvasLogged = sig
     logEvent('info', 'prompt.foreign-canvas', { parkedDir: lib.dir, session: sessWhere })
+  }
+  // 同一个项目里的**另一层**（别的会话刚下钻到 B 子图库）：这不是「别的项目」，
+  // 报成「别的项目」会让模型以为自己没有画布。分开说，下一步的动作也不同。
+  if (sameProject) {
+    return [
+      '## 逻辑框架画布（arch-canvas）',
+      '**画布现在停在同一个项目里的另一张图上**（' + parkedWhere + '）—— 那是别的会话刚切过去的层。',
+      '这一轮你看不到画布内容（读给你的会是别人那张图）。要看自己的图：调一次 `arch_read`，' +
+        '它会按你的工作目录、以及你这个会话选过的那一层，把画布切回来。',
+    ].join('\n')
   }
   return [
     '## 逻辑框架画布（arch-canvas）',
@@ -105,14 +115,17 @@ function foreignCanvasText(sessWhere: string) {
  */
 function promptText(asctx?) {
   var sessWhere = whereOfExec({ agent: asctx && asctx.agent })
+  var sessId = sessionIdOfExec({ agent: asctx && asctx.agent })
   if (typeof sessWhere === 'string' && sessWhere) {
-    if (!docBelongsTo(sessWhere)) {
+    if (!docBelongsTo(sessWhere, sessId)) {
       // 先试着**同步**把自己项目那一份换进来（命中内存槽就不用等下一次）；命中不了才给说明。
       // 这里**不排异步加载**：提示词注入是每一步都会跑的读路径，在这里发起的加载会与
       // 别的会话的切库抢同一个「当前文档」（宿主只有一份活动指针），实测会把一份**空文档**
       // 当成某个项目的槽存下来。要自己的画布，走 `arch_read` —— 那条路带着会话 cwd，
       // 目标明确、也不会把中间态写进别人的槽。
-      if (!syncWorkspaceFor(sessWhere)) return promptSafe(foreignCanvasText(sessWhere))
+      if (!syncWorkspaceFor(sessWhere, sessId)) {
+        return promptSafe(foreignCanvasText(sessWhere, sameProjectAsCurrent(sessWhere, sessId)))
+      }
     }
   }
   var curKey = doc.external || keyOf(doc.name)
@@ -586,14 +599,30 @@ ctx.effect(function () {
     if (!k) return { ok: false, error: '当前没有项目根，无法引用子项目的图' }
     // 打开子项目的图 = 把「当前层」切过去：此后坐标、落盘、AI 上下文都落在那一层
     if (k.dir !== lib.dir) {
-      lib = { dir: k.dir, scope: k.scope, workspace: k.workspace }
-      loadedFor = null
+      // 换层要**两步**，少一步都是静默错位：
+      //  ① 先把当前这份存进它自己的槽 —— 否则上一层从内存里消失，同步路径（`syncWorkspaceFor`）
+      //     再也命中不了它，提示词只能对模型说「画布停在别的图上」，而它其实就在自己项目里；
+      //  ② 再换一份**全新的 doc**（`resetToWorkspace` 干的就是这个）—— 只把 `lib` 指过去是不够的：
+      //     `loadInto` 是**原地**改 `doc`，而旧那份已经挂在 ① 的槽里，原地改会让那个槽悄悄
+      //     变成这一层的文档（2026-10-01 复核实测：回执 `dir` 说 A、`file` 却在 B，还报 saved:true）。
+      saveActiveSlot()
+      resetToWorkspace(resolveLibCanonical(String((root && root.workspace) || '')), k)
     }
     var r = await loadDiagramAt(k, k.name, !!(args && args.create), policyOfSessionId(args && args.session))
     if (!r.ok) {
       await refreshLibrary()
       return { ok: false, error: r.error, items: libraryCache, dir: lib.dir }
     }
+    // 记住**这个会话自己选了哪一层**：此后每一趟都按它认文件，别的会话切库不会把它顶走
+    // **回执不许说谎**：这一趟的加载如果被别的请求抢走了，`lib`/`doc` 可能是别人的，
+    // 直接 `afterSwitch()` 会返回一份「dir 说 A、file 在 B」的混合状态并报成功。
+    if (!(lib.dir === k.dir && docInLayer(k.dir))) {
+      logEvent('warn', 'doc.open.stolen', { want: k.dir, now: lib.dir })
+      return { ok: false, error: '这一趟打开被另一个请求切走了（画布现在在 ' + lib.dir + '）—— 重试一次' }
+    }
+    // 记**这次请求真正要的那一层**（`k`），不是 await 之后读到的全局 `lib`：
+    // 并发时 `lib` 可能已被另一个会话换走，那样会把别人的层永久记成本会话的层。
+    rememberLayer(args && args.session, k, root && root.workspace)
     return afterSwitch()
   })
 })
@@ -894,8 +923,14 @@ var switchTool = harness.defineTool({
     var k = resolveKey(raw)
     if (!k) return { ok: false, error: '当前没有项目根，无法引用子项目的图' }
     if (k.dir !== lib.dir) {
-      lib = { dir: k.dir, scope: k.scope, workspace: k.workspace }
-      loadedFor = null
+      // 换层要**两步**，少一步都是静默错位：
+      //  ① 先把当前这份存进它自己的槽 —— 否则上一层从内存里消失，同步路径（`syncWorkspaceFor`）
+      //     再也命中不了它，提示词只能对模型说「画布停在别的图上」，而它其实就在自己项目里；
+      //  ② 再换一份**全新的 doc**（`resetToWorkspace` 干的就是这个）—— 只把 `lib` 指过去是不够的：
+      //     `loadInto` 是**原地**改 `doc`，而旧那份已经挂在 ① 的槽里，原地改会让那个槽悄悄
+      //     变成这一层的文档（2026-10-01 复核实测：回执 `dir` 说 A、`file` 却在 B，还报 saved:true）。
+      saveActiveSlot()
+      resetToWorkspace(resolveLibCanonical(String((root && root.workspace) || '')), k)
     }
     var r = await loadDiagramAt(k, k.name, !!(args && args.create), policyOfAgent(exec && exec.agent))
     if (!r.ok) {
@@ -906,6 +941,14 @@ var switchTool = harness.defineTool({
         error: r.error + '。可用的图有：' + (names.length ? names.join('、') : '(还没有别的图)') + '；要新建请带 create: true',
       }
     }
+    // **回执不许说谎**：这一趟的加载如果被别的请求抢走了，`lib`/`doc` 可能是别人的，
+    // 直接 `afterSwitch()` 会返回一份「dir 说 A、file 在 B」的混合状态并报成功。
+    if (!(lib.dir === k.dir && docInLayer(k.dir))) {
+      logEvent('warn', 'doc.open.stolen', { want: k.dir, now: lib.dir })
+      return { ok: false, error: '这一趟打开被另一个请求切走了（画布现在在 ' + lib.dir + '）—— 重试一次' }
+    }
+    // 同上：记请求的这一层，不记可能被抢走的全局 lib
+    rememberLayer(sessionIdOfExec(exec), k, root && root.workspace)
     return afterSwitch()
   },
 })
@@ -999,7 +1042,7 @@ var editTool = harness.defineTool({
             },
             id: { type: 'string', description: '节点 id（add_node/set_label/set_shape/set_link/move_node/remove_node/set_group/mark_note 用）' },
             done: { type: 'boolean', description: 'mark_note 用：省略或 true = 把该节点的留言标成已办；false = 重新打开。已办的留言不再进入你的上下文' },
-            label: { type: 'string', description: '节点或连线的显示文本；add_group 时作为分组标题；set_summary 时是这张图的一句话总结（传空串清掉）' },
+            label: { type: 'string', description: '节点或连线的显示文本；add_group 时作为分组标题；set_summary 时是这张图的一句话总结（传空串清掉）。**换行直接给真实换行符**（JSON 里就是 `\\n`），写 `<br/>` 也等价；`<br>` / `<\\br>` / `</br>` 这类写法会被自动归一，不用自己手写转义。' },
             shape: { type: 'string', description: '节点形状：rect 矩形 / round 圆角 / stadium 胶囊 / circle 圆 / diamond 判定 / cyl 数据库 / hex 六边形 / sub 子流程 / asym 旗形' },
             link: { type: 'string', description: 'set_link / add_node 用：把这个节点下钻到另一张图（图名，不含 .mmd）；传空串取消' },
             from: { type: 'string', description: '连线的起点节点 id' },

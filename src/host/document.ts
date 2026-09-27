@@ -363,14 +363,6 @@ async function persist(policy?, site?, expectFile?) {
   }
 }
 
-/** where 为字符串时解析成图库；空串表示显式用全局图库。undefined 表示「不改」。 */
-function resolveLib(where) {
-  var w = typeof where === 'string' ? where.trim() : ''
-  if (w === '') return { dir: GLOBAL_DIR, scope: 'global', workspace: '' }
-  w = w.replace(/\/+$/, '')
-  return { dir: w + '/' + PROJECT_SUBDIR, scope: 'project', workspace: w }
-}
-
 /**
  * 从工具执行上下文里取项目路径。
  * ToolExecutionInput.agent 是「这次调用代表谁」，Agent 上带着会话的 cwd ——
@@ -454,12 +446,14 @@ async function ensureDir(path, policy?) {
   } catch (e) {}
   try {
     await fs.writeText(await fs.resolve(path + '/.gitkeep'), '', undefined, undefined, policy)
+    forgetProjectRootsUnder(String(path).replace(/\/\.arch-canvas$/, ''))
     return true
   } catch (e) {}
   try {
     var dp = ctx.get('directoryPickerController')
     if (dp && typeof dp.createDirectory === 'function') {
       await dp.createDirectory(path.replace(/\/[^/]+$/, ''), path.replace(/^.*\//, ''))
+      forgetProjectRootsUnder(String(path).replace(/\/\.arch-canvas$/, ''))
       return true
     }
   } catch (e) {}
@@ -982,20 +976,148 @@ async function loadInto(name, create, target, policy?) {
  * 而**不消费任何留言**。
  */
 var docSlots = {}
-var DOC_SLOT_MAX = 6
-function slotKeyOfLib(target) { return (target && target.scope === 'project') ? String(target.workspace || '') : '' }
-function activeSlotKey() { return slotKeyOfLib(root) }
+var DOC_SLOT_MAX = 12
 
 /**
- * 这次加载的目标属于**哪个项目**（槽与归属都用项目根，不用子图库那一层）。
- * `libOf('子项目')` 给的 workspace 是 `.../项目/子项目` —— 直接拿它当归属，
- * 用户下钻一次子图库，自己的提示词就会被判成「别人的画布」。
+ * 一层的身份 = **它自己的图库目录**。
+ *
+ * 从前这里是 `target.workspace`，也就是**原始会话 cwd**。于是同一份 `.mmd` 会有两个身份：
+ * cwd=项目根、下钻 key 打开 `A/x`；cwd=子目录，打开自己的 `x` —— 两者指向同一个目录，
+ * 却各占一个内存槽、各持一份 doc，各自整份落盘 = **静默互相覆盖**（2026-09-27 实测）。
+ * 身份按目录算之后，「同一个文件」在内存里也只有一个。
  */
+function slotKeyOfLib(target) { return String((target && target.dir) || '') }
+function activeSlotKey() { return slotKeyOfLib(lib) }
+
+/** 归属（这一份内容给不给这一步、算不算「我的画布」）按**项目根**算，不按子图库那一层。 */
 function projectKeyOfTarget(target) {
-  var key = slotKeyOfLib(target)
-  var rk = String((root && root.workspace) || '')
-  if (key && rk && (key === rk || key.indexOf(rk + '/') === 0)) return rk
-  return key
+  return (target && target.scope === 'project') ? String(target.workspace || '') : ''
+}
+
+/**
+ * 会话 cwd → **项目根**。
+ *
+ * cwd 常是项目里的任意一层子目录，甚至是没有 `.arch-canvas` 的源码目录（`项目/A/src`）。
+ * 直接把它当项目根，会算出 `项目/A/src/.arch-canvas` 这个并不存在的图库：读起来是空画布，
+ * 一旦有写（`doc:set` / `arch_switch {create:true}`）就在源码树里种出一个幽灵图库，
+ * 反手被上层扫描列成新的子图库；同一个项目的 key 也会随 cwd 漂（`A/x` ↔ `x`）。
+ *
+ * 规矩：往上找**最外层**那个带 `.arch-canvas` 的祖先 —— 这样同一个项目树里，
+ * 不同 cwd 的会话算出同一个根、同一套 key。走不上去（都没有）就按原值。
+ * 结果按原样缓存：sync 的调用方（`promptText`）只认缓存，命中不了退回原值。
+ */
+var projectRootCache = {}
+var PROJECT_ROOT_WALK_MAX = 16
+// 规范化的**天花板**：DSH 数据目录的上两级（= 用户 HOME）。
+// 没有它的话，任何放在公共父目录上的 `.arch-canvas`（最典型是 `$HOME/.arch-canvas`，
+// 插件自己就能造出来：在没有任何图库的目录里 `doc:open {create:true}`）
+// 会把下面**所有**项目收成同一个项目 —— 各自的图库完全不被打开、互相覆盖、留言投错会话。
+var PROJECT_ROOT_CEILING = (function () {
+  var d = String(DATA_DIR || '').replace(/\/+$/, '')
+  if (!d) return ''
+  var up1 = d.replace(/\/[^/]+$/, '')
+  var up2 = up1.replace(/\/[^/]+$/, '')
+  // 段数太少（数据目录直接挂在根下面，例如测试里的 /tmp/xxx）时别算出空串：退一级
+  var segs = function (p) { return String(p).split('/').filter(function (x) { return x !== '' }).length }
+  if (segs(up2) >= 2) return up2
+  return segs(up1) >= 1 ? up1 : ''
+})()
+/**
+ * 图库目录刚被建出来：**它下面**那些 cwd 的规范化结果要作废。
+ * 整表清空是错的 —— 别的会话（cwd 在别处）会因此失去缓存，而同步路径（`promptText`）
+ * 没缓存就只能按原始 cwd 算，于是对模型说「画布停在别的项目上」，而事实是同一个项目。
+ */
+function forgetProjectRootsUnder(projectDir) {
+  var base = String(projectDir || '').replace(/\/+$/, '')
+  if (!base) { projectRootCache = {}; return }
+  var keys = Object.keys(projectRootCache)
+  for (var i = 0; i < keys.length; i++) {
+    var k = keys[i]
+    if (k === base || k.indexOf(base + '/') === 0) delete projectRootCache[k]
+  }
+}
+async function canonicalProjectRoot(raw) {
+  var w = String(raw == null ? '' : raw).trim().replace(/\/+$/, '')
+  if (w === '') return ''
+  if (projectRootCache[w] !== undefined) return projectRootCache[w]
+  var top = ''
+  var cur = w
+  var hitCeiling = false
+  for (var i = 0; i < PROJECT_ROOT_WALK_MAX; i++) {
+    // 天花板之上不认 —— 项目根不能是用户的 HOME 或它上面
+    if (PROJECT_ROOT_CEILING && cur === PROJECT_ROOT_CEILING) { hitCeiling = true; break }
+    var hasLib = false
+    try {
+      if (fs) hasLib = !!(await fs.stat(await fs.resolve(cur + '/' + PROJECT_SUBDIR)))
+    } catch (e) { hasLib = false }
+    if (hasLib) top = cur
+    var up = cur.replace(/\/[^/]+$/, '')
+    if (!up || up === cur) break
+    cur = up
+  }
+  // 走完上限（既没到天花板、也没找到）也要出声：静默退回原值就等于「幽灵图库」那条老路
+  if (!top && !hitCeiling && i >= PROJECT_ROOT_WALK_MAX) {
+    logEvent('warn', 'project.root.unresolved', { cwd: w, max: PROJECT_ROOT_WALK_MAX })
+  }
+  projectRootCache[w] = top || w
+  return projectRootCache[w]
+}
+
+/** 同步版：只认已经缓存过的规范化结果，没缓存过就按原值算。 */
+function resolveLibCanonical(where) {
+  var w = typeof where === 'string' ? where.trim().replace(/\/+$/, '') : ''
+  if (w === '') return { dir: GLOBAL_DIR, scope: 'global', workspace: '' }
+  var cached = projectRootCache[w]
+  var base = (typeof cached === 'string' && cached) ? cached : w
+  return { dir: base + '/' + PROJECT_SUBDIR, scope: 'project', workspace: base }
+}
+
+/**
+ * 每个会话**自己选中的那一层**（`doc:open` / `arch_switch` 成功时记下）。
+ *
+ * 没有它的话「当前层」就是全进程唯一的一份 `lib`：同一个项目根下的两个会话分别打开
+ * 子图库 A、B 时，后来者把 `lib` 改掉，前一个会话的下一次 `arch_edit` 就落进了**别人那张图**
+ * —— 2026-09-27 实测：会话1 停在 A，会话2 打开 B，会话1 的 arch_edit 让 B 的 `.mmd` 变了、
+ * A 一字未动。写盘认下的必须是自己这一层。
+ */
+var sessionLayer = {}
+var SESSION_LAYER_MAX = 32
+/**
+ * `projectRoot` 必须传**会话规范化后的项目根**（不是这一层自己的 workspace）：
+ * `libOf('A')` 给的 workspace 是 `项目/A`，拿它当归属键就与 `where` 算出来的项目根对不上，
+ * 会话记忆会整个失效（实测：编辑跑去了项目的根图库）。
+ */
+function rememberLayer(sessionId, target, projectRoot) {
+  var id = typeof sessionId === 'string' ? sessionId : ''
+  if (!id || !target || !target.dir) return
+  var ws = String(projectRoot || target.workspace || '')
+  if (sessionLayer[id]) delete sessionLayer[id]   // 重新插入 = 续租，淘汰最旧的
+  sessionLayer[id] = { dir: target.dir, scope: target.scope, workspace: ws }
+  var keys = Object.keys(sessionLayer)
+  if (keys.length > SESSION_LAYER_MAX) delete sessionLayer[keys[0]]
+}
+
+/**
+ * 这次请求该看哪一层。三档，从具体到宽泛：
+ *   ① 会话**自己选过**的那一层（`doc:open` / `arch_switch` 记的），且还在同一个项目根里；
+ *   ② 当前**已经停着的**那一层 —— 前提是同项目、且它比项目根更深。
+ *      `where` 只说明「是哪个项目」（会话 cwd），不说明「要看哪一层」。没有这一档，
+ *      一次不带会话信息的 `where=项目根` 请求（工具、测试桩、无会话调用）会把刚下钻的层
+ *      拽回根，并且拿当前层的内容去覆盖根图库 —— 实测把根图库写成了子图库的正文。
+ *   ③ 都没有：项目根那一层。
+ */
+function layerForSession(where, sessionId) {
+  var want = resolveLibCanonical(where)
+  var id = typeof sessionId === 'string' ? sessionId : ''
+  var rec = id ? sessionLayer[id] : null
+  if (rec && want.scope === 'project' && rec.workspace === want.workspace) return rec
+  // 只在**完全没有会话信息**时用这一档：会话 id 在、但没记过层，说明它是个新会话 ——
+  // 那时按项目根给（确定、不会捡到别的会话私有的层）。
+  if (id === '' && want.scope === 'project' && lib.dir && lib.dir !== want.dir &&
+      root.scope === 'project' && root.workspace === want.workspace) {
+    return { dir: lib.dir, scope: lib.scope, workspace: want.workspace }
+  }
+  return want
 }
 
 /**
@@ -1047,10 +1169,17 @@ function activateSlot(key) {
   return true
 }
 
-/** 内存状态清成「准备重新加载目标工作区」的样子（槽里没存过时才走这条）。 */
-function resetToWorkspace(next, key) {
-  root = next
-  lib = next
+/**
+ * 内存状态清成「准备重新加载」的样子（槽里没存过时才走这条）。
+ *
+ * **两个目标必须分开传**：`rootTarget` 永远是**项目根**那一层，`libTarget` 才是这次要用的那一层。
+ * 从前把两者设成同一个对象，于是「会话记住的子图库」被当成了项目根 —— `libOf('')`（界面给根图
+ * 发的就是**裸 key**）跟着落进那个子图库：用户点项目根的同名图，打开的是子图库里的同名文件，
+ * 而且粘住不放（2026-10-01 独立复核实测：槽淘汰之后必现）。
+ */
+function resetToWorkspace(rootTarget, libTarget) {
+  root = rootTarget
+  lib = libTarget
   loadedFor = null
   libraryCache = []
   libraryFiles = []
@@ -1059,31 +1188,43 @@ function resetToWorkspace(next, key) {
   libraryItemsFingerprint = ''
   // **换新对象**：旧那份还挂在它自己的工作区槽里，原地改会把别人的图改掉
   doc = newDocState()
-  doc.workspace = key
+  // 归属写**项目根**（不是这一层）：提示词据此判「这份画布是不是我的」
+  doc.workspace = projectKeyOfTarget(rootTarget)
   lastChange = null
 }
 
 /**
- * 让内存里的文档变成 `where` 那个工作区的 —— **同步**，只走缓存。
+ * 让内存里的文档变成「这一步该看的那一层」—— **同步**，只走内存槽。
  * 提示词注入是同步求值的（不能 await），所以它只认这一条路；真正的加载留给 ensureLoaded。
+ * 「该看哪一层」由 `layerForSession` 决定（会话自己选过的那层优先）。
  */
-function syncWorkspaceFor(where: string) {
-  var key = slotKeyOfLib(resolveLib(where))
-  if (key === activeSlotKey()) return true
-  return activateSlot(key)
+function syncWorkspaceFor(where: string, sessionId?: string) {
+  var want = layerForSession(where, sessionId)
+  if (want.dir === lib.dir) return true
+  return activateSlot(slotKeyOfLib(want))
 }
 
-/** 这份内存文档是不是属于 `where` 那个工作区（提示词注入据此决定读不读给这一步）。 */
-function docBelongsTo(where: string) {
-  var key = slotKeyOfLib(resolveLib(where))
-  if (key === activeSlotKey()) return true
+/** 这份内存文档是不是「这一步该看的那一层」（提示词注入据此决定读不读给这一步）。 */
+function docBelongsTo(where: string, sessionId?: string) {
+  var want = layerForSession(where, sessionId)
+  if (want.dir === lib.dir) return true
   // 外部文件：按「文件落在不在这个工作区里」判（它是用户明确打开的文件，不属于图库）
   if (doc.external) {
-    var w = String(where).replace(/\/+$/, '')
+    var w = String(want.workspace || where).replace(/\/+$/, '')
     var p = String(doc.external)
     return p === w || p.indexOf(w + '/') === 0
   }
   return false
+}
+
+/**
+ * 这一步要的那一层，与「画布现在停的那一层」是不是**同一个项目** ——
+ * 只用来决定提示词里那句说明怎么说：同一个项目里换层（A ↔ B）不能报「停在别的项目上」，
+ * 那会让模型以为自己没有画布。
+ */
+function sameProjectAsCurrent(where: string, sessionId?: string) {
+  var want = layerForSession(where, sessionId)
+  return want.scope === 'project' && want.workspace === projectKeyOfTarget(root)
 }
 
 /**
@@ -1096,44 +1237,52 @@ function docBelongsTo(where: string) {
  * 哪个库」与 lib 对不上，后续落盘就把 A 的图写进了 B 的图库。排队之后，每个任务在轮到自己
  * 时才定目标库，谁也不覆盖谁。
  */
-function ensureLoaded(where?: string, sessionId?: string) {
+async function ensureLoaded(where?: string, sessionId?: string) {
   var policy = policyOfSessionId(sessionId)
   // 注意：`where: ''` 是**有效输入**（= 全局图库，没有项目根），不能与「没传 where」混为一谈。
   var hasWhere = typeof where === 'string'
-  var next = hasWhere ? resolveLib(where) : null
+  var raw = hasWhere ? where : ''
+  // cwd → 项目根：会话可能坐在项目里任意一层子目录（见 canonicalProjectRoot 的说明）。
+  if (hasWhere && raw.trim() !== '') raw = await canonicalProjectRoot(raw)
+  // 两个**不同**的东西：
+  //   `canon` = 项目根那一层（`root` 永远是它，裸 key 与归属都按它算）；
+  //   `next`  = 这次要写的那一层（会话自己选过的优先，见 layerForSession）。
+  var canon = hasWhere ? resolveLibCanonical(raw) : null
+  var next = hasWhere ? layerForSession(raw, sessionId) : null
   var nextKey = hasWhere ? slotKeyOfLib(next) : ''
-  // 快路：这一次要的就是当前这份、而且不用换库 —— 界面 2.5s 轮询走的就是这条，别为它排队。
+  // 快路：这一次要的就是当前这份、不用换层 —— 界面 2.5s 轮询走的就是这条，别为它排队。
+  // 判据必须包含「内存里这份文档**真的**落在这一层里」：只信 `loadedFor` 的话，
+  // 并发/错配期间 `doc` 可能已是别人那一层的，却仍被当成这一层返回（回执说谎）。
   if (hasWhere) {
-    if (nextKey === activeSlotKey() && next.dir === root.dir && (doc.external || loadedFor === lib.dir)) {
-      return Promise.resolve({ ok: true })
-    }
-  } else if (doc.external || loadedFor === lib.dir) {
-    return Promise.resolve({ ok: true })
+    if (next.dir === lib.dir && (doc.external || (loadedFor === lib.dir && docInLayer(lib.dir)))) return { ok: true }
+  } else if (doc.external || (loadedFor === lib.dir && docInLayer(lib.dir))) {
+    return { ok: true }
   }
   return enqueueLoad(function () {
     // **指针切换必须排进队列。** 它全是同步改全局（doc / lib / root），从前放在队列外面：
     // 别的请求正在 await 自己的加载时，这一次调用已经把全局换成了自己的目标 ——
     // 于是那个请求醒来读到的全是别人的 doc/lib，落盘就把 A 的图写进了 B 的图库。
     // （2026-09-24 宿主审计第 1 条：实测 A 会话的 arch_edit 改掉了 B 项目的 .mmd。）
-    if (hasWhere) {
-      if (nextKey !== activeSlotKey()) {
-        // 换了**项目**：先把这一份存进它自己的槽，再看目标项目有没有存过。
-        // 存过就只是换指针（不读盘、不 bump 修订号、把上一步投递过的留言状态原样留着）；
-        // 没存过才重置并重新加载。
-        saveActiveSlot()
-        if (activateSlot(nextKey)) return { ok: true }
-        resetToWorkspace(next, nextKey)
-      } else if (next.dir !== root.dir) {
-        // 同一个项目里换层（下钻的子图库 / 回到根）：沿用旧行为 —— 比的是 root 而不是 lib，
-        // 否则界面每次报会话 cwd 都会把刚下钻的层拽回来。
-        resetToWorkspace(next, nextKey)
-      }
+    if (hasWhere && next.dir !== lib.dir) {
+      // 换层（同项目里下钻 / 回根，或换项目）：先把这一份存进它自己的槽，再看目标层存过没有。
+      // 存过就只是换指针（不读盘、不 bump 修订号、把上一步投递过的留言状态原样留着）；
+      // 没存过才重置并重新加载。
+      saveActiveSlot()
+      if (activateSlot(nextKey)) return { ok: true }
+      resetToWorkspace(canon, next)
     }
     // 打开的是项目里的外部文件：别被「图库加载」冲掉（界面每次请求都带 where）
     if (doc.external) return { ok: true }
     if (loadedFor === lib.dir) return { ok: true }
     return loadDiagram(lib, policy)
   })
+}
+
+/** 内存里这份文档是不是**真的**来自这一层（`doc.file` 落在这一层里）。 */
+function docInLayer(dir) {
+  var d = String(dir || '')
+  var f = String(doc.file || '')
+  return !!d && f.indexOf(d + '/') === 0
 }
 
 /**
@@ -1156,6 +1305,19 @@ function enqueueLoad(task) {
 }
 
 /**
+ * 记「内存里这份文档来自哪一层」—— 判据是 `doc.file` **真的**落在这一层里。
+ *
+ * 从前这里无条件写 `loadedFor = target.dir`（或只看 `lib.dir === target.dir`）：而 `loadInto`
+ * 是**原地**改同一个 doc 对象，并发/错位时 `loadedFor` 会落后于 `doc`，快路于是把别人那一层的
+ * 内容当成这一层返回 —— 回执里 `dir` 说 A、`file` 却在 B，还报 `saved:true`（2026-10-01 复核实测）。
+ */
+function noteLoaded(target) {
+  var d = String((target && target.dir) || '')
+  var f = String(doc.file || '')
+  if (d && f.indexOf(d + '/') === 0) loadedFor = d
+}
+
+/**
  * 按 key 打开/新建一张图（doc:open、arch_switch 走这里）。
  * 也排队：这两个入口是直接改 lib 再加载的，不排队就仍与 ensureLoaded 有交叉窗口。
  */
@@ -1165,7 +1327,7 @@ function loadDiagramAt(target, name, create, policy?) {
     if (create && target.scope === 'project') await ensureDir(target.dir, policy)
     var r = await loadInto(name, create, target, policy)
     // 只有目标仍是当前层时才认这一趟；否则下次 ensureLoaded 会重新加载
-    if (r && r.ok && lib.dir === target.dir) loadedFor = target.dir
+    if (r && r.ok && lib.dir === target.dir) noteLoaded(target)
     return r
   })
 }
@@ -1173,7 +1335,7 @@ function loadDiagramAt(target, name, create, policy?) {
 async function loadDiagram(target, policy?) {
   // 读路径绝不创建任何东西：不 ensureDir、不 inheritGlobalOnce、不播种默认图
   var result = await loadInto(doc.name || DEFAULT_DIAGRAM, false, target, policy)
-  loadedFor = target.dir
+  noteLoaded(target)
   // 只有「真的换了」才 bump —— 界面靠修订号变化发现图库变了并重新适应视图
   if (everLoaded) {
     bump('switch')
@@ -1216,7 +1378,9 @@ function normalizeModel(model) {
     var rawFiles = Array.isArray(n.files) ? n.files : []
     for (var fi = 0; fi < rawFiles.length && fileList.length < 20; fi++) {
       if (typeof rawFiles[fi] !== 'string') continue
-      var fv = rawFiles[fi].trim()
+      // `@file` 的值走 `qRef()`/`unquoteRef()`（不套标签实体转义），读侧会把 br 变体解成换行 ——
+      // 写侧不过同一道归一，往返检查每次保存都会报 serialize.not-idempotent。
+      var fv = normalizeBreaks(rawFiles[fi]).trim()
       if (!fv || fv.length > 300) continue
       if (fileList.indexOf(fv) < 0) fileList.push(fv)
     }
@@ -1225,7 +1389,7 @@ function normalizeModel(model) {
       // 空标签在**回读**时会变成节点 id（解析器对 `n1[""]` 就是这么归的）。两边必须一致，
       // 否则写盘前那条往返检查每次保存都会报警 —— 而它报的其实是真话：这份模型写出去再读回来
       // 就变样了。所以在模型边界上就归一到「没有标题 = 用 id」。
-      label: typeof n.label === 'string' && n.label ? n.label : id,
+      label: typeof n.label === 'string' && n.label ? normalizeBreaks(n.label) : id,
       shape: SHAPE_WRAP[n.shape] ? n.shape : 'rect',
       group: typeof n.group === 'string' && n.group ? cleanId(n.group) : null,
       x: typeof n.x === 'number' && isFinite(n.x) ? n.x : null,
@@ -1251,7 +1415,7 @@ function normalizeModel(model) {
     if (from === to) continue
     edges.push({
       id: 'e' + (edges.length + 1), from: from, to: to,
-      label: typeof e.label === 'string' ? e.label : '',
+      label: normalizeBreaks(typeof e.label === 'string' ? e.label : ''),
       arrow: ARROW_SET[e.arrow] ? e.arrow : '-->',
     })
   }
@@ -1270,7 +1434,7 @@ function normalizeModel(model) {
     // 拿它去重会把那一组的 label 丢掉、退化成组 id。
     if (seenGroupIds[gid]) continue
     seenGroupIds[gid] = true
-    groups.push({ id: gid, label: typeof g.label === 'string' && g.label ? g.label : gid })
+    groups.push({ id: gid, label: typeof g.label === 'string' && g.label ? normalizeBreaks(g.label) : gid })
     known[gid] = true
   }
   for (var key in known) {
@@ -1561,7 +1725,7 @@ function applyOps(ops) {
       }
       doc.nodes.push({
         id: nid,
-        label: typeof op.label === 'string' && op.label !== '' ? op.label : nid,
+        label: typeof op.label === 'string' && op.label !== '' ? normalizeBreaks(op.label) : nid,
         shape: SHAPE_WRAP[op.shape] ? op.shape : 'rect',
         group: ngid,
         x: typeof op.x === 'number' ? op.x : null,
@@ -1577,7 +1741,7 @@ function applyOps(ops) {
       if (lid === null) continue
       var ln = findNode(lid)
       if (!ln) { problems.push(tag + ': 找不到节点 ' + String(op.id)); continue }
-      ln.label = typeof op.label === 'string' ? op.label : ln.label
+      ln.label = typeof op.label === 'string' ? normalizeBreaks(op.label) : ln.label
       done.push('改标签 ' + ln.id)
     } else if (kind === 'set_shape') {
       var sid = opRef(op.id, 'id', tag, problems)
@@ -1630,7 +1794,7 @@ function applyOps(ops) {
         if (doc.edges[d].from === f.id && doc.edges[d].to === t.id) { dup = true; break }
       }
       if (dup) { problems.push(tag + ': ' + f.id + ' -> ' + t.id + ' 已存在，改用 set_edge_label'); continue }
-      doc.edges.push({ id: 'e' + (doc.edges.length + 1), from: f.id, to: t.id, label: typeof op.label === 'string' ? op.label : '', arrow: arrow })
+      doc.edges.push({ id: 'e' + (doc.edges.length + 1), from: f.id, to: t.id, label: typeof op.label === 'string' ? normalizeBreaks(op.label) : '', arrow: arrow })
       done.push('连线 ' + f.id + ' -> ' + t.id)
     } else if (kind === 'remove_edge') {
       var xf = opRef(op.from, 'from', tag, problems)
@@ -1650,7 +1814,7 @@ function applyOps(ops) {
       // 从前这里会**顺手建一条边**：from/to 打错时，想改标签却得到一条新连线，而回执只说
       // 「改连线标签」（用户看不出那是新建的）。改标签就该改标签，没这条边就明说。
       if (!hasEdge(lf, lt)) { problems.push(tag + ': 这两点之间没有连线（要新建用 add_edge）'); continue }
-      setEdgeLabel(lf, lt, typeof op.label === 'string' ? op.label : '')
+      setEdgeLabel(lf, lt, typeof op.label === 'string' ? normalizeBreaks(op.label) : '')
       done.push('改连线标签 ' + lf + ' -> ' + lt)
     } else if (kind === 'set_group') {
       var gid0 = opRef(op.id, 'id', tag, problems)
@@ -1664,7 +1828,7 @@ function applyOps(ops) {
       if (want) {
         var exists = false
         for (var q = 0; q < doc.groups.length; q++) if (doc.groups[q].id === want) { exists = true; break }
-        if (!exists) doc.groups.push({ id: want, label: typeof op.label === 'string' && op.label ? op.label : want })
+        if (!exists) doc.groups.push({ id: want, label: typeof op.label === 'string' && op.label ? normalizeBreaks(op.label) : want })
       }
       done.push('设置分组 ' + gn.id + ' -> ' + String(want))
     } else if (kind === 'add_group') {
@@ -1672,7 +1836,7 @@ function applyOps(ops) {
       var have = false
       for (var w = 0; w < doc.groups.length; w++) if (doc.groups[w].id === gid) { have = true; break }
       if (have) { problems.push(tag + ': 分组 ' + gid + ' 已存在'); continue }
-      doc.groups.push({ id: gid, label: typeof op.label === 'string' && op.label ? op.label : gid })
+      doc.groups.push({ id: gid, label: typeof op.label === 'string' && op.label ? normalizeBreaks(op.label) : gid })
       done.push('新增分组 ' + gid)
     } else if (kind === 'remove_group') {
       var rgRaw = typeof op.group === 'string' && op.group !== '' ? op.group : op.id
@@ -1708,7 +1872,8 @@ function applyOps(ops) {
       var rawFs = op.files
       for (var fk = 0; fk < rawFs.length && nextFiles.length < 20; fk++) {
         if (typeof rawFs[fk] !== 'string') continue
-        var fsv = rawFs[fk].trim()
+        // 与 normalizeModel 的 files 同口径：`@file` 走 qRef/unquoteRef，读侧会解 br 变体
+        var fsv = normalizeBreaks(rawFs[fk]).trim()
         if (!fsv || fsv.length > 300) continue
         if (nextFiles.indexOf(fsv) < 0) nextFiles.push(fsv)
       }

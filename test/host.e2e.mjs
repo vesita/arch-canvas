@@ -2997,6 +2997,169 @@ ok('整套测试（几百次落盘）里往返检查一次都没报', rtBad.leng
 ok('负向对照：这条日志确实会被写出来（否则上面那条是空测试）',
   rtLines.length > 0 && rtLines.some((row) => row.ev === 'doc.load'), rtLines.length)
 
+console.log('【子图库交叉污染：写盘要认下自己那一层】')
+{
+  // 2026-09-27 实测的事故：同一个项目根下两个会话分别打开子图库 A、B，后来者把全局 `lib` 改掉，
+  // 前一个会话的下一次 `arch_edit` 就写进了**别人那张图**（探针实测：B 的 .mmd 变了、A 一字未动）。
+  // 两层根因：① `lib` 是全进程唯一的活动指针，而请求里只有 cwd —— 没有任何东西代表「这个会话选了哪一层」；
+  // ② 槽的键从前是**原始 cwd**，同一份 .mmd 会有两个身份、各持一份 doc，各自整份落盘 = 静默互相覆盖。
+  // 现在：槽按**图库目录**定身份，会话在 doc:open / arch_switch 成功时记住自己那一层；
+  // cwd 先规范化成**项目根**（向上找最外层带 .arch-canvas 的祖先），key 不再随 cwd 漂。
+  const P = '/tmp/proj-sub-iso'
+  const A = P + '/A'
+  const B = P + '/B'
+  const fileA = A + '/.arch-canvas/architecture.mmd'
+  const fileB = B + '/.arch-canvas/architecture.mmd'
+  files.set(P + '/.arch-canvas/architecture.mmd', 'flowchart TD\n  root1["根的节点"]\n')
+  files.set(fileA, 'flowchart TD\n  a1["A 的节点"]\n')
+  files.set(fileB, 'flowchart TD\n  b1["B 的节点"]\n')
+  const agentSA = { session: { id: 'sub-sess-a', cwd: P } }
+  const agentSB = { session: { id: 'sub-sess-b', cwd: P } }
+
+  const oA = await call('doc:open', { where: P, key: 'A/architecture', session: 'sub-sess-a' })
+  eq('会话1 打开子图库 A', oA.dir, A + '/.arch-canvas')
+  const oB = await call('doc:open', { where: P, key: 'B/architecture', session: 'sub-sess-b' })
+  eq('会话2 打开子图库 B', oB.dir, B + '/.arch-canvas')
+
+  const beforeB = files.get(fileB)
+  const editA = await tool('arch_edit').execute(
+    { ops: [{ op: 'add_node', id: 'sessA_new', label: '会话1 加的节点' }] }, { agent: agentSA })
+  ok('会话1 的 arch_edit 成功', !!editA && editA.ok !== false, editA && editA.error)
+  ok('会话1 的编辑落在自己那张图（A）', String(files.get(fileA)).indexOf('sessA_new') >= 0)
+  ok('负向对照：B 的 .mmd 一个字节都没动 —— 这就是污染现场', files.get(fileB) === beforeB)
+
+  const editB = await tool('arch_edit').execute(
+    { ops: [{ op: 'add_node', id: 'sessB_new', label: '会话2 加的节点' }] }, { agent: agentSB })
+  ok('会话2 的 arch_edit 仍落在 B', !!editB && editB.ok !== false && String(files.get(fileB)).indexOf('sessB_new') >= 0)
+  ok('两个会话的改动各在各自文件里，互不覆盖',
+    String(files.get(fileA)).indexOf('sessA_new') >= 0 && String(files.get(fileB)).indexOf('sessB_new') >= 0)
+
+  // cwd 落在子目录：算出的项目根必须是**外层**那个（否则同一份 .mmd 的 key 随 cwd 漂）
+  const gA2 = await call('doc:get', { where: A, session: 'sub-sess-a2' })
+  eq('cwd=子目录时项目根不漂', gA2.dir, P + '/.arch-canvas')
+  const lA2 = await call('doc:list', { where: A, session: 'sub-sess-a2' })
+  ok('子目录会话的清单里，A 的图还是同一个 key',
+    (lA2.items || []).some((x) => x.key === 'A/architecture'), (lA2.items || []).map((x) => x.key))
+  const oA2 = await call('doc:open', { where: A, key: 'A/architecture', session: 'sub-sess-a2' })
+  eq('从子目录会话打开 `A/architecture` 落到同一层（不再多套一层 A/A）', oA2.dir, A + '/.arch-canvas')
+  ok('而且读到的就是会话1 刚改过的那一份（同一个槽，不是两份内存 doc）',
+    String(oA2.mermaid).indexOf('sessA_new') >= 0, String(oA2.mermaid).slice(0, 100))
+
+  // cwd 落在**没有 .arch-canvas 的源码子目录**里：不许算出幽灵图库
+  const srcDir = A + '/src'
+  const gSrc = await call('doc:get', { where: srcDir, session: 'sub-sess-src' })
+  eq('cwd=源码子目录时解析到项目根那一层（不是 <cwd>/.arch-canvas）', gSrc.dir, P + '/.arch-canvas')
+  const pSrc = promptFn({ agent: { session: { id: 'sub-sess-src', cwd: srcDir } } })
+  ok('而且不报「停在别的项目上」（它就是同一个项目）', pSrc.indexOf('停在别的项目上') < 0, pSrc.slice(0, 160))
+  const oPhantom = await call('doc:open', { where: srcDir, key: 'A/architecture', session: 'sub-sess-src' })
+  eq('从源码子目录按项目级 key 打开，落点不再多套一层', oPhantom.dir, A + '/.arch-canvas')
+  await call('doc:set', { where: srcDir, session: 'sub-sess-src', model: oPhantom.model })
+  ok('写一次也不会在源码目录里种出幽灵图库',
+    ![...files.keys()].some((k) => k.indexOf(srcDir + '/.arch-canvas') === 0),
+    [...files.keys()].filter((k) => k.indexOf(srcDir) === 0))
+}
+
+console.log('【AI 编辑工具的格式容错：手写的换行别变成图里的垃圾】')
+{
+  // AI 爱照抄文件里看到的 `<br/>`，还常写成 `<br>` / `<\br>` / `</br>` / `<BR/>`。
+  // 这些从前原样进模型，`q()` 再把 `<` 转义成 `#60;` —— 用户方块里就是那串字面垃圾。
+  // 归一点在**模型入口**（normalizeModel + op），所以内存里始终是真实换行、文件里始终是 `<br/>`。
+  const dirF = '/tmp/proj-fmt'
+  const fileF = dirF + '/.arch-canvas/architecture.mmd'
+  files.set(fileF, 'flowchart TD\n  f1["原标签"]\n')
+  const agentF = { session: { id: 'sess-fmt', cwd: dirF } }
+  await call('doc:get', { where: dirF, session: 'sess-fmt' })
+  const variants = [['<br>', '一<br>二'], ['<\\br>', '一<\\br>二'], ['</br>', '一</br>二'], ['<BR/>', '一<BR/>二']]
+  for (const [name, spelling] of variants) {
+    const r = await tool('arch_edit').execute({ ops: [{ op: 'set_label', id: 'f1', label: spelling }] }, { agent: agentF })
+    ok('set_label 接受手写的 ' + name, !!r && r.ok !== false, r && r.problems)
+    const onDisk = String(files.get(fileF))
+    ok('  落盘是规范换行（有 <br/>、没有 #60; 字面垃圾）',
+      onDisk.indexOf('<br/>') >= 0 && onDisk.indexOf('#60;') < 0, onDisk.slice(0, 140))
+    const g = await call('doc:get', { where: dirF, session: 'sess-fmt' })
+    ok('  读回来是真实换行', g.model.nodes[0].label === '一\n二', JSON.stringify(g.model.nodes[0].label))
+  }
+  // 负向对照：正当的小于号照旧转义 —— 这条归一不许误伤
+  await tool('arch_edit').execute({ ops: [{ op: 'set_label', id: 'f1', label: 'x < y' }] }, { agent: agentF })
+  const gx = await call('doc:get', { where: dirF, session: 'sess-fmt' })
+  ok('负向对照：普通的小于号照旧按实体转义，读回仍是 x < y',
+    gx.model.nodes[0].label === 'x < y' && String(files.get(fileF)).indexOf('#60;') >= 0,
+    [gx.model.nodes[0].label, String(files.get(fileF)).slice(0, 120)])
+}
+
+console.log('【子图库交叉污染 · 槽淘汰 / 天花板 / 建库后的同步路径 / @file 往返】')
+{
+  // 这一节钉的是 2026-10-01 独立复核报的四类缺口（现有断言一条都没覆盖）：
+  //   ① 槽被淘汰之后「root 被打成会话记住的子层」⇒ 裸 key 落进子图库；
+  //   ② 项目根的规范化**没有天花板** ⇒ 公共父目录上的 .arch-canvas 吞掉整棵子树；
+  //   ③ 建库把项目根缓存**整表清空** ⇒ 同步路径（promptText）退回原始 cwd、对模型说谎；
+  //   ④ `@file` 的值过了读侧归一、没过写侧 ⇒ 每次保存都报 serialize.not-idempotent。
+  const P = '/tmp/proj-evict'
+  const LAYERS = 14
+  files.set(P + '/.arch-canvas/architecture.mmd', 'flowchart TD\n  root1["根"]\n')
+  for (let i = 1; i <= LAYERS; i++) {
+    files.set(P + '/A' + i + '/.arch-canvas/architecture.mmd', 'flowchart TD\n  a' + i + '["A' + i + '"]\n')
+  }
+  const oX = await call('doc:open', { where: P, key: 'A1/architecture', session: 'evict-x' })
+  eq('前提：会话 X 停在子图库 A1', oX.dir, P + '/A1/.arch-canvas')
+  // 别的会话把槽填满（DOC_SLOT_MAX = 12），顺带把 A1 那一格挤出去
+  for (let i = 2; i <= LAYERS; i++) {
+    await call('doc:open', { where: P, key: 'A' + i + '/architecture', session: 'evict-o' + i })
+  }
+  const bare = await call('doc:open', { where: P, key: 'architecture', session: 'evict-x' })
+  eq('★ 槽淘汰之后，裸 key 仍落在**项目根**（不是会话记住的那个子图库）', bare.dir, P + '/.arch-canvas')
+  ok('★ 根图库没有被写进子图库的内容',
+    String(files.get(P + '/.arch-canvas/architecture.mmd')).indexOf('a1') < 0,
+    String(files.get(P + '/.arch-canvas/architecture.mmd')).slice(0, 90))
+
+  // ② 天花板：测试里数据目录在 /tmp 下 ⇒ 天花板就是 /tmp。生产里对应 $HOME。
+  files.set('/tmp/.arch-canvas/stray.mmd', 'flowchart TD\n  stray["公共父目录的库"]\n')
+  try {
+    const gCeil = await call('doc:get', { where: '/tmp/ceil-proj/src', session: 'ceil-1' })
+    eq('★ 公共父目录上的 .arch-canvas 不会把下面的项目收成同一个项目',
+      gCeil.dir, '/tmp/ceil-proj/src/.arch-canvas')
+  } finally {
+    files.delete('/tmp/.arch-canvas/stray.mmd')
+  }
+
+  // ③ 会话 cwd 是项目**子目录**时，另一处建库不许让同步路径（提示词）失忆
+  const BP = '/tmp/b-proj'
+  files.set(BP + '/.arch-canvas/architecture.mmd', 'flowchart TD\n  bp1["B 项目的节点"]\n')
+  const agentB = { session: { id: 'b-sess', cwd: BP + '/src' } }
+  const gB0 = await call('doc:get', { where: BP + '/src', session: 'b-sess' })
+  eq('前提：cwd=项目子目录也解析到项目根', gB0.dir, BP + '/.arch-canvas')
+  ok('前提：提示词读得到自己的图', promptFn({ agent: agentB }).indexOf('B 项目的节点') >= 0)
+  const madeOther = await call('doc:open', { where: BP, key: 'A/别的图', create: true, session: 'b-other' })
+  ok('前提：另一个会话在别处建出了子图库', !!madeOther && madeOther.ok !== false, madeOther && madeOther.error)
+  const pAfter = promptFn({ agent: agentB })
+  ok('★ 建库之后同步路径仍认得自己的项目（整表清缓存会让它退回原始 cwd 并说「停在别的项目上」）',
+    pAfter.indexOf('停在别的项目上') < 0 && pAfter.indexOf('B 项目的节点') >= 0, pAfter.slice(0, 170))
+
+  // ④ `@file` 的值走 qRef/unquoteRef（读侧归一 br 变体），写侧必须过同一道
+  const FP = '/tmp/proj-file-br'
+  files.set(FP + '/.arch-canvas/architecture.mmd', 'flowchart TD\n  g1["节点"]\n  g2["另一个"]\n')
+  const agentF2 = { session: { id: 'file-sess', cwd: FP } }
+  await call('doc:get', { where: FP, session: 'file-sess' })
+  const rf = await tool('arch_edit').execute(
+    { ops: [{ op: 'set_files', id: 'g1', files: ['src/a</br>b.ts'] }] }, { agent: agentF2 })
+  ok('set_files 成功', !!rf && rf.ok !== false, rf && rf.problems)
+  const gf = await call('doc:get', { where: FP, session: 'file-sess' })
+  ok('★ @file 的换行变体按同一道归一进模型',
+    gf.model.nodes.find((n) => n.id === 'g1').files[0].indexOf('\n') >= 0,
+    gf.model.nodes.find((n) => n.id === 'g1').files)
+  ok('★ 因此往返检查不报「写出去再读回来对不上」',
+    !(gf.warnings || []).some((w) => String(w).indexOf('往返检查') >= 0), gf.warnings)
+  const re = await tool('arch_edit').execute(
+    { ops: [{ op: 'add_edge', from: 'g1', to: 'g2', label: '一<br>二' }] }, { agent: agentF2 })
+  ok('add_edge 的标签也过归一（与 set_edge_label 同口径）',
+    !!re && re.ok !== false && String(files.get(FP + '/.arch-canvas/architecture.mmd')).indexOf('<br/>') >= 0,
+    re && re.problems)
+
+  // 收尾：把活动文档留在**存在**的库上 —— 下面【提示词模板注入防护】拿不到 agent，
+  // 靠的就是「沿用当前那一份」，落在 absent 的空库上会让它直接拒绝写。
+  await call('doc:get', { where: FP, session: 'file-sess' })
+}
+
 console.log('【提示词模板注入防护】')
 {
   const hexAdd = await tool('arch_edit').execute({ ops: [{ op: 'add_node', id: 'hexprobe', label: '探针', shape: 'hex', x: 0, y: 0 }] }, {})

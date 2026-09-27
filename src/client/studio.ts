@@ -431,6 +431,11 @@ function ArchStudio(props) {
   var driftRef = React.useRef(null)
   var driftTickState = React.useState(0)
   var setDriftTick = driftTickState[1]
+  // 保鲜横幅默认**收起成一行**：常驻的明细会把画布挤掉一大块，而「哪个方块过期了」
+  // 画布上已经有琥珀角标指着 —— 明细与建议点开再看。
+  var driftOpenState = React.useState(false)
+  var driftOpen = driftOpenState[0]
+  var setDriftOpen = driftOpenState[1]
 
   var linkPtState = React.useState(null)
   var linkPt = linkPtState[0]
@@ -2712,37 +2717,51 @@ function ArchStudio(props) {
   // 锚点保鲜横幅：图还在，但代码先动了 —— 这是「这张图可能不准了」的**唯一**显式出口。
   // 刻意不塞进上面那个「解析警告」框：那条说的是「图坏了」，这条说的是「图还活着，但可能过期了」，
   // 两种话混在一起，用户就一条都不看了。只在非空时渲染。
+  // **默认只占一行**：这条信号常驻的明细（最多 5 条锚点 + 目录清单 + 一整句建议）会把画布挤掉一大块，
+  // 而「是哪个方块过期了」在画布上已经有琥珀角标指着 —— 明细与建议点开（`driftOpen`）再看。
   var driftBox = (function () {
     var dr = driftRef.current
     if (!dr) return null
     var staleN = dr.stale ? dr.stale.length : 0
     var unN = dr.uncovered ? dr.uncovered.length : 0
     if (staleN === 0 && unN === 0) return null
-    var rows = []
-    for (var di = 0; di < staleN && di < 5; di++) {
-      rows.push(React.createElement('div', { key: 'ds' + di, className: 'ac-drift-i' },
-        '▤ ' + dr.stale[di].node + ' · ' + dr.stale[di].ref + ' —— 文件在图之后改过'))
-    }
-    if (staleN > 5) rows.push(React.createElement('div', { key: 'ds-more', className: 'ac-drift-i' }, '…还有 ' + (staleN - 5) + ' 条'))
-    if (unN > 0) {
-      var names = []
-      for (var ui = 0; ui < unN && ui < 6; ui++) names.push(dr.uncovered[ui].dir + '（' + dr.uncovered[ui].files + ' 个源文件）')
-      rows.push(React.createElement('div', { key: 'du', className: 'ac-drift-i' },
-        '没有锚点指向的目录：' + names.join('、') + (unN > 6 ? ' 等' : '')))
-    }
     // 两档语气，**不许一律喊「过期」**：
     //   有 stale → 琥珀（代码先动了，这张图现在可能说的是错的）
     //   只有 uncovered → 更淡的 hint（只是「这几处你还没画」，不是「图上错了」）
     // 一律用警告色，用户三天就会学会无视它 —— 那这条信号就白做了。
     var hasStale = staleN > 0
-    return React.createElement('div', { className: 'ac-drift' + (hasStale ? '' : ' hint') },
-      React.createElement('div', { className: 'ac-drift-h' },
-        hasStale ? ('▤ 这张图可能已经过期：' + staleN + ' 条锚点的文件在图之后改过') : '▤ 有源码没画到'),
-      rows,
-      React.createElement('div', { className: 'ac-drift-i' },
+    var body = []
+    if (driftOpen) {
+      for (var di = 0; di < staleN && di < 5; di++) {
+        body.push(React.createElement('div', { key: 'ds' + di, className: 'ac-drift-i' },
+          '▤ ' + dr.stale[di].node + ' · ' + dr.stale[di].ref + ' —— 文件在图之后改过'))
+      }
+      if (staleN > 5) body.push(React.createElement('div', { key: 'ds-more', className: 'ac-drift-i' }, '…还有 ' + (staleN - 5) + ' 条'))
+      if (unN > 0) {
+        var names = []
+        for (var ui = 0; ui < unN && ui < 6; ui++) names.push(dr.uncovered[ui].dir + '（' + dr.uncovered[ui].files + ' 个源文件）')
+        body.push(React.createElement('div', { key: 'du', className: 'ac-drift-i' },
+          '没有锚点指向的目录：' + names.join('、') + (unN > 6 ? ' 等' : '')))
+      }
+      body.push(React.createElement('div', { key: 'dg', className: 'ac-drift-i' },
         hasStale
           ? '在对应的方块上写留言说清楚哪里变了，或者重新标一遍锚点 —— AI 那边也会看到这条。'
-          : '这不是说图上错了：要画就给它补个锚点，不画就忽略这一条。'),
+          : '这不是说图上错了：要画就给它补个锚点，不画就忽略这一条。'))
+    }
+    function toggleDrift() { setDriftOpen(!driftOpen) }
+    return React.createElement('div', { className: 'ac-drift' + (hasStale ? '' : ' hint') + (driftOpen ? ' open' : '') },
+      React.createElement('div', {
+        className: 'ac-drift-h', role: 'button', tabIndex: 0,
+        'aria-expanded': driftOpen ? 'true' : 'false',
+        title: driftOpen ? '收起明细' : '展开明细：哪些锚点的文件改过',
+        onClick: toggleDrift,
+        onKeyDown: function (e) {
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleDrift() }
+        },
+      },
+        hasStale ? ('▤ 这张图可能已经过期：' + staleN + ' 条锚点的文件在图之后改过') : ('▤ 有源码没画到：' + unN + ' 个目录'),
+        React.createElement('span', { className: 'ac-drift-tgl' }, driftOpen ? '　收起 ▴' : '　明细 ▾')),
+      body,
     )
   })()
 

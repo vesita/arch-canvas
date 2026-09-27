@@ -215,7 +215,7 @@ var SUMMARY_LIMIT = 500
  * （读界面/AI 传上来的模型）两条路共用，两边不一致的话往返就不幂等。
  */
 function cleanSummary(raw) {
-  var s = String(raw == null ? '' : raw).replace(/\s+/g, ' ').trim()
+  var s = normalizeBreaks(String(raw == null ? '' : raw)).replace(/\s+/g, ' ').trim()
   if (s.length > SUMMARY_LIMIT) s = s.slice(0, SUMMARY_LIMIT).trim()
   return s
 }
@@ -248,6 +248,23 @@ function unquoteInner(text) {
   return null;
 }
 
+/**
+ * 换行的**输入侧**归一：把「本意是换行」的各种写法收成真实换行。
+ *
+ * 我们自己的存储形式是真实 `\n`（写出时才由 `q()` 变成 `<br/>`）。但 AI 常照着文件里
+ * 看到的 `<br/>` 抄，还经常写成 `<br>` / `<\br>` / `</br>` / `<BR/>` —— 这些一旦原样进模型，
+ * `q()` 会把 `<` 转义成 `#60;`，于是用户的方块里出现 `#60;br/\></br>` 这种字面垃圾。
+ *
+ * 只认 br 这一族（大小写、斜杠、反斜杠、空白变体都认），**不碰** `\n` 这种反斜杠转义：
+ * 标签里合法地出现代码片段时，不能替用户猜。
+ * 转义过的 `&lt;br&gt;` 也认 —— 老版本把 AI 写的 `<br>` 转义着写进了文件，读回来时顺手治好。
+ */
+var BR_SPELLING_RE = /<\s*\\?\s*\/?\s*b\s*r\s*\/?\s*>/gi
+var BR_ESCAPED_RE = /&lt;\s*\\?\s*\/?\s*b\s*r\s*\/?\s*&gt;/gi
+function normalizeBreaks(raw) {
+  return String(raw == null ? '' : raw).replace(BR_ESCAPED_RE, '\n').replace(BR_SPELLING_RE, '\n');
+}
+
 function unquote(text) {
   var s = String(text == null ? '' : text);
   var inner = unquoteInner(s);
@@ -255,7 +272,7 @@ function unquote(text) {
   // 从前这里不分青红皂白 trim 两端，于是标签 '  hello  ' 读回 'hello'、
   // ' ' 读回 '' 再被兜成节点 id —— persist() 每次保存都记一条 serialize.not-idempotent。
   s = (inner !== null) ? inner : s.trim();
-  s = s.replace(/<br\s*\/?>/gi, '\n');
+  s = normalizeBreaks(s);
   s = s.replace(/#96;/g, '`').replace(/#quot;/g, '"').replace(/&quot;/g, '"');
   s = s.replace(/#60;/g, '<');
   s = s.replace(/#35;/g, '#');
@@ -302,7 +319,7 @@ function unquoteRef(text) {
   var s = String(text == null ? '' : text);
   var inner = unquoteInner(s);
   s = (inner !== null) ? inner : s.trim();
-  s = s.replace(/<br\s*\/?>/gi, '\n');
+  s = normalizeBreaks(s);
   s = s.replace(/#quot;/g, '"').replace(/&quot;/g, '"');
   // 老文件的 `#35;` 必须解回 `#`。代价是一条固有歧义：新文件里**字面**写着的 `#35;`
   // 与老文件的转义长得一模一样，只能按老文件解释（真路径里不会有这种字符）。

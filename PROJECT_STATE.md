@@ -22,7 +22,7 @@ npm run check
 ```
 
 这道门是 typecheck + 全部测试 + 工具 schema 三段，任何一段红都算没过。
-当前基线：**解析器 1056 · 布局 19 · 连线几何 44 · 宿主 903 · 引导层 20 · 插件挂载 16 · 配置卡 37 · 构建守门人 35 · 界面渲染 556 · 工具 schema 全通过 = 2686 条断言，EXIT=0**。
+当前基线：**解析器 1067 · 布局 19 · 连线几何 44 · 宿主 943 · 引导层 20 · 插件挂载 16 · 配置卡 37 · 构建守门人 35 · 界面渲染 558 · 工具 schema 全通过 = 2739 条断言，EXIT=0**。
 基线数字由 `test/docs.baseline.mjs` 采集各测试自报值并核对，加了断言就要一起改这里和 `README.md`。
 装机是**快照**（`file:...tgz` → `~/.dsh/profiles/web/node_modules/arch-canvas/`）：客户端改动 = `npm run build` + 拷 `lib/*.js` + 刷新页面；宿主改动还要**重启 dsh**。生效路径见 `AGENTS.md`。
 

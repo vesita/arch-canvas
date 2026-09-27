@@ -266,6 +266,17 @@ console.log('\n[10] 标签实体转义是对称的（& # < " ` 与换行）');
   // 引号**外**的空白是语法（真 Mermaid 也给 `x`），引号**内**的才是内容 —— 别一刀切。
   check('引号外的空白按语法去掉', unquote(' "x" ') === 'x', unquote(' "x" '));
   check('引号内的空白原样保留', unquote('"  x  "') === '  x  ', JSON.stringify(unquote('"  x  "')));
+  // AI 手写的换行变体：`<br>` / `<\br>` / `</br>` / `<BR/>`，以及被老版本转义着写进文件的
+  // `&lt;br&gt;` —— 全都要读成**真实换行**。否则 q() 会把 `<` 转义成 `#60;`，
+  // 用户方块里看到的就是那串字面垃圾（2026-09-27 现场）。
+  const brVariants = ['a<br>b', 'a<br/>b', 'a<br />b', 'a<BR>b', 'a<\\br>b', 'a</br>b', 'a<\\br/>b', 'a&lt;br&gt;b'];
+  for (const v of brVariants) {
+    check('换行变体读成真实换行：' + JSON.stringify(v), unquote('"' + v + '"') === 'a\nb', unquote('"' + v + '"'));
+  }
+  check('q() 仍然只写规范的 <br/>', q('a\nb') === '"a<br/>b"', q('a\nb'));
+  const brDoc = { nodes: [{ id: 'n1', label: '一\n二', shape: 'rect', group: null, x: 0, y: 0, link: null, files: [] }], edges: [], groups: [], direction: 'TD', extras: [], summary: '' };
+  check('带换行的标签逐字节往返', parseMermaid(serializeDoc(brDoc)).nodes[0].label === '一\n二');
+  check('带换行的标签往返检查安静', roundTripDiff(brDoc).length === 0, roundTripDiff(brDoc));
 }
 
 console.log('\n[11] & 并列连线');

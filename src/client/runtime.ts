@@ -229,8 +229,13 @@ var STUDIO_CSS = [
   // 从前的角标只有「蓝=好 / 红=坏」，这一档和「好」长得一模一样，等于没说。
   '.ac-file-badge.stale circle{fill:#e8a33d}',
   // 保鲜横幅（画布页顶部）：与「解析警告」同一套几何，但颜色与措辞都分开 —— 两件事不一样。
+  // **默认收起成一行**（`.open` 才展开明细）：常驻的明细会一直占着画布高度。
   '.ac-drift{flex:0 0 auto;max-height:26%;overflow:auto;margin:0 8px 6px;padding:7px 9px;border:1px solid #e8a33d;border-radius:8px;background:rgba(232,163,61,.06)}',
-  '.ac-drift-h{color:#e8a33d;font-size:11.5px;font-weight:600;margin-bottom:4px}',
+  '.ac-drift:not(.open){padding:5px 8px}',
+  '.ac-drift-h{color:#e8a33d;font-size:11.5px;font-weight:600;margin-bottom:4px;cursor:pointer;user-select:none}',
+  '.ac-drift:not(.open) .ac-drift-h{margin-bottom:0}',
+  '.ac-drift-h:hover{opacity:.85}',
+  '.ac-drift-tgl{color:var(--dsw-alias-label-secondary,#9aa3af);font-weight:500;white-space:nowrap}',
   // 只有「没画到」那一档：中性色 —— 它不是错误，只是一个待办提示。
   '.ac-drift.hint{border-color:var(--dsw-alias-border-l2,#3a4048);background:transparent}',
   '.ac-drift.hint .ac-drift-h{color:var(--dsw-alias-label-secondary,#9aa3af);font-weight:500}',

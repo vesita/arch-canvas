@@ -2797,10 +2797,21 @@ console.log('\n[4t] 锚点保鲜：角标三态 / 检查器逐条说明 / 画布
 
   const box = drHost.querySelector('.ac-drift')
   ok('画布页出现保鲜横幅', !!box)
-  ok('横幅里点明是哪个节点、哪条引用',
-    !!box && box.textContent.indexOf('dr1') >= 0 && box.textContent.indexOf('src/host/mermaid.ts#parseMermaid') >= 0,
+  // 默认**收起成一行**：常驻明细会一直挤掉画布高度，而「哪个方块过期了」画布上已有琥珀角标指着。
+  ok('默认收起：只有一行，不列明细', !!box && !box.classList.contains('open') && !box.querySelector('.ac-drift-i'),
     box && box.textContent)
-  ok('横幅里也报「没有锚点指向的目录」', !!box && box.textContent.indexOf('src/package') >= 0 && box.textContent.indexOf('tools') >= 0)
+  ok('收起的那一行仍然报出条数（信号本身不许被折叠掉）',
+    !!box && box.textContent.indexOf('1 条锚点的文件在图之后改过') >= 0 && box.textContent.indexOf('明细') >= 0,
+    box && box.textContent)
+  // 点开才展开明细：哪个节点、哪条引用、哪些目录没画到、以及该怎么做
+  await act(async () => { box.querySelector('.ac-drift-h').click() })
+  await flush()
+  const boxOpen = drHost.querySelector('.ac-drift')
+  ok('点开后展开：点明是哪个节点、哪条引用',
+    !!boxOpen && boxOpen.classList.contains('open') &&
+    boxOpen.textContent.indexOf('dr1') >= 0 && boxOpen.textContent.indexOf('src/host/mermaid.ts#parseMermaid') >= 0,
+    boxOpen && boxOpen.textContent)
+  ok('展开后也报「没有锚点指向的目录」', !!boxOpen && boxOpen.textContent.indexOf('src/package') >= 0 && boxOpen.textContent.indexOf('tools') >= 0)
   ok('横幅与「解析警告」是两条，不混在一起',
     drHost.querySelectorAll('.ac-drift').length === 1 && drHost.querySelectorAll('.ac-warn').length === 0)
 
