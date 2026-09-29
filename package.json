@@ -1,6 +1,6 @@
 {
   "name": "arch-canvas",
-  "version": "0.6.16",
+  "version": "0.6.17",
   "private": true,
   "description": "DSH 插件：人与 AI 共用同一张 Mermaid 逻辑框架图 —— 图形界面与源文本双向同步，双方在同一份图上交互、讨论与修改",
   "main": "lib/index.js",
@@ -39,9 +39,10 @@
     "pack": "npm pack --pack-destination \"${DSH_HOME:-$HOME/.dsh}/packages\""
   },
   "dependencies": {
-    "@deepseek-ai/schemastery": "^3.18.3"
+    "@deepseek-ai/schemastery": "~3.18.4"
   },
   "devDependencies": {
+    "@deepseek-ai/cosmokit": "^1.8.5",
     "jsdom": "^30.0.1",
     "mermaid": "^11.16.0",
     "react": "^19.3.0",

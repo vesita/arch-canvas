@@ -16,7 +16,7 @@ const src = fs.readFileSync(FILE, 'utf8');
 const api = new Function(src + '\n;return {'
   + ' autoLayout: autoLayout, sccOf: sccOf, layerOfComps: layerOfComps, groupByLayer: groupByLayer,'
   + ' layoutPositions: layoutPositions, crossingsOf: crossingsOf, medianOrder: medianOrder,'
-  + ' nodeSize: nodeSize, refRowCount: refRowCount };')();
+  + ' nodeSize: nodeSize, splitLabel: splitLabel, refRowCount: refRowCount };')();
 const { autoLayout } = api;
 
 let pass = 0;
@@ -56,7 +56,10 @@ function rounds(positions) {
 function baselineCrossings(m) {
   const ids = m.nodes.map((n) => n.id);
   const sizes = {};
-  m.nodes.forEach((n) => { sizes[n.id] = api.nodeSize(n.label, api.refRowCount(n.files)); });
+  m.nodes.forEach((n) => {
+    const sp = api.splitLabel ? api.splitLabel(n.label) : null;
+    sizes[n.id] = api.nodeSize(sp ? sp.title : n.label, 0);
+  });
   const pairs = pairsOf(m);
   const part = api.sccOf(ids, pairs);
   const cl = api.layerOfComps(part.comps, pairs, part.comp);

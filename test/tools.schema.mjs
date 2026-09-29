@@ -14,12 +14,14 @@
 // 抄一份「逐字同形」的副本看着像守着，其实守住的是副本 —— 源码改回裸属性表它也照样绿。
 import { createRequire } from 'node:module'
 
-const DSH_ROOT = process.env.DSH_ROOT ?? '/usr/lib/node_modules/@deepseek-ai/dsh'
+// dsh 0.2.0-rc.1 起 dsh 装进私有前缀（/usr/lib/deepseek-harness），依赖包直接躺在
+// 那个 node_modules 根下；旧版的全局布局（/usr/lib/node_modules）不再成立。
+const DSH_NODE_MODULES = process.env.DSH_NODE_MODULES ?? '/usr/lib/deepseek-harness/node_modules'
 const { assertSupportedJsonSchema, assertObjectJsonSchema } = await import(
-  `${DSH_ROOT}/node_modules/@deepseek-ai/dsh-tools/lib/index.js`
+  `${DSH_NODE_MODULES}/@deepseek-ai/dsh-tools/lib/index.js`
 )
 const { sandboxDefineTool } = await import(
-  `${DSH_ROOT}/node_modules/@deepseek-ai/dsh-cordis-host-runner/lib/types/guard.js`
+  `${DSH_NODE_MODULES}/@deepseek-ai/dsh-cordis-host-runner/lib/types/guard.js`
 )
 
 // ---------- 真插件形态：和 src/package/host.ts 递进去的 harness 同形 ----------
