@@ -13,12 +13,40 @@
 // 所以这里**不抄定义**：直接抓构建产物 lib/host-logic.js 在真插件 half 上注册的那四个定义。
 // 抄一份「逐字同形」的副本看着像守着，其实守住的是副本 —— 源码改回裸属性表它也照样绿。
 import { createRequire } from 'node:module'
+import { existsSync, realpathSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { execFileSync } from 'node:child_process'
 
-// dsh 0.2.0-rc.1 起 dsh 装进私有前缀（/usr/lib/deepseek-harness），依赖包直接躺在
-// 那个 node_modules 根下；旧版的全局布局（/usr/lib/node_modules）不再成立。
-const DSH_NODE_MODULES = process.env.DSH_NODE_MODULES ?? '/usr/lib/deepseek-harness/node_modules'
+// dsh 的依赖根**随装法而变**（官方安装器的私有前缀、发行版包/全局 npm 前缀…），所以这里不写死本机路径：
+// 先认 `DSH_NODE_MODULES`，再从 PATH 上的 `dsh` 反推，最后试官方安装器那个已知前缀；挑第一个真装着
+// dsh-tools 的，一个都没有就**报出来** —— 落回一个必然 ERR_MODULE_NOT_FOUND 的常量只会让人以为插件坏了。
+const DSH_TOOLS = '@deepseek-ai/dsh-tools/lib/index.js'
+
+/** PATH 上的 dsh → 包根 → 它自己的 node_modules（依赖装在这里）。 */
+function nodeModulesFromDshOnPath() {
+  try {
+    const bin = execFileSync('sh', ['-c', 'command -v dsh'], { encoding: 'utf8' }).trim()
+    if (!bin) return null
+    return join(dirname(dirname(realpathSync(bin))), 'node_modules')
+  } catch {
+    return null
+  }
+}
+
+const dshNodeModulesCandidates = [
+  process.env.DSH_NODE_MODULES,
+  nodeModulesFromDshOnPath(),
+  '/usr/lib/deepseek-harness/node_modules',
+].filter(Boolean)
+const DSH_NODE_MODULES = dshNodeModulesCandidates.find((dir) => existsSync(join(dir, DSH_TOOLS)))
+if (!DSH_NODE_MODULES) {
+  throw new Error(
+    `找不到装好的 dsh 依赖根（试过：${dshNodeModulesCandidates.join(' / ')}）—— ` +
+      '用 DSH_NODE_MODULES 指到含 @deepseek-ai/ 的那个 node_modules',
+  )
+}
 const { assertSupportedJsonSchema, assertObjectJsonSchema } = await import(
-  `${DSH_NODE_MODULES}/@deepseek-ai/dsh-tools/lib/index.js`
+  `${DSH_NODE_MODULES}/${DSH_TOOLS}`
 )
 const { sandboxDefineTool } = await import(
   `${DSH_NODE_MODULES}/@deepseek-ai/dsh-cordis-host-runner/lib/types/guard.js`
