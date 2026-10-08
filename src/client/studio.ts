@@ -2679,6 +2679,9 @@ function ArchStudio(props) {
                   return React.createElement('div', { key: 's' + it.key, className: 'ac-start-row' },
                     React.createElement('span', { className: 'ac-start-key', title: it.dir }, it.key),
                     React.createElement('span', { className: 'ac-start-meta' }, it.nodes + ' 节点 / ' + it.edges + ' 连线'),
+                    (it.rel && it.relOutside)
+                      ? React.createElement('span', { className: 'ac-start-meta', title: it.dir }, '在 ' + it.rel)
+                      : null,
                     it.summary ? React.createElement('span', { className: 'ac-start-sum', title: it.summary }, it.summary) : null,
                     React.createElement('button', { className: 'ac-btn', onClick: function () { openDiagram(it.key, false) } }, '打开'),
                   )
@@ -3323,6 +3326,7 @@ function ArchStudio(props) {
             className: 'ac-lib-item' + (on ? ' on' : ''), title: it.summary ? (it.summary + '\n' + it.dir) : it.dir,
             onClick: function () { if (!on) openDiagram(it.key, false) },
           }, (on ? '● ' : '') + it.key + '　' + it.nodes + ' 节点 / ' + it.edges + ' 连线'
+            + (it.rel && it.relOutside ? '　·　在 ' + it.rel : '')
             + (it.summary ? '　·　' + it.summary : '')),
           picker.confirmKey === it.key
             ? [

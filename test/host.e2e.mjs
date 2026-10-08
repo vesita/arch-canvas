@@ -2793,6 +2793,122 @@ console.log('【会话隔离：画布属于项目、不属于进程（2026-09-23
     pNoAgent.indexOf('停在别的项目上') < 0 && pNoAgent.indexOf('```mermaid') >= 0)
 }
 
+console.log('【会话目录自动检测 + 检测范围收口（2026-10-08 目录污染）】')
+{
+  // 探针实测的现场：cwd=`/home/vesita/coding/my/laya` 的会话解析出的图库是
+  // `/home/vesita/coding/my/.arch-canvas`（一个只有旁路表的**空壳**），清单里列着 8 个
+  // **兄弟项目**的图；同时 cwd=`/home/vesita/coding/my` 的会话被注入的是全局图库里的
+  // `laya-architecture` / `phone-ssh-ca` —— 两张别的项目目录的图。
+  // 两条根因各钉一条：
+  //   ① `whereOfExec` 读的三个字段（`agent.cwd` / `agent.session.cwd` / `agent.header.cwd`）
+  //      **都不存在**，DSH 的真实形状是 `agent.session.header.cwd` ⇒ 提示词与四个工具
+  //      都拿不到会话目录，检测等于没有；
+  //   ② 图库根只按「`.arch-canvas` 目录在不在」往上找，一个空壳就能吞掉整棵子树。
+  const dirS = '/tmp/proj-scope-a'
+  files.set(dirS + '/.arch-canvas/architecture.mmd', 'flowchart TD\n  s1["S 项目的节点"]\n')
+  const agentReal = { session: { id: 'scope-real', header: { cwd: dirS } } }
+  const agentLegacy = { session: { id: 'scope-legacy', cwd: dirS } }
+
+  const readReal = await tool('arch_read').execute({}, { agent: agentReal })
+  ok('★ agent.session.header.cwd 能被取到：工具落进会话目录的图库',
+    !!readReal && String(readReal.file).indexOf(dirS + '/.arch-canvas/') === 0,
+    readReal && { file: readReal.file, dir: readReal.dir, error: readReal.error })
+  ok('★ 真形状的提示词读到的是自己项目的图',
+    promptFn({ agent: agentReal }).indexOf('S 项目的节点') >= 0)
+  const editReal = await tool('arch_edit').execute(
+    { ops: [{ op: 'add_node', id: 'scope_new', label: '真形状写进来的' }] }, { agent: agentReal })
+  ok('★ 真形状的写也落在会话目录的图库里',
+    !!editReal && editReal.ok !== false && String(files.get(dirS + '/.arch-canvas/architecture.mmd')).indexOf('scope_new') >= 0,
+    editReal && editReal.problems)
+
+  // 旧形状（测试桩写了多年的那个）继续认：字段改名不该变成「静默退回全局」
+  const readLegacy = await tool('arch_read').execute({}, { agent: agentLegacy })
+  ok('旧形状 agent.session.cwd 仍被接受（降级而不是失效）',
+    !!readLegacy && String(readLegacy.file).indexOf(dirS + '/.arch-canvas/') === 0,
+    readLegacy && readLegacy.file)
+
+  // ② 空壳图库不许吞子树
+  const C = '/tmp/proj-scope-container'
+  files.set(C + '/.arch-canvas/anchors.json', '{}')          // 只有旁路表：空壳
+  files.set(C + '/p1/.arch-canvas/architecture.mmd', 'flowchart TD\n  p1a["P1 的节点"]\n')
+  files.set(C + '/p2/.arch-canvas/architecture.mmd', 'flowchart TD\n  p2a["P2 的节点"]\n')
+
+  const l1 = await call('doc:list', { where: C + '/p1', session: 'scope-p1' })
+  eq('★ 空壳图库不算数：p1 的会话落在 p1 自己的图库', l1.dir, C + '/p1/.arch-canvas')
+  ok('★ 检测范围 = 会话目录及其子目录：兄弟项目 p2 一条都不进清单',
+    !l1.items.some((x) => String(x.key).indexOf('p2') >= 0), l1.items.map((x) => x.key))
+  ok('★ 清单里只有 p1 自己的那一张',
+    l1.items.filter((x) => !x.deleted).map((x) => x.key).join(',') === 'architecture',
+    l1.items.map((x) => x.key))
+  eq('★ 目录关系：会话目录如实回报', l1.sessionDir, C + '/p1')
+  eq('★ 目录关系：每张图带上相对会话目录的位置',
+    (l1.items.find((x) => x.name === 'architecture') || {}).rel, '.arch-canvas')
+
+  // ★ 写路径：上层空壳不许把会话的图库顶掉 —— 顶掉了，画布就会被写进**容器目录**
+  const writeP1 = await tool('arch_edit').execute(
+    { ops: [{ op: 'add_node', id: 'p1_new', label: 'P1 加的' }] },
+    { agent: { session: { id: 'scope-p1w', header: { cwd: C + '/p1' } } } })
+  ok('★ 真形状的写落在 p1 自己的图库',
+    !!writeP1 && writeP1.ok !== false && String(files.get(C + '/p1/.arch-canvas/architecture.mmd')).indexOf('p1_new') >= 0,
+    writeP1 && writeP1.problems)
+  ok('★ 负向对照：容器目录里没有被种出 .arch-canvas/architecture.mmd',
+    !files.has(C + '/.arch-canvas/architecture.mmd'),
+    [...files.keys()].filter((k) => k.indexOf(C) === 0))
+
+  // 会话坐在项目子目录里：范围仍只有会话目录这一棵 + 项目根图库，兄弟目录不许进来
+  files.set(C + '/p1/src/.arch-canvas/细节.mmd', 'flowchart TD\n  d1["P1 子目录的图"]\n')
+  const l2 = await call('doc:list', { where: C + '/p1/src', session: 'scope-p1src' })
+  eq('key 基准仍取最外层真图库（p1）', l2.dir, C + '/p1/.arch-canvas')
+  eq('检测锚点 = 会话目录', l2.scanFrom, C + '/p1/src')
+  ok('★ 兄弟项目仍不进清单', !l2.items.some((x) => String(x.key).indexOf('p2') >= 0), l2.items.map((x) => x.key))
+  ok('项目根图库那张仍列在里面（它是会话的项目级画布）', l2.items.some((x) => x.key === 'architecture'))
+  ok('会话目录下的子图库用项目级 key + 相对位置',
+    l2.items.some((x) => x.key === 'src/细节' && x.rel === '.arch-canvas'),
+    l2.items.map((x) => [x.key, x.rel]))
+  ok('★ 提示词写明检测范围（会话目录及其子目录）',
+    promptFn({ agent: { session: { id: 'scope-p1src', header: { cwd: C + '/p1/src' } } } }).indexOf('检测范围') >= 0)
+  // 槽是按图库目录共享的（p1 与 p1/src 同一个槽），锚点必须跟**这一步的会话目录**走 ——
+  // 读那个共享字段的话，cwd=p1 的会话会被告知范围是上一个请求留下的 p1/src
+  const pRoot = promptFn({ agent: { session: { id: 'scope-p1root', header: { cwd: C + '/p1' } } } })
+  ok('★ 检测范围跟这一步的会话目录走（不跟着上一个请求留下的锚点漂）',
+    pRoot.indexOf('检测范围：**' + C + '/p1 及其子目录**') >= 0,
+    pRoot.split('\n').find((l) => l.indexOf('检测范围') === 0))
+  ok('★ 目录关系也按这一步的锚点重算（不沿用别的会话留下的锚点）',
+    pRoot.indexOf('[src/.arch-canvas]') >= 0 && pRoot.indexOf('[' + C + '/p1/.arch-canvas]') < 0,
+    pRoot.split('\n').find((l) => l.indexOf('同图库还有') === 0))
+
+  // 负向对照：把空壳换成**真图库**，key 基准就变回容器 —— 证明「空壳不算数」这条判据真的在起作用。
+  // 换个没被缓存过的 cwd（缓存按 cwd 存，同一个 cwd 不允许两次答案不同）。
+  files.set(C + '/.arch-canvas/architecture.mmd', 'flowchart TD\n  ca["容器的根图"]\n')
+  files.set(C + '/p3/.arch-canvas/architecture.mmd', 'flowchart TD\n  p3a["P3 的节点"]\n')
+  const l3 = await call('doc:list', { where: C + '/p3', session: 'scope-p3' })
+  eq('负向对照：容器有真图库时 key 基准回到容器', l3.dir, C + '/.arch-canvas')
+  ok('★ 但兄弟项目 p2 仍然不进清单（范围只由会话目录决定）',
+    !l3.items.some((x) => String(x.key).indexOf('p2') >= 0), l3.items.map((x) => x.key))
+  ok('p3 自己的图用项目级 key', l3.items.some((x) => x.key === 'p3/architecture'), l3.items.map((x) => x.key))
+  ok('容器根图库那张也在（它是会话的项目级画布）', l3.items.some((x) => x.key === 'architecture'))
+
+  // ★ 换层（doc:open / arch_switch）不许把检测锚点放宽到图库根：请求里就带着会话目录。
+  // 漏传第三参 ⇒ resetToWorkspace 退回图库根 ⇒ 紧随其后的 afterSwitch() 强制扫整棵，
+  // 别的子项目的图库跟着进「同图库」清单（独立复核 2026-10-08 逮到的缺口）。
+  // 用一棵全新的容器目录：所有图库在第一次查询之前就位，key 基准（最外层真图库 = 容器）稳定。
+  const S = '/tmp/proj-scope-switch'
+  files.set(S + '/.arch-canvas/architecture.mmd', 'flowchart TD\n  sw_root["容器的根图"]\n')
+  files.set(S + '/p1/.arch-canvas/architecture.mmd', 'flowchart TD\n  sw_p1["P1 的节点"]\n')
+  files.set(S + '/p2/.arch-canvas/architecture.mmd', 'flowchart TD\n  sw_p2["P2 的节点"]\n')
+  const sidSw = 'scope-sw'
+  // 先在 p1 锚点下把「默认根图库」那一槽建起来（此后它会以 p1 的锚点被存进槽里）
+  await call('doc:list', { where: S + '/p1', session: 'scope-sw-warm' })
+  const oSw = await call('doc:open', { where: S + '/p1', key: 'p2/architecture', session: sidSw })
+  eq('前提：从 p1 换到 p2 那一层', oSw.dir, S + '/p2/.arch-canvas')
+  const lSw = await call('doc:list', { where: S + '/p1', session: sidSw, rescan: false })
+  ok('★ 换层那一趟的清单仍只覆盖会话目录这一棵',
+    !lSw.items.some((x) => x.key === 'p2/architecture'), lSw.items.map((x) => x.key))
+  // ★ 切槽回来：槽里那份 root 的 scanFrom 是**上一个用它的会话**留下的（p1），要按这一步重钉（p2）
+  const lSlot = await call('doc:list', { where: S + '/p2', session: 'scope-slot-other' })
+  eq('★ 切槽回来的检测锚点仍是这一步的会话目录', lSlot.scanFrom, S + '/p2')
+}
+
 console.log('【P0 连接符唯一真相：ARROWS 里每一个都要经 doc:set 原样落盘】')
 {
   // 事故形态：`ARROWS`（mermaid.ts）有 28 种，而 document.ts 的 `ARROW_SET` 从前只手抄了 8 种，

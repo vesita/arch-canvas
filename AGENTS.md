@@ -387,7 +387,7 @@ lostpointercapture 提交）。
 画布是共享的，而 `promptText` 是**同步求值、拿不到会话** —— 归属判断必须在注入路径上做。四条不许破：
 
 1. **`promptText(asctx)` 必须按会话判归属。** DSH 会把装配上下文（`{ agent, scope, signal }`）传给注册的 `text` 函数，里面的
-   `agent.session.cwd` 就是这一步所属的项目。**画布不属于你（`docBelongsTo(where)`
+   `agent.session.header.cwd` 就是这一步所属的项目（`whereOfExec` 取的就是它，见第 6 条）。**画布不属于你（`docBelongsTo(where)`
    为假）时**：先试着同步换到自己项目那一份（内存槽命中，`syncWorkspaceFor`）；命中不了就只注入一段**说明**（`foreignCanvasText`：画布停在哪个项目、为什么这一轮看不到内容、要看自己的图去调
    `arch_read`），**不含任何别人的图内容、锚点、留言**，也不消费那些留言。没有会话信息（工具、测试桩、headless）时**保持旧行为** —— 别把「判不了」变成「一律不给」。
 2. **留言只投递给它所属项目的会话。** 留言是**一次性**投递，投错人等于丢了；守门断言就是「Y 那一步没吃掉 X 的留言」+ 盘上 `done` 仍为 false。
@@ -410,18 +410,37 @@ lostpointercapture 提交）。
    `layerForSession` 三档：① 会话记过的层（同项目根）；② **完全没有会话 id** 时的「当前停着的那一层」（同项目、比根更深）——
    `where` 只说明是哪个项目、不说明看哪一层，没有这一档，一次无会话的 `where=项目根` 请求会把刚下钻的层拽回根并用当前层内容覆盖根图库；③ 项目根层。
    `doc:open` / `arch_switch` 的加载被抢走时**如实失败**（`doc.open.stolen`），不许返回一份「dir 说 A、file 在 B」的混合状态。
-6. **cwd 必须先规范化成项目根**（`canonicalProjectRoot`：往上找最外层带 `.arch-canvas` 的祖先，**但有天花板** —— 数据目录的上两级，即用户 HOME，
-   之上不认；否则一个公共父目录上的 `.arch-canvas`（插件自己在无库目录里 `create:true` 就能造出来）会把下面所有项目收成同一个项目）。
-   会话可能坐在项目里任意一层子目录，甚至是没有 `.arch-canvas` 的源码目录（`项目/A/src`）：直接把它当项目根会算出 `项目/A/src/.arch-canvas`
-   这个幽灵图库 —— 读起来是空画布，一写就在源码树里种出一个库、反手被上层扫描列成新的子图库，同一个项目的 key 也会随 cwd 漂。
-   sync 的调用方（`promptText`）只认规范化缓存；建库时**只作废新库目录下面**的缓存（`forgetProjectRootsUnder`），整表清空会让别的会话失去缓存、
-   于是同步路径退回原始 cwd 并对模型说「画布停在别的项目上」，而它其实就在自己项目里。
+6. **检测范围 = 会话目录及其子目录；key 基准 = 最外层那个*算数的*图库**（`canonicalProjectRoot` + `setScanAnchor`，`root.scanFrom` / `scanRel`）。
+   会话目录从 `whereOfExec` 取，字段是 **`agent.session.header.cwd`**（DSH 全仓的形状，见 `dsh-agent-instructions/lib/index.js:1122`）——
+   从前读的 `agent.cwd` / `agent.session.cwd` / `agent.header.cwd` **三个都不存在**，于是提示词那一侧跳过整个归属判断、四个工具丢掉
+   `where`：会话目录检测等于没有，而测试桩恰好写的也是旧形状，所以一直绿（2026-10-08 现场：cwd=`/home/vesita/coding/my` 的会话被注入
+   全局图库里的 `laya-architecture` / `phone-ssh-ca` —— 两张别的项目目录的图）。两条规矩：
+   ① **算数** —— 只有真装了 ≥1 张 `.mmd` 的 `.arch-canvas` 才算图库（`isRealLibrary`）：空壳（`ensureDir` 只写了 `.gitkeep`）
+   不是一个项目，不能把它下面整棵子树吞成同一个（`/home/vesita/coding/my/.arch-canvas` 那个空壳就吞过 8 个各有图库的项目 ——
+   连**写**都会落进容器目录）；往上找最外层真图库**仍有天花板** —— 数据目录的上两级（= 用户 HOME），之上不认；
+   ② **就近收口** —— 自动扫描只从**会话目录**往下走（`SCAN_MAX_DEPTH` 层）：图库根可以在会话目录**之上**（会话坐在项目子目录里），
+   但兄弟目录、容器目录下的别的项目一律不进清单。**目录关系要摆到台面上**：`doc:list` 回 `root` / `sessionDir` / `scanFrom`，
+   每张图带 `rel`（相对会话目录）；提示词里有「检测范围」一行，别的图的位置用方括号标出。
+   **`rel` / `relOutside` 与「检测范围」都在消费时按这一步的锚点算**（`withRel` + `promptText` 里的 `relAnchor`），
+   不烘进 `libraryCache` —— 清单缓存是按图库目录共享的，两个会话分别坐在项目根与子目录里时锚点不同，
+   烘进去就会把**上一个请求**的锚点当成这一步的（实测：cwd=`my/laya` 的会话被告知范围是 `my/laya/src`）。
+   **换层的一趟要传会话目录**：`doc:open` / `arch_switch` 调 `resetToWorkspace` 必须把会话目录传成第三参，
+   `activateSlot` 命中之后还要 `applyScanAnchor` 重钉一遍（`applyScanAnchor` 收口「只在它落在当前图库根里时才钉」）——
+   漏一处就把这一步的检测范围放宽到图库根，紧接着 `afterSwitch()` 的强制扫会把别的子项目的图库扫进清单
+   （2026-10-08 独立复核逮到；守门测试【会话目录自动检测 + 检测范围收口】里的两条 ★ 分别钉这两处）。
+   会话可能坐在项目里任意一层子目录，甚至是没有 `.arch-canvas` 的源码目录（`项目/A/src`）：直接把它当项目根会算出
+   `项目/A/src/.arch-canvas` 这个幽灵图库 —— 读起来是空画布，一写就在源码树里种出一个库、反手被上层扫描列成新的子图库，
+   同一个项目的 key 也会随 cwd 漂。sync 的调用方（`promptText`）只认规范化缓存；建库时**只作废新库目录下面**的缓存
+   （`forgetProjectRootsUnder`），整表清空会让别的会话失去缓存、于是同步路径退回原始 cwd 并对模型说「画布停在别的项目上」，
+   而它其实就在自己项目里。
 
 另外两条：**`doc.workspace` 必须留在 `RUNTIME_ONLY_FIELDS`**（漏了就是每次保存都误报
 `serialize.not-idempotent`）；**残留（未修）**：`whereOfExec` 取不到 cwd 的会话（无 cwd 的 headless）仍按「当前文档」读写。
 
 守门人：`test/host.e2e.mjs`【会话隔离：画布属于项目、不属于进程】（Y 那一步读不到 X 的图/留言/源文本块、盘上 `done` 仍为 false、X
 那一步仍能拿到自己的留言、一次性投递语义不变、工具带回自己的画布、换回 X 修订号不动 + 负向对照、子图库归属仍按项目根、无会话信息时保持旧行为）、
+【会话目录自动检测 + 检测范围收口（2026-10-08 目录污染）】（`session.header.cwd` 真形状的读与写都落进会话目录的图库、旧形状仍认、
+空壳图库不算数、兄弟项目一条都不进清单、写路径不在容器目录里种库 + 换成真图库的负向对照、`sessionDir`/`rel` 目录关系）、
 【子图库交叉污染：写盘要认下自己那一层】（A→B 写入隔离 + B 一个字节没动、key 不随 cwd 漂、幽灵图库不出现）与
 【子图库交叉污染 · 槽淘汰 / 天花板 / 建库后的同步路径 / @file 往返】（14 层把槽挤爆之后裸 key 仍落项目根、公共父目录的库不吞子树、
 建库后同步路径不失忆、`@file` 的 br 变体往返守恒）。

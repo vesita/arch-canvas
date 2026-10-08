@@ -40,7 +40,9 @@ var agentsSvc = ctx.get('agents')
 // root：会话所在项目对应的图库（「根」）。lib：当前打开的那一层，可能是根，也可能是某个子项目。
 // 图引用一律用「相对根的 key」：`架构` 是根的图，`支付/对账` 是子项目「支付」的图库里的图。
 // 只此一条规则 —— 没有 ./ 也没有 ../，这样列表、AI、链接三处写法完全一致。
-var root = { dir: GLOBAL_DIR, scope: 'global', workspace: '' }
+// `scanFrom` / `scanRel` 是**检测锚点**：会话目录，以及它相对图库根的子路径。
+// 自动扫描只走会话目录这一棵（图库根可能在上层），这样检测范围永远 = 会话目录及其子目录。
+var root = { dir: GLOBAL_DIR, scope: 'global', workspace: '', scanFrom: '', scanRel: '' }
 var lib = { dir: GLOBAL_DIR, scope: 'global', workspace: '' }
 var loadedFor = null      // 内存里这份文档来自哪个 dir
 var everLoaded = false    // 是否已经载入过 —— 首次载入不 bump 修订号（「刚载入」就是 0）
@@ -364,15 +366,41 @@ async function persist(policy?, site?, expectFile?) {
 }
 
 /**
- * 从工具执行上下文里取项目路径。
- * ToolExecutionInput.agent 是「这次调用代表谁」，Agent 上带着会话的 cwd ——
- * 所以 AI 侧的调用不会跑错图库。字段名按 DSH 的会话元数据取值，取不到就算了。
+ * 会话目录串 → 规范化的检测锚点（空串 = 没有会话信息，退回图库根）。
+ * RPC 侧拿 `args.where`（面板每个请求都带 where=会话 cwd），工具侧拿 `whereOfExec(exec)`。
+ */
+function cleanSessionDir(v) {
+  return (typeof v === 'string') ? v.trim().replace(/\/+$/, '') : ''
+}
+function sessDirOf(args) { return cleanSessionDir(args && args.where) }
+
+/**
+ * 从工具执行上下文里取**会话目录**（DSH 的 cwd）。`ToolExecutionInput.agent` 是「这次调用代表谁」，
+ * 会话目录挂在 `agent.session.header.cwd` 上 —— 这是 DSH 全仓的读法
+ * （`dsh-agent-instructions/lib/index.js:1122`、`dsh-agent-loop/lib/index.js:1566` 都走这一条），
+ * 也是「AI 侧的调用不会跑错图库」唯一依据。
+ *
+ * 2026-10-08 修复：从前这里读 `a.cwd` / `a.session.cwd` / `a.header.cwd` —— **三个字段都不存在**，
+ * 于是每一次都取到 undefined，两个后果一起发生：
+ *   ① 提示词那侧跳过整个「画布属于项目」的判断（`promptText` 只在 sessWhere 非空时才判归属），
+ *      把进程全局那份画布注入给这一步 —— 挂载时是全局图库，之后是**别的会话刚切过去的项目**；
+ *   ② 四个 AI 工具丢掉 where，沿用当前指针（`ensureLoaded(undefined)` 保持现状）。
+ * 现场：cwd=`/home/vesita/coding/my` 的会话被注入 `~/.dsh/arch-canvas` 里的
+ * `laya-architecture` / `phone-ssh-ca` —— 两张**别的项目目录**的图。会话目录检测等于没有。
+ *
+ * 旧名字仍留在候选表里：测试桩与将来的形状变化都不该让这里静默退回 undefined。
  */
 function whereOfExec(exec) {
   try {
     var a = exec && exec.agent
     if (!a) return undefined
-    var cands = [a.cwd, a.session && a.session.cwd, a.header && a.header.cwd]
+    var sess = a.session
+    var cands = [
+      sess && sess.header && sess.header.cwd,
+      a.cwd,
+      sess && sess.cwd,
+      a.header && a.header.cwd,
+    ]
     for (var i = 0; i < cands.length; i++) {
       if (typeof cands[i] === 'string' && cands[i]) return cands[i]
     }
@@ -693,20 +721,8 @@ interface ProjectScan {
   truncated: boolean
 }
 
-/** 一次项目扫描：找出所有 .arch-canvas 图库目录 + 散落的 mermaid 文件。只走目录，不读内容。 */
-async function scanProject(): Promise<ProjectScan> {
-  var out: ProjectScan = { dirs: [], files: [], visited: 0, truncated: false }
-  if (!fs) return out
-  if (root.scope !== 'project' || !root.workspace) return out
-  await walkProject(String(root.workspace).replace(/\/+$/, ''), '', 0, out)
-  return out
-}
-
-async function walkProject(absDir, rel, depth, out) {
-  out.visited += 1
-  if (out.visited > SCAN_MAX_DIRS) { out.truncated = true; return }
-  // 1) 这个目录自己是不是一个图库（<dir>/.arch-canvas）
-  var libDir = absDir + '/' + PROJECT_SUBDIR
+/** 把 `<dir>/.arch-canvas` 里所有 `.mmd` 收成一条图库记录（目录本身是不是图库，看这一条有没有）。 */
+async function collectLibrary(libDir, rel, out) {
   var entries = []
   try { entries = await fs.listDir(await fs.resolve(libDir)) } catch (e) { entries = [] }
   var files = []
@@ -720,6 +736,33 @@ async function walkProject(absDir, rel, depth, out) {
   if (files.length > 0 && out.dirs.length < SCAN_MAX_LIBS) {
     out.dirs.push({ dir: libDir, project: rel, files: files })
   }
+}
+
+/**
+ * 一次项目扫描：找出所有 `.arch-canvas` 图库目录 + 散落的 mermaid 文件。只走目录，不读内容。
+ *
+ * **检测范围 = 会话目录及其子目录**（`root.scanFrom` 起、往下 ≤`SCAN_MAX_DEPTH` 层）。
+ * 从前这里从 `root.workspace` 起走，而 workspace 是「往上找最外层图库」算出来的 ——
+ * 一个会话坐在子目录里就会把上层的兄弟项目全扫进来（2026-10-08 的目录污染）。
+ * 图库根在会话目录之上时（会话坐在项目子目录里），**根图库自己**额外补一条：
+ * 它是这个会话的默认画布，虽然不落在会话目录这棵树下。
+ */
+async function scanProject(): Promise<ProjectScan> {
+  var out: ProjectScan = { dirs: [], files: [], visited: 0, truncated: false }
+  if (!fs) return out
+  if (root.scope !== 'project' || !root.workspace) return out
+  var anchor = String(root.scanFrom || root.workspace).replace(/\/+$/, '')
+  var rel = String(root.scanRel || '')
+  if (rel) await collectLibrary(String(root.workspace).replace(/\/+$/, '') + '/' + PROJECT_SUBDIR, '', out)
+  await walkProject(anchor, rel, 0, out)
+  return out
+}
+
+async function walkProject(absDir, rel, depth, out) {
+  out.visited += 1
+  if (out.visited > SCAN_MAX_DIRS) { out.truncated = true; return }
+  // 1) 这个目录自己是不是一个图库（<dir>/.arch-canvas）
+  await collectLibrary(absDir + '/' + PROJECT_SUBDIR, rel, out)
   // 2) 继续往下找子项目里的图库，顺手收下散落的 mermaid 文件
   if (depth >= SCAN_MAX_DEPTH) return
   var kids = []
@@ -839,7 +882,9 @@ async function refreshLibrary(force?: boolean) {
   }
 
   var scan = await scanProject()
-  var fp = scanFingerprint(scan)
+  // 指纹里带上**检测锚点**：同一个图库根下，会话目录变了（项目根 ↔ 它的子目录）就是另一次
+  // 扫描范围，不能因为「目录内容没变」而拿旧清单糊弄过去。
+  var fp = String(root.scanFrom || root.workspace || '') + '|' + scanFingerprint(scan)
   // **force = 真读一遍内容**（「重新扫描」按钮与慢速定时器走这条）：便宜指纹相同**不代表**
   // 内容没变 —— 同字节数的改写只有真读才看得见。非 force（2.5s 轮询那条路）仍然只走目录 +
   // 比便宜指纹，指纹没变一个字节都不读、不解析。
@@ -997,15 +1042,27 @@ function projectKeyOfTarget(target) {
 }
 
 /**
- * 会话 cwd → **项目根**。
+ * 会话 cwd → **图库根**。
  *
  * cwd 常是项目里的任意一层子目录，甚至是没有 `.arch-canvas` 的源码目录（`项目/A/src`）。
  * 直接把它当项目根，会算出 `项目/A/src/.arch-canvas` 这个并不存在的图库：读起来是空画布，
  * 一旦有写（`doc:set` / `arch_switch {create:true}`）就在源码树里种出一个幽灵图库，
  * 反手被上层扫描列成新的子图库；同一个项目的 key 也会随 cwd 漂（`A/x` ↔ `x`）。
  *
- * 规矩：往上找**最外层**那个带 `.arch-canvas` 的祖先 —— 这样同一个项目树里，
- * 不同 cwd 的会话算出同一个根、同一套 key。走不上去（都没有）就按原值。
+ * 两条规矩：
+ *   ① **key 的基准取最外层那个算数的图库** —— 同一个项目树里，不同 cwd 的会话算出同一个根、
+ *      同一套 key（`P/A/x` 不随你坐在 `P` 还是 `P/A` 漂）。这一条没变。
+ *   ② **算数**：只有真装了至少一张 `.mmd` 的 `.arch-canvas` 才算图库（`isRealLibrary`）。
+ *      空壳目录（`ensureDir` 只写了 `.gitkeep`）不是项目 —— 2026-10-08 的现场就是
+ *      `/home/vesita/coding/my/.arch-canvas`（只有 `.gitkeep` + 两行旁路表）这个空壳
+ *      把它下面 8 个各有图库的项目全吞成一个项目。空壳不算数之后，`my/laya` 的会话
+ *      算出的根是 `laya`（而不是 `my`），下面那些兄弟目录再也进不来。
+ *
+ * **检测范围不在这里定**：那是 `setScanAnchor` 的事 —— 扫描锚点永远是**会话目录**，
+ * 图库根可以在它上层，但检测范围不许越过会话目录（见 scanProject）。
+ *
+ * 走不上去（都没有）就按原值 —— 此时会话目录**就是**它的项目，`.arch-canvas` 会在
+ * 显式 `create` 时建在这里，不会自己长出来（读路径一个字节都不创建）。
  * 结果按原样缓存：sync 的调用方（`promptText`）只认缓存，命中不了退回原值。
  */
 var projectRootCache = {}
@@ -1024,6 +1081,24 @@ var PROJECT_ROOT_CEILING = (function () {
   if (segs(up2) >= 2) return up2
   return segs(up1) >= 1 ? up1 : ''
 })()
+/**
+ * **算数**的图库：`<dir>/.arch-canvas` 里至少有一张 `.mmd`。
+ *
+ * 光看目录在不在不够：`ensureDir` 建库时先写 `.gitkeep`，别的工具/手滑也会留下空目录。
+ * 空壳一旦被当成图库，就成了「上层空壳吞掉所有项目」那条路（见上面 ①）。
+ */
+async function isRealLibrary(libDir) {
+  if (!fs) return false
+  var entries = []
+  try {
+    entries = await fs.listDir(await fs.resolve(libDir))
+  } catch (e) { return false }
+  for (var i = 0; i < entries.length; i++) {
+    var e = entries[i]
+    if (e && e.type === 'file' && e.name.slice(-4) === '.mmd') return true
+  }
+  return false
+}
 /**
  * 图库目录刚被建出来：**它下面**那些 cwd 的规范化结果要作废。
  * 整表清空是错的 —— 别的会话（cwd 在别处）会因此失去缓存，而同步路径（`promptText`）
@@ -1045,14 +1120,12 @@ async function canonicalProjectRoot(raw) {
   var top = ''
   var cur = w
   var hitCeiling = false
-  for (var i = 0; i < PROJECT_ROOT_WALK_MAX; i++) {
+  var i = 0
+  for (i = 0; i < PROJECT_ROOT_WALK_MAX; i++) {
     // 天花板之上不认 —— 项目根不能是用户的 HOME 或它上面
     if (PROJECT_ROOT_CEILING && cur === PROJECT_ROOT_CEILING) { hitCeiling = true; break }
-    var hasLib = false
-    try {
-      if (fs) hasLib = !!(await fs.stat(await fs.resolve(cur + '/' + PROJECT_SUBDIR)))
-    } catch (e) { hasLib = false }
-    if (hasLib) top = cur
+    // **最外层**那个**算数的**图库：命中继续往上找，最后落定的就是它
+    if (await isRealLibrary(cur + '/' + PROJECT_SUBDIR)) top = cur
     var up = cur.replace(/\/[^/]+$/, '')
     if (!up || up === cur) break
     cur = up
@@ -1061,8 +1134,79 @@ async function canonicalProjectRoot(raw) {
   if (!top && !hitCeiling && i >= PROJECT_ROOT_WALK_MAX) {
     logEvent('warn', 'project.root.unresolved', { cwd: w, max: PROJECT_ROOT_WALK_MAX })
   }
-  projectRootCache[w] = top || w
-  return projectRootCache[w]
+  // **否定结果不进缓存**：`.arch-canvas` 可能在插件进程之外出现（用户手工建库、从别处搬来），
+  // 缓存一个「这里没有图库」会让它一直不被承认 —— 而承认与否决定 key 基准与检测范围。
+  // 肯定结果（找到真图库）照旧缓存；没找到时 sync 调用方退回味原始 cwd，也就是「这里没有图库」
+  // 时的正确答案（`w/.arch-canvas`），不会因此说错。
+  if (top) projectRootCache[w] = top
+  else delete projectRootCache[w]
+  return top || w
+}
+
+/**
+ * 路径关系（两个绝对目录之间），用来把「这张图落在哪」如实摆出来。
+ * `target` 在 `base` 里面 → 相对路径；就是它 → `.`；不在里面 → 原样给绝对路径
+ * （**不编 `../`**：图库根可能在上层，编出来的相对路径没人看得懂）。
+ */
+function relFromTo(base, target) {
+  var b = String(base || '').replace(/\/+$/, '')
+  var t = String(target || '').replace(/\/+$/, '')
+  if (!b || !t) return t
+  if (t === b) return '.'
+  if (t.indexOf(b + '/') === 0) return t.slice(b.length + 1)
+  return t
+}
+
+/** 会话目录相对图库根的子路径（图库根自己、或在根之外时为空串）。 */
+function relUnder(base, target) {
+  var b = String(base || '').replace(/\/+$/, '')
+  var t = String(target || '').replace(/\/+$/, '')
+  if (!b || !t || t === b) return ''
+  return t.indexOf(b + '/') === 0 ? t.slice(b.length + 1) : ''
+}
+
+/**
+ * 把这一步的会话目录钉成**检测锚点** —— 只在它确实落在当前图库根里时才钉。
+ * 每一次「这一步要看哪一层」的判定之后都要调它（含**换层之后**：槽里那份 `root` 的
+ * `scanFrom` 是上一个用它的会话留下的，不重钉就会沿用别人的检测范围）。
+ */
+function applyScanAnchor(sessDir, canon?) {
+  if (!sessDir || !canon || canon.scope !== 'project') return
+  if (root.scope !== 'project' || canon.workspace !== root.workspace) return
+  setScanAnchor(sessDir)
+}
+
+/**
+ * 给清单项补上「它相对**这一步的**会话目录在哪」（`rel` / `relOutside`）。
+ *
+ * **消费时算，不烘进缓存**：缓存（`libraryCache`）是按图库目录共享的，两个会话分别坐在
+ * 项目根与它的子目录里时锚点不同；烘进缓存就会把**上一个请求**的锚点当成这一步的
+ * （实测：cwd=`my/laya` 的提示词把 `my/laya/.arch-canvas` 里的图标成绝对路径）。
+ * 全局兜底没有会话目录可对齐 → `rel` 如实给绝对路径，`relOutside` 一律 false。
+ */
+function withRel(items, anchor) {
+  var base = String(anchor || '').replace(/\/+$/, '')
+  var out = []
+  for (var i = 0; i < items.length; i++) {
+    var it = items[i] || {}
+    var d = String(it.dir || '')
+    var rel = (base && d) ? relFromTo(base, d) : d
+    out.push(Object.assign({}, it, { rel: rel, relOutside: !!base && rel !== PROJECT_SUBDIR }))
+  }
+  return out
+}
+
+/**
+ * 设定这一步的**检测锚点**：会话目录（不是图库根）。
+ *
+ * 图库根可能在上层（`项目/A/src` 的会话用 `项目/A` 的图库），但往下扫只能扫会话目录这一棵：
+ * 检测范围 = **会话目录及其子目录**。少了它，一个坐在子目录里的会话会把上层的兄弟项目
+ * 一起列进「同图库」（2026-10-08 的污染就是这一条）。
+ */
+function setScanAnchor(sessionDir) {
+  var sd = String(sessionDir || '').replace(/\/+$/, '')
+  root.scanFrom = sd || String(root.workspace || '').replace(/\/+$/, '')
+  root.scanRel = relUnder(root.workspace, root.scanFrom)
 }
 
 /** 同步版：只认已经缓存过的规范化结果，没缓存过就按原值算。 */
@@ -1179,9 +1323,12 @@ function activateSlot(key) {
  * 发的就是**裸 key**）跟着落进那个子图库：用户点项目根的同名图，打开的是子图库里的同名文件，
  * 而且粘住不放（2026-10-01 独立复核实测：槽淘汰之后必现）。
  */
-function resetToWorkspace(rootTarget, libTarget) {
+function resetToWorkspace(rootTarget, libTarget, sessionDir?) {
   root = rootTarget
   lib = libTarget
+  // 检测锚点 = **会话目录**（不是图库根）：图库根可能在上层（会话坐在项目子目录里），
+  // 但往下扫只扫会话目录这一棵。缺省退回图库根（调用方拿不到会话目录时）。
+  setScanAnchor(sessionDir && String(sessionDir).trim() !== '' ? sessionDir : rootTarget && rootTarget.workspace)
   loadedFor = null
   libraryCache = []
   libraryFiles = []
@@ -1244,7 +1391,10 @@ async function ensureLoaded(where?: string, sessionId?: string) {
   // 注意：`where: ''` 是**有效输入**（= 全局图库，没有项目根），不能与「没传 where」混为一谈。
   var hasWhere = typeof where === 'string'
   var raw = hasWhere ? where : ''
-  // cwd → 项目根：会话可能坐在项目里任意一层子目录（见 canonicalProjectRoot 的说明）。
+  // **会话目录**：规范化之前的原值。检测范围（自动扫描）以它为准 —— 图库根可以往上找，
+  // 但检测范围不许越过会话目录（见 setScanAnchor / canonicalProjectRoot）。
+  var sessDir = raw.trim() !== '' ? raw.trim().replace(/\/+$/, '') : ''
+  // cwd → 图库根：会话可能坐在项目里任意一层子目录（见 canonicalProjectRoot 的说明）。
   if (hasWhere && raw.trim() !== '') raw = await canonicalProjectRoot(raw)
   // 两个**不同**的东西：
   //   `canon` = 项目根那一层（`root` 永远是它，裸 key 与归属都按它算）；
@@ -1252,6 +1402,9 @@ async function ensureLoaded(where?: string, sessionId?: string) {
   var canon = hasWhere ? resolveLibCanonical(raw) : null
   var next = hasWhere ? layerForSession(raw, sessionId) : null
   var nextKey = hasWhere ? slotKeyOfLib(next) : ''
+  // 同一个图库根、不同的会话目录（两个会话分别坐在项目根与它的子目录里，共用同一个槽）：
+  // 检测锚点跟**这一次的会话目录**走 —— 检测范围永远以这一步的会话目录为准。
+  applyScanAnchor(sessDir, canon)
   // 快路：这一次要的就是当前这份、不用换层 —— 界面 2.5s 轮询走的就是这条，别为它排队。
   // 判据必须包含「内存里这份文档**真的**落在这一层里」：只信 `loadedFor` 的话，
   // 并发/错配期间 `doc` 可能已是别人那一层的，却仍被当成这一层返回（回执说谎）。
@@ -1270,8 +1423,14 @@ async function ensureLoaded(where?: string, sessionId?: string) {
       // 存过就只是换指针（不读盘、不 bump 修订号、把上一步投递过的留言状态原样留着）；
       // 没存过才重置并重新加载。
       saveActiveSlot()
-      if (activateSlot(nextKey)) return { ok: true }
-      resetToWorkspace(canon, next)
+      // 槽里那份 `root` 带着**上一个用它的会话**留下的 `scanFrom`：命中槽之后必须按这一步的
+      // 会话目录重钉一次，否则切回来的第一次请求会沿用别人的检测范围（清单也可能因此带着
+      // 别人锚点扫出来的条目）。
+      if (activateSlot(nextKey)) {
+        applyScanAnchor(sessDir, canon)
+        return { ok: true }
+      }
+      resetToWorkspace(canon, next, sessDir)
     }
     // 打开的是项目里的外部文件：别被「图库加载」冲掉（界面每次请求都带 where）
     if (doc.external) return { ok: true }

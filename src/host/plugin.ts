@@ -151,22 +151,51 @@ function promptText(asctx?) {
     '这张图是**讨论中的逻辑框架**，不保证与代码一致（别拿代码去「纠正」它，也别因为图上没画就断定漏了）；' +
       '它同时是你和用户的共享画布 —— 你改完用户立刻看得见，用户手动改的下一步你也看得见。',
   ]
+  // **检测范围要说清**：图库跟着项目走，而「项目」是**会话目录**这一棵 —— 自动扫描只列
+  // 会话目录及其子目录里的 `.arch-canvas`。图库根可以在上层（会话坐在项目子目录里），
+  // 但兄弟目录、容器目录下的别的项目一律不进这张清单。
+  // 锚点取**这一步的会话目录**（`sessWhere`），不读 `root.scanFrom`：槽是按图库目录共享的，
+  // 而两个会话可能分别坐在项目根与它的子目录里（同一个槽、两个锚点）—— 读那个字段就会
+  // 把**上一个请求**留下的锚点说成这一步的范围（实测：cwd=`my/laya` 的会话被告知范围是
+  // `my/laya/src`）。拿不到会话信息（工具/测试桩/headless）时才退回记住的那个锚点。
+  var relAnchor = ''
+  if (lib.scope === 'project' && root.workspace) {
+    var rootW = String(root.workspace).replace(/\/+$/, '')
+    var anchor = rootW
+    if (typeof sessWhere === 'string' && sessWhere) {
+      var sessDir0 = sessWhere.replace(/\/+$/, '')
+      // 只认「在图库根里面」的会话目录；判不出来就用图库根，不编一个范围
+      if (sessDir0 === rootW || sessDir0.indexOf(rootW + '/') === 0) anchor = sessDir0
+    } else {
+      anchor = String(root.scanFrom || rootW).replace(/\/+$/, '')
+    }
+    relAnchor = anchor
+    head.push('检测范围：**' + anchor + ' 及其子目录**' +
+      (anchor === rootW ? '' : '（图库根在上一层：`' + rootW + '`，key 以它为基准）') +
+      '；不在这个范围里的目录不会被列进来。')
+  }
   if (doc.external) {
     head.push('它是按路径打开的项目文件（不属于任何图库），你的改动落盘写回它本身。')
   }
   // 一句话总结：这是「读这张图之前先知道它讲的是什么」的那一行，作用与 skill 的描述行一样 ——
   // 所以紧跟定位行，且不截断（它本身有 500 字上限）。
   if (doc.summary) head.push('', '**这张图讲的是**：' + doc.summary)
+  // 目录关系按**这一步的锚点**重算（清单缓存是共享的，锚点会随请求变）
+  var relItems = withRel(libraryCache, relAnchor)
   var others = []
-  for (var i = 0; i < libraryCache.length; i++) {
-    var it = libraryCache[i]
+  for (var i = 0; i < relItems.length; i++) {
+    var it = relItems[i]
     if (it.deleted || it.key === curKey) continue
     var itSum = typeof it.summary === 'string' && it.summary ? it.summary : ''
     if (itSum.length > 60) itSum = itSum.slice(0, 60) + '…'
-    others.push('「' + it.key + '」' + (itSum ? '：' + itSum : '') + '(' + it.nodes + ' 节点' + (it.links ? '、' + it.links + ' 处下钻' : '') + ')')
+    // 方括号里是它**相对会话目录**的位置。只在「不在会话目录自己那一格图库」时才加：
+    // 自家图库那一格是默认情形（检测范围那行已经写明），加了纯噪音；而子目录里的另一层、
+    // 以及图库根在会话目录**之上**的那些（相对位置给的是绝对路径），恰恰是必须点出来的。
+    var itRel = it.relOutside ? '[' + it.rel + ']' : ''
+    others.push('「' + it.key + '」' + itRel + (itSum ? '：' + itSum : '') + '(' + it.nodes + ' 节点' + (it.links ? '、' + it.links + ' 处下钻' : '') + ')')
   }
   if (others.length > 0) {
-    head.push('', '同图库还有：' + others.join('、') + '。切过去用 `arch_switch`（用户画布会跟着切），只看不改用 `arch_read` 带 `diagram`。')
+    head.push('', '同图库还有（方括号里是它相对会话目录的位置）：' + others.join('、') + '。切过去用 `arch_switch`（用户画布会跟着切），只看不改用 `arch_read` 带 `diagram`。')
   }
   // 用户注释：只有**未解决**的那些进上下文。已解决的留在文件里可追溯，但不注入 ——
   // 注释会单调累积，全都灌进来的话，AI 会开始重新讨论早就定下来的事（那是负的表达力）。
@@ -571,8 +600,13 @@ ctx.effect(function () {
     }
     return {
       ok: true, dir: lib.dir, scope: lib.scope, workspace: lib.workspace,
+      // **目录关系要说清**：`dir` 是当前这一层的图库，`root` 是 key 的基准（图库根），
+      // `sessionDir` + `scanFrom` 才是这次检测的锚点与范围。
+      root: root.workspace || '', sessionDir: root.scanFrom || '',
+      scanRel: root.scanRel || '', scanFrom: root.scanFrom || root.workspace || '',
       current: doc.name, external: doc.external || null,
-      items: items,
+      // 每张图的 `rel` / `relOutside` 按**这一次请求的**锚点重算（缓存是共享的，烘焙会串味）
+      items: withRel(items, root.scanFrom || root.workspace),
       // 项目里散落的 mermaid 文件（同一次扫描的副产物）：按路径打开
       files: libraryFiles,
       libraryRev: libraryRev,
@@ -606,7 +640,10 @@ ctx.effect(function () {
       //     `loadInto` 是**原地**改 `doc`，而旧那份已经挂在 ① 的槽里，原地改会让那个槽悄悄
       //     变成这一层的文档（2026-10-01 复核实测：回执 `dir` 说 A、`file` 却在 B，还报 saved:true）。
       saveActiveSlot()
-      resetToWorkspace(resolveLibCanonical(String((root && root.workspace) || '')), k)
+      // **会话目录要一起传**：`resetToWorkspace` 的第三参是检测锚点，漏了它这一步的扫描范围
+      // 就从会话目录放宽到图库根，紧接着 `afterSwitch()` 的 `refreshLibrary(true)` 会把
+      // 图库根整棵扫进来（别的子项目的图库跟着进「同图库」清单）。
+      resetToWorkspace(resolveLibCanonical(String((root && root.workspace) || '')), k, sessDirOf(args))
     }
     var r = await loadDiagramAt(k, k.name, !!(args && args.create), policyOfSessionId(args && args.session))
     if (!r.ok) {
@@ -911,7 +948,8 @@ var switchTool = harness.defineTool({
     },
   },
   execute: async function (args, exec) {
-    await ensureLoaded(whereOfExec(exec), sessionIdOfExec(exec))
+    var swWhere = whereOfExec(exec)
+    await ensureLoaded(swWhere, sessionIdOfExec(exec))
     var raw = args && typeof args.key === 'string' ? args.key
       : (args && typeof args.name === 'string' ? args.name : '')
     if (!raw.trim()) return { ok: false, error: '需要 key' }
@@ -930,7 +968,10 @@ var switchTool = harness.defineTool({
       //     `loadInto` 是**原地**改 `doc`，而旧那份已经挂在 ① 的槽里，原地改会让那个槽悄悄
       //     变成这一层的文档（2026-10-01 复核实测：回执 `dir` 说 A、`file` 却在 B，还报 saved:true）。
       saveActiveSlot()
-      resetToWorkspace(resolveLibCanonical(String((root && root.workspace) || '')), k)
+      // **会话目录要一起传**：`resetToWorkspace` 的第三参是检测锚点，漏了它这一步的扫描范围
+      // 就从会话目录放宽到图库根，紧接着 `afterSwitch()` 的 `refreshLibrary(true)` 会把
+      // 图库根整棵扫进来（别的子项目的图库跟着进「同图库」清单）。
+      resetToWorkspace(resolveLibCanonical(String((root && root.workspace) || '')), k, cleanSessionDir(swWhere))
     }
     var r = await loadDiagramAt(k, k.name, !!(args && args.create), policyOfAgent(exec && exec.agent))
     if (!r.ok) {

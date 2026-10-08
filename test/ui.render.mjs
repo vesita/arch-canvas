@@ -482,8 +482,10 @@ console.log('\n[4d] 代码锚点与一句话总结：角标 / 失效可见 / 锚
     r2: { 'src/host/没了.ts': 'missing' },
   }
   const REF_ITEMS = [
-    { name: 'architecture', deleted: false, nodes: 3, edges: 0, links: 0, bytes: 300, project: '', key: 'architecture', dir: UI + '/.arch-canvas', summary: '这张图的一句话总结' },
-    { name: 'other', deleted: false, nodes: 2, edges: 1, links: 0, bytes: 120, project: '', key: 'other', dir: UI + '/.arch-canvas', summary: '另一张图的总结' },
+    { name: 'architecture', deleted: false, nodes: 3, edges: 0, links: 0, bytes: 300, project: '', key: 'architecture', dir: UI + '/.arch-canvas', rel: '.arch-canvas', relOutside: false, summary: '这张图的一句话总结' },
+    { name: 'other', deleted: false, nodes: 2, edges: 1, links: 0, bytes: 120, project: '', key: 'other', dir: UI + '/.arch-canvas', rel: '.arch-canvas', relOutside: false, summary: '另一张图的总结' },
+    // 子目录里的另一层：不在会话目录自己那一格图库里 → 界面要把它**在哪**摆出来
+    { name: 'detail', deleted: false, nodes: 2, edges: 0, links: 0, bytes: 90, project: 'sub', key: 'sub/detail', dir: UI + '/sub/.arch-canvas', rel: 'sub/.arch-canvas', relOutside: true, summary: '子目录里的图' },
   ]
 
   const prevRespond = respond
@@ -585,6 +587,8 @@ console.log('\n[4d] 代码锚点与一句话总结：角标 / 失效可见 / 锚
     libItemTexts.some((t) => t.indexOf('architecture') >= 0 && t.indexOf('这张图的一句话总结') >= 0), libItemTexts)
   ok('选择器里别的图也带上了 summary',
     libItemTexts.some((t) => t.indexOf('other') >= 0 && t.indexOf('另一张图的总结') >= 0), libItemTexts)
+  ok('选择器里不在会话目录自己图库的那张标出了位置（目录关系）',
+    libItemTexts.some((t) => t.indexOf('sub/detail') >= 0 && t.indexOf('在 sub/.arch-canvas') >= 0), libItemTexts)
 
   // 5. 起始页（空图）里也用总结说明「这个项目里有什么图」
   emptyMode = true
@@ -599,6 +603,8 @@ console.log('\n[4d] 代码锚点与一句话总结：角标 / 失效可见 / 锚
   await flush()
   const startSums = Array.from(startHost.querySelectorAll('.ac-start-sum')).map((el) => el.textContent)
   ok('起始页的图列表里显示别的图的 summary', startSums.indexOf('另一张图的总结') >= 0, startSums)
+  ok('起始页里不在会话目录自己图库的那张也标出了位置',
+    startHost.textContent.indexOf('在 sub/.arch-canvas') >= 0, startHost.textContent.slice(0, 300))
   emptyMode = false
 
   await act(async () => { startRoot.unmount() })
