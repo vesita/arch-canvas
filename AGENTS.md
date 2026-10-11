@@ -389,7 +389,7 @@ lostpointercapture 提交）。
 1. **`promptText(asctx)` 必须按会话判归属。** DSH 会把装配上下文（`{ agent, scope, signal }`）传给注册的 `text` 函数，里面的
    `agent.session.header.cwd` 就是这一步所属的项目（`whereOfExec` 取的就是它，见第 6 条）。**画布不属于你（`docBelongsTo(where)`
    为假）时**：先试着同步换到自己项目那一份（内存槽命中，`syncWorkspaceFor`）；命中不了就只注入一段**说明**（`foreignCanvasText`：画布停在哪个项目、为什么这一轮看不到内容、要看自己的图去调
-   `arch_read`），**不含任何别人的图内容、锚点、留言**，也不消费那些留言。没有会话信息（工具、测试桩、headless）时**保持旧行为** —— 别把「判不了」变成「一律不给」。
+   `arch_read`），**不含任何别人的图内容、锚点、留言**，也不消费那些留言。**停在全局兜底图库时不许说成「别的项目」** —— 兜底图库不属于任何项目：说明里给的是「本项目图库的落点」（`resolveLibCanonical(sessWhere).dir`），还没有就 `arch_write` 建、已有就 `arch_read` 切。没有会话信息（工具、测试桩、headless）时**保持旧行为** —— 别把「判不了」变成「一律不给」。
 2. **留言只投递给它所属项目的会话。** 留言是**一次性**投递，投错人等于丢了；守门断言就是「Y 那一步没吃掉 X 的留言」+ 盘上 `done` 仍为 false。
 3. **每一层一份内存画布（`docSlots`）**，槽里放的是**同一批对象引用**，切换只是换指针：换层时 `saveActiveSlot()` → `activateSlot(key)`
    命中就返回（**不读盘、不 bump 修订号**）；**只存「已经载入过」的状态**（`loadedFor` 为空时不存），否则下次「命中」就等于命中一张空图。
@@ -437,7 +437,7 @@ lostpointercapture 提交）。
 另外两条：**`doc.workspace` 必须留在 `RUNTIME_ONLY_FIELDS`**（漏了就是每次保存都误报
 `serialize.not-idempotent`）；**残留（未修）**：`whereOfExec` 取不到 cwd 的会话（无 cwd 的 headless）仍按「当前文档」读写。
 
-守门人：`test/host.e2e.mjs`【会话隔离：画布属于项目、不属于进程】（Y 那一步读不到 X 的图/留言/源文本块、盘上 `done` 仍为 false、X
+守门人：`test/host.e2e.mjs`【会话隔离：画布属于项目、不属于进程】（含「停在全局兜底图库」不许说成「别的项目」；Y 那一步读不到 X 的图/留言/源文本块、盘上 `done` 仍为 false、X
 那一步仍能拿到自己的留言、一次性投递语义不变、工具带回自己的画布、换回 X 修订号不动 + 负向对照、子图库归属仍按项目根、无会话信息时保持旧行为）、
 【会话目录自动检测 + 检测范围收口（2026-10-08 目录污染）】（`session.header.cwd` 真形状的读与写都落进会话目录的图库、旧形状仍认、
 空壳图库不算数、兄弟项目一条都不进清单、写路径不在容器目录里种库 + 换成真图库的负向对照、`sessionDir`/`rel` 目录关系）、

@@ -2791,6 +2791,17 @@ console.log('【会话隔离：画布属于项目、不属于进程（2026-09-23
   const pNoAgent = promptOf(undefined)
   ok('没有会话上下文时照旧注入当前画布（不被这句说明顶掉）',
     pNoAgent.indexOf('停在别的项目上') < 0 && pNoAgent.indexOf('```mermaid') >= 0)
+
+  // 9) 画布停在**全局兜底图库**时不许说成「别的项目」——兜底图库不属于任何项目。
+  //    现场：重启后 cwd 在项目里的会话读到「画布现在停在别的项目上（全局图库 ~/.dsh/arch-canvas）」，
+  //    而它自己的项目根本没建过图库；那句话把「兜底」误报成「别人的项目」，方向正好反了。
+  await call('doc:get', { where: '', session: 'sess-global' })
+  const agentNoLib = { session: { id: 'sess-nolib', cwd: '/tmp/proj-iso-nolib' } }
+  const pNoLib = promptOf(agentNoLib)
+  ok('停在全局兜底图库时不说「别的项目」', pNoLib.indexOf('画布现在停在别的项目上') < 0, pNoLib.slice(0, 240))
+  ok('说清那是全局兜底图库（不属于任何项目）', pNoLib.indexOf('全局兜底图库') >= 0, pNoLib.slice(0, 240))
+  ok('给出本项目图库的落点', pNoLib.indexOf('/tmp/proj-iso-nolib/.arch-canvas') >= 0, pNoLib.slice(0, 240))
+  ok('这一轮仍不读画布内容（也不含源文本块）', pNoLib.indexOf('```mermaid') < 0)
 }
 
 console.log('【会话目录自动检测 + 检测范围收口（2026-10-08 目录污染）】')
