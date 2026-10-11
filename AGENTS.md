@@ -15,7 +15,7 @@
 2. **旁路表承载的字段**：`note` / `noteDone` 存在 `notes.json` 里，不由这份文本承载。
 3. **派生字段与集合顺序**：边的 `id` 每次解析重新编号、不进文件；节点/边/组的**顺序**（`serializeDoc` 会重排），所以按 key 排序后**按集合比**。
 
-守门人：`test/mermaid.test.cjs`【往返守恒检查：安静时真安静，出问题时真会喊】、【空组必须写进文件】；`test/host.e2e.mjs`【写盘前的往返守恒检查：整套测试跑下来一次都不该报】。
+守门人：`test/mermaid.parser.test.cjs`【往返守恒检查：安静时真安静，出问题时真会喊】、【空组必须写进文件】；`test/host.e2e.p4.mjs`【写盘前的往返守恒检查：整套测试跑下来一次都不该报】。
 
 ## TypeScript
 
@@ -45,7 +45,7 @@ Package 形态下 `code.host` 是**源码字符串**，wasm 塞不进去；真�
 1. **分片不能 import**：`src/host/*` 和 `src/client/*` 各是一段被沙箱求值的函数体，没有模块系统；复用靠拼接顺序 + 函数声明提升。
 2. **`%% @pos` 是坐标的唯一载体**：坐标只写在注释里，图体里没有第二个地方存布局；注释指向图里不存在的节点时**直接丢弃**（不许凭注释把节点复活）。**组 id 和节点 id
    一样不能含空格**：`scanNodeRef` 的 `ID_RE` 遇到空格就停，`subgraph AI 端["AI 端"]` 会被解析成 id=`AI` + 标签=`端["AI 端"]`；走
-   `set_group` 不会踩（它过 `cleanId`）。**`set_label` 里的换行传真实换行符**（写成 `<br/>` 也等价）：输入侧的 `normalizeBreaks()`（模型入口：`normalizeModel` 与各 op）把 `<br>` / `<\br>` / `</br>` / `<BR/>` 这类手写变体、以及老版本转义着写进文件的 `&lt;br&gt;` 一并收成真实换行，`q()` 再统一写成 `<br/>` —— 不这么做的话 AI 照抄来的 `<br>` 会被转义成 `#60;br/&gt;`，用户方块里就是那串字面垃圾。**只认 br 这一族，不碰 `\n` 这种反斜杠转义**（标签里的代码片段不能替用户猜）。守门人：`test/mermaid.test.cjs` 第 [10] 节、`test/host.e2e.mjs`【AI 编辑工具的格式容错】。
+   `set_group` 不会踩（它过 `cleanId`）。**`set_label` 里的换行传真实换行符**（写成 `<br/>` 也等价）：输入侧的 `normalizeBreaks()`（模型入口：`normalizeModel` 与各 op）把 `<br>` / `<\br>` / `</br>` / `<BR/>` 这类手写变体、以及老版本转义着写进文件的 `&lt;br&gt;` 一并收成真实换行，`q()` 再统一写成 `<br/>` —— 不这么做的话 AI 照抄来的 `<br>` 会被转义成 `#60;br/&gt;`，用户方块里就是那串字面垃圾。**只认 br 这一族，不碰 `\n` 这种反斜杠转义**（标签里的代码片段不能替用户猜）。守门人：`test/mermaid.parser.test.cjs` 第 [10] 节、`test/host.e2e.p4.mjs`【AI 编辑工具的格式容错】。
 3. **分片里不能有顶层 `return`**：`src/host/*` 是 `apply(ctx)` 的函数体，`src/client/*` 被拼进一个 IIFE（`UI_PARTS`），两者都不自带
    `return`；`return {...}` 只由 `src/bootstrap/*` 写。分片清单与顺序由 `tools/build.mjs` 的 `HOST_PARTS` / `UI_PARTS`
    声明（`expectPartsCover` 要求清单与目录下的 `.ts` **集合相等**：新文件不进清单就不参与构建、产物里根本没有它）。
@@ -71,7 +71,7 @@ Package 形态下 `code.host` 是**源码字符串**，wasm 塞不进去；真�
      （`parseFloat('.')` 是 NaN，而 NaN 会让往返检查也瞎）。
    - **重复的组 id**：解析与序列化两侧都按「保留第一条」去重，否则那个组的成员行与 `%% @pos` 会被写两遍（模型一致，往返检查判不出）。
 
-守门人：`test/host.e2e.mjs` 的 P0 / P1 各节（连接符唯一真相 / 指令闸门 / emoji id / 重复组 id / 归一撞名），判据都是真 `mermaid.parse()`。
+守门人：`test/host.e2e.p4.mjs` 的 P0 / P1 各节（连接符唯一真相 / 指令闸门 / emoji id / 重复组 id / 归一撞名），判据都是真 `mermaid.parse()`。
 
 ## 元素上的东西：留言旁路表、`@file`、`@summary`
 
@@ -85,18 +85,18 @@ Package 形态下 `code.host` 是**源码字符串**，wasm 塞不进去；真�
    的就是历史：落盘时（`harvestNoteStore`）按 `at` 丢最旧的，只留 `NOTE_HISTORY_MAX` 条；`at` **不在模型上**，所以不用碰 `normalizeModel`
    白名单 / `snapshotModel` / `restoreModel`。**这是读路径上的内存变更**：`promptText` 只改内存、落盘照旧由 `persist()`
    做；送达后一直没人写盘，重启 dsh 会让这批**再送一次** —— 宁可多送一次，也不丢用户写的东西。留言**正文**只由用户写，AI
-   只能改状态（`mark_note`）；**要长期挂着的意图不要放留言**。守门人：`test/host.e2e.mjs`【留言历史封顶 6 条】+【提示词注入】的「送达之后同一条不再出现」。
+   只能改状态（`mark_note`）；**要长期挂着的意图不要放留言**。守门人：`test/host.e2e.p2.mjs`【留言历史封顶 6 条】+【提示词注入】的「送达之后同一条不再出现」。
 4. **孤儿保留**：留言搬出源文本后不再有「注释把删掉的节点拽回图里」的风险，删掉节点后留言留在表里。
 5. **一次性迁移（表优先、正文兜底）**：老文件正文里的老式留言行在加载时读进表（表里已有该节点条目就以表为准），下一次落盘时从文件里剥掉。
 6. **写入两道防覆盖闸门**（`src/host/notes.ts`）：`fs.processPath(target)` 必须严格等于预期路径，且文件不存在或能解析成 JSON
    对象才允许写入；任一不过就拒写并记 `notes.save.refused`；加载失败记 `notes.load.fail`。守门人：
-   `test/host.e2e.mjs` 的「数据目录是一次性临时目录」断言与 `test/plugin-mount.e2e.mjs` 的「日志写进一次性临时目录」。
+   `test/host.e2e.p1.mjs` 的「数据目录是一次性临时目录」断言与 `test/plugin-mount.e2e.mjs` 的「日志写进一次性临时目录」。
 7. **客户端发送入口与 `@` 引用源**：清单头部「交给 AI (N)」**一个动作把整批交出去**（框空就替用户写成一条消息再
    `submit()`；框里有字就**原样发他那句**；检查器单节点只填入、不自动发）；**空草稿 + 无附件是 no-op**（DSH 的规矩），所以「空框也能发」由我们补一句话；两条路都走客户端
    `props.inputActions`（`setDraft` / `submit`）—— 宿主半边禁止 import，拿不到 `createUserMessage`；注册 `@`
    引用源（`ctx.inputTriggers.registerSource`，trigger: '@'）走 `ctx.get` 可选获取，chip 由 `codec.serialize(ref)`
    展开；**节点快照按会话分开存**（`studioSnapshots`），**拿不到这个会话的快照就返回空**；`codec.serialize(ref, signal)` **拿不到会话**，解析走
-   `resolveLiveNode`，两个会话都有同名节点而活跃的那个没有 → **拒绝展开**。守门人：`test/ui.render.mjs` 第 [4s] 节。
+   `resolveLiveNode`，两个会话都有同名节点而活跃的那个没有 → **拒绝展开**。守门人：`test/ui.render.s4.mjs` 第 [4s] 节。
 8. **代码锚点 `%% @file <id> <路径>` 是数组，一个节点可多条。** 它回答「中文标签 ↔ 英文路径」这个 grep 不出来的映射，而它会**腐烂**，所以加载/保存后一律
    `verifyFileRefs()` 重算 `doc.fileStatus`（`ok` / `missing` / `symbol-missing` / `unknown`）——
    **一条过期锚点比没有锚点更坏**；判不了根时返回 `unknown`，**不许假装 ok**。结论同时摆到界面（`▤` 角标，失效变红）与提示词（⚠ + 「不要照着用」）。**`%% @file`
@@ -127,15 +127,15 @@ Package 形态下 `code.host` 是**源码字符串**，wasm 塞不进去；真�
 整条提示词注入失败、插件当场崩，**连会话都起不来**。守卫收口在 `promptSafe()`（`plugin.ts`）：把 `{{` 拆成 `{ {`、循环拆到不动为止，`promptText()` 每个
 return 都过它；这是唯一一处**必须改动用户文本**的地方，别在别处再开第二个口子。
 
-守门人是 `test/host.e2e.mjs` 末尾的【提示词模板注入防护】；它真的加一个 hex 节点再删掉，所以**必须放在文件最后** —— 夹在中间会推进修订号，撞坏前面所有「修订号 == N」的断言。
+守门人是 `test/host.e2e.p4.mjs` 末尾的【提示词模板注入防护】；它真的加一个 hex 节点再删掉，所以**必须放在文件最后** —— 夹在中间会推进修订号，撞坏前面所有「修订号 == N」的断言。
 
 ### `promptText()` 只写「状态」，不写「教材」
 
 `promptText()`（`src/host/plugin.ts`）**每一步都注入**，只回答两件事：**当前状态是什么**（哪张图、修订几、谁刚改了什么节点、一句话总结、同图库还有哪些图、未办的留言、锚点校验结果）与**用户要什么**。「工具怎么用、图库怎么组织、`%%`
 各字段什么意思」是 `skills/arch-canvas/SKILL.md` 的职责；抄进来就是**两份会各自漂移的真相**。属于「读这份数据」的注意事项只有三条，必须留在 `promptText`
 里（紧贴源码块）：图不保证与代码一致、共享画布的边界、`%%`
-行是元数据不要当内容讨论。清单类内容里节点名一律取**标题**（`labelTitle()`）。守门人：`test/mermaid.test.cjs` 第 [14]~[17]
-节；`test/host.e2e.mjs`【代码锚点 %% @file】【一句话总结 %% @summary】；`test/ui.render.mjs` 第 [4d] 节。
+行是元数据不要当内容讨论。清单类内容里节点名一律取**标题**（`labelTitle()`）。守门人：`test/mermaid.parser.test.cjs` 第 [14]~[17]
+节；`test/host.e2e.p2.mjs`【代码锚点 %% @file】【一句话总结 %% @summary】；`test/ui.render.s2.mjs` 第 [4d] 节。
 
 ## 锚点保鲜 `drift`：这张图会不会已经过期
 
@@ -159,7 +159,7 @@ assets / docs…）并跳过 `*.min.*` 与 `*.d.ts`，`lib` / `es` / `cjs` 只�
 
 界面与提示词都是**两档语气**：有 `stale` → 琥珀角标 + 琥珀横幅 + 提示词里「别照着这些锚点走」；只有 `uncovered` → 中性 `.hint` 横幅 +
 提示词里「这只是还没画，**不是**图上写错了」。**横幅默认收起成一行**（`.open` 才展开明细与建议）：常驻的明细会一直占着画布高度，
-而「是哪个方块过期了」画布上已经有琥珀角标指着。守门人：`test/host.e2e.mjs`【锚点保鲜 drift】，`test/ui.render.mjs` 第 [4t] 节。
+而「是哪个方块过期了」画布上已经有琥珀角标指着。守门人：`test/host.e2e.p2.mjs`【锚点保鲜 drift】，`test/ui.render.s4.mjs` 第 [4t] 节。
 
 ## 图库不会自动创建（opt-in）
 
@@ -168,7 +168,7 @@ true`，**不 `ensureDir`、不播种默认图**；只有 `doc:open { create: tr
 create: true }` 两个显式入口会建（工具侧还要先征得用户同意）。
 
 - `arch_write` / `arch_edit` 在 `doc.absent`
-  时**硬拒绝**（错误信息说明「图库不会自动创建」）：**唯一**一道写图闸门。守门人：`test/host.e2e.mjs`【任务 1 守门断言：读路径不建库，写路径防隐式创建】。
+  时**硬拒绝**（错误信息说明「图库不会自动创建」）：**唯一**一道写图闸门。守门人：`test/host.e2e.p2.mjs`【任务 1 守门断言：读路径不建库，写路径防隐式创建】。
 - `persist()` 是唯一会把 `absent` 清掉的地方；`snapshotModel`/`restoreModel` 必须带上它，否则「写盘失败回滚」会把空库状态也一起回滚掉。
 
 ## 写盘必须带会话
@@ -181,7 +181,7 @@ const policy = ctx.sandboxPolicy.resolve({ session })   // 只传 session，绝�
 await fs.writeText(target, body, undefined, undefined, policy)
 ```
 
-1. **绝不自己传 `mode`**：传 mode 等于声称「一次已批准的显式模式」，会越过会话自己的模式 —— 那是**放大权限**。守门人：`test/host.e2e.mjs` 断言 `resolve`
+1. **绝不自己传 `mode`**：传 mode 等于声称「一次已批准的显式模式」，会越过会话自己的模式 —— 那是**放大权限**。守门人：`test/host.e2e.p1.mjs` 断言 `resolve`
    入参 `mode === undefined`。
 2. **会话从哪来**：AI 工具走 `exec.agent.session`；面板的 RPC 走客户端传上来的 `sessionId` →
    `ctx.get('agents').get(id).session`。
@@ -229,7 +229,7 @@ add <本目录>`）下 `node_modules` 指向项目目录，`npm run build` 之�
 3. **只在内存里，按文件分开存**（键就是 `doc.file`，上限 50 份，内容逐字节相同不重复记）。真相源始终是那个 `.mmd` 文件；代价是**重启后清空** —— 面板上如实写着这句。
 4. **写盘失败的那一次不进历史**；两个写工具在落盘失败时**必须回 `ok: false` + 把原因塞进 `problems`**（内存已经回滚了，回执还说「已更新」就是骗 AI）。
 
-守门人：`test/host.e2e.mjs`【检查点（快照）】，`test/ui.render.mjs` 第 [4e] 节。
+守门人：`test/host.e2e.p2.mjs`【检查点（快照）】，`test/ui.render.s2.mjs` 第 [4e] 节。
 
 ## 服务时序：硬依赖走 inject，可选取用走 ctx.get
 
@@ -245,7 +245,7 @@ add <本目录>`）下 `node_modules` 指向项目目录，`npm run build` 之�
 - **宿主逻辑用到的 ctx 能力，测试桩也得提供**：`ctx.inject` 是第四个必须的桩方法（`get` / `effect` / `on` / `inject`），加一个就要同步补
   host.e2e、host-loader、plugin-mount、tools.schema 四个文件里的桩。
 - **可选取用的服务必须走 `ctx.get(name)`**：Cordis 对**未 inject** 的服务直接读属性是**抛错**（`cannot get property "timer" without
-  inject`），**不是**给 `undefined`。规则：**硬依赖走 `inject`，可选取用走 `ctx.get`，拿不到就降级。** 守门人是 `test/ui.render.mjs` 第 6
+  inject`），**不是**给 `undefined`。规则：**硬依赖走 `inject`，可选取用走 `ctx.get`，拿不到就降级。** 守门人是 `test/ui.render.s4.mjs` 第 6
   节（strict ctx 渲染面板）。
 
 ## 包内资源与数据目录都不要写死本机路径
@@ -281,7 +281,7 @@ add <本目录>`）下 `node_modules` 指向项目目录，`npm run build` 之�
 `parseSkillFrontmatter()` 是极简标量解析（只认开头 `---` 块里的 `name` / `description` / `whenToUse`，
 正文是闭合 `---` 之后的原文，一字不改），与 dsh-collab 的 `src/skill.ts` 同构。
 **`description` 是 catalog 里唯一给模型看的字段**（`whenToUse` 不进 catalog），所以「什么时候该用」必须写在
-`description` 里。守门人：`test/host.e2e.mjs`【随包 skill：注册给 skills 服务】+ 两条负向对照（缺 `name` /
+`description` 里。守门人：`test/host.e2e.p1.mjs`【随包 skill：注册给 skills 服务】+ 两条负向对照（缺 `name` /
 没有服务都不注册、也不抛）、`test/plugin-mount.e2e.mjs`【真插件形态读的是真 SKILL.md】。
 
 ## Package 里只应该有引导层
@@ -302,7 +302,7 @@ add <本目录>`）下 `node_modules` 指向项目目录，`npm run build` 之�
 
 ## 客户端界面：没有浏览器怎么看
 
-`test/ui.render.mjs` 拿 jsdom + React 把 `lib/ui.js` **真渲染出来点一遍**。两条必须照做的规矩：
+`test/ui.render.s*.mjs`（分片）拿 jsdom + React 把 `lib/ui.js` **真渲染出来点一遍**。两条必须照做的规矩：
 
 1. **DOM 必须在 `import('react-dom/client')` 之前就位。** react-dom 在**模块求值期**就用 `window` / `document`
    探测能力；晚一步它会认为环境不支持 input 事件，改走 IE 时代的 `propertychange` 分支 —— `onChange` 永不触发、`focusin` 抛 `attachEvent is
@@ -326,7 +326,7 @@ ArchStudio**。这条契约牵出四件事：
    否则每次切页回来都会把**同一次**旧改动再脉动一遍。
 3. **左下角那个入口没有**（`sidebar.footer.action` + `sidebarRightTabs` 摘掉，客户端 `exports.inject` 因此只剩
    `slots`）；代价：**空白会话里没有任何入口打开画布**。
-4. **粘滞的都是「开关」，状态不是**：详情只在**没有位移的那一次抬手**上展开（`DRAG_SLOP` 的抖动门槛）。守门人：`test/ui.render.mjs` 第 [4r] G、第 [4s] 节。
+4. **粘滞的都是「开关」，状态不是**：详情只在**没有位移的那一次抬手**上展开（`DRAG_SLOP` 的抖动门槛）。守门人：`test/ui.render.s4.mjs` 第 [4r] G、第 [4s] 节。
 
 ## 目录含义
 
@@ -383,7 +383,7 @@ ArchStudio**。这条契约牵出四件事：
 - 锚点的守门断言用**有符号**距离（0 = 在轮廓上，负 = 埋在形状里）：只测「离轮廓多远」的话，锚点缩到方块正中间也会算 0 —— 那条断言就没牙了。
 
 守门人：`test/edges.test.cjs`（轮廓有符号距离 × 两种摆放 × 8 种形状 × 1~4 端口、选边、420 点网格的「白绕/回头线/从背后出线」不变量 +
-**旧规则负向对照**、非矩形多端口「不穿别人也不穿自己」、平行间隔让道、避障、自环、坐标完全重合的退化输入）；`test/ui.render.mjs` 第 [4r] G（面板三态 / Esc 分层 /
+**旧规则负向对照**、非矩形多端口「不穿别人也不穿自己」、平行间隔让道、避障、自环、坐标完全重合的退化输入）；`test/ui.render.s4.mjs` 第 [4r] G（面板三态 / Esc 分层 /
 分隔条）、第 [4p] 平行间隔（坐标**穷举搜出来**，否则断言空转）与第 [4w] 节（rAF 合帧 / 吸附阈值与迟滞 / Alt / pointercancel 回滚 /
 lostpointercapture 提交）。
 
@@ -443,7 +443,7 @@ lostpointercapture 提交）。
 
 **残留（未修）**：`whereOfExec` 取不到 cwd 的会话（无 cwd 的 headless）仍按「当前文档」读写。
 
-守门人：`test/host.e2e.mjs`【会话隔离：画布属于项目、不属于进程】（含「停在兜底图库」一条；Y 那一步读不到 X 的图/留言/源文本块、盘上 `done` 仍为 false、X
+守门人：`test/host.e2e.p4.mjs`【会话隔离：画布属于项目、不属于进程】（含「停在兜底图库」一条；Y 那一步读不到 X 的图/留言/源文本块、盘上 `done` 仍为 false、X
 那一步仍能拿到自己的留言、一次性投递语义不变、工具带回自己的画布、换回 X 修订号不动 + 负向对照、子图库归属仍按项目根、无会话信息时保持旧行为）、
 【会话目录自动检测 + 检测范围收口（2026-10-08 目录污染）】（`session.header.cwd` 真形状的读与写都落进会话目录的图库、旧形状仍认、
 空壳图库不算数、兄弟项目一条都不进清单、写路径不在容器目录里种库 + 换成真图库的负向对照、`sessionDir`/`rel` 目录关系）、
@@ -497,8 +497,8 @@ lostpointercapture 提交）。
 14. **留言表改名要按节点 id 合并。** `notes.json` 以**图文件名**为键，`doc:rename` 要把它那一格搬到新键；**目标键已存在时按节点 id 合并、源图优先**，
     不能直接把源图的留言 `delete` 掉 —— 那等于用户写给源图的留言全丢，反而留下孤儿条目。
 
-守门人：`test/host.e2e.mjs` 的 A~U 各节（含逐条「撤回修复就红」的咬合检查）、`test/mermaid.test.cjs` 第 [21]~[28] 节（真 Mermaid 合法性 /
-真图逐字节往返）+ 第 [17] 节（墓碑不进 extras）、`test/edges.test.cjs` 第 [8] 节、`test/ui.render.mjs` 第 [4s] 节与第 [4r]
+守门人：`test/host.e2e.p*.mjs` 的 A~U 各节（含逐条「撤回修复就红」的咬合检查）、`test/mermaid.parser.test.cjs` 第 [21]~[22] 节 + `test/mermaid.real.test.cjs` 第 [23]~[28] 节（真 Mermaid 合法性 /
+真图逐字节往返）+ 第 [17] 节（墓碑不进 extras）、`test/edges.test.cjs` 第 [8] 节、`test/ui.render.s4.mjs` 第 [4s] 节与第 [4r]
 B2、`test/build-guards.mjs`。
 
 ## 与主会话协作

@@ -1,7 +1,7 @@
 // 测试基线：README / PROJECT_STATE 里的断言数 **由测试自己报**，不手抄。
 //
 // 这个文件是 `npm test` 的入口，做四件事：
-//   1. **覆盖断言**：`test/` 下实际存在的测试文件 == SUITES ∪ GATES ∪ 本文件。清单是手写的，
+//   1. **覆盖断言**：`test/` 下实际存在的测试文件 == SUITES ∪ GATES ∪ HELPERS ∪ 本文件。清单是手写的，
 //      从前新加一个 `test/xxx.mjs` 永远不会被跑到（放一个必然失败的进去，`npm test` 照样 EXIT=0）。
 //   2. 按顺序跑各个测试、收集每个文件结尾自己打印的通过条数（`结果: N 通过 / M 失败` 或
 //      `全部通过：N / N`），再断言两份文档里的基线行 == 实测。
@@ -21,15 +21,24 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url))
 
 /** 顺序就是打印顺序；`label` 是两份文档里必须逐字出现的套件名。 */
 const SUITES = [
-  { label: '解析器', file: 'test/mermaid.test.cjs' },
+  { label: '解析器·纯函数往返', file: 'test/mermaid.parser.test.cjs' },
+  { label: '解析器·真 Mermaid', file: 'test/mermaid.real.test.cjs' },
   { label: '布局', file: 'test/layout.test.cjs' },
   { label: '连线几何', file: 'test/edges.test.cjs' },
-  { label: '宿主', file: 'test/host.e2e.mjs' },
+  { label: '宿主·A', file: 'test/host.e2e.p1.mjs' },
+  { label: '宿主·B', file: 'test/host.e2e.p2.mjs' },
+  { label: '宿主·C', file: 'test/host.e2e.p3.mjs' },
+  { label: '宿主·D', file: 'test/host.e2e.p4.mjs' },
   { label: '引导层', file: 'test/host-loader.e2e.mjs' },
   { label: '插件挂载', file: 'test/plugin-mount.e2e.mjs' },
   { label: '配置卡', file: 'test/client-config-card.mjs' },
   { label: '构建守门人', file: 'test/build-guards.mjs' },
-  { label: '界面渲染', file: 'test/ui.render.mjs' },
+  { label: '界面渲染·A', file: 'test/ui.render.s1.mjs' },
+  { label: '界面渲染·B', file: 'test/ui.render.s2.mjs' },
+  { label: '界面渲染·C', file: 'test/ui.render.s3.mjs' },
+  { label: '界面渲染·D', file: 'test/ui.render.s4.mjs' },
+  { label: '界面渲染·E', file: 'test/ui.render.s5.mjs' },
+  { label: '界面渲染·F', file: 'test/ui.render.s6.mjs' },
 ]
 
 /**
@@ -41,13 +50,26 @@ const GATES = [
   { label: '工具 schema', file: 'test/tools.schema.mjs' },
 ]
 
+/**
+ * 共享脚手架：被套件 import / require 的**公共装载与桩**，自己不单独跑、不打印汇总行、不进基线合计。
+ *
+ * 判据（这不是豁免口子）：**它一旦自己打印汇总行、或自己跑断言，就必须登记成 SUITES**。
+ * 这里只放「DOM/React 装载、桩 RPC、桩服务与 vm 装载、解析器装载」这类一个事实一个家的公共件；
+ * `label` 只用于报错时指路，不参与基线行核对。
+ */
+const HELPERS = [
+  { label: '界面渲染脚手架', file: 'test/ui.render.shared.mjs' },
+  { label: '宿主 e2e 脚手架', file: 'test/host.e2e.shared.mjs' },
+  { label: '解析器脚手架', file: 'test/mermaid.shared.cjs' },
+]
+
 /** 本文件自己：它跑自己会递归，所以从覆盖断言里排除，但仍在清单里登记。 */
 const SELF = 'test/docs.baseline.mjs'
 
 /**
  * 覆盖断言（与 `tools/build.mjs` 的 `expectPartsCover` 同形）：`test/` 下所有 `.mjs` / `.cjs`
- * 必须正好等于「SUITES 的 file ∪ GATES 的 file ∪ 本文件」。多一个少一个都报错，并把该补的清单打出来。
- * `fixtures/` 之类纯数据目录跳过（里面不会有测试）；真要有辅助 `.mjs`，就显式登记进 SUITES/GATES，
+ * 必须正好等于「SUITES 的 file ∪ GATES 的 file ∪ HELPERS 的 file ∪ 本文件」。多一个少一个都报错，并把该补的清单打出来。
+ * `fixtures/` 之类纯数据目录跳过（里面不会有测试）；真要有辅助 `.mjs`，就显式登记进 SUITES/GATES/HELPERS，
  * 别让它靠目录名豁免 —— 豁免名单一旦存在，绕过就是加个目录的事。
  */
 const SKIP_TEST_DIRS = new Set(['fixtures', 'node_modules'])
@@ -63,13 +85,18 @@ function walkTestFiles(dir) {
 }
 
 {
-  const declared = [...SUITES.map((s) => s.file), ...GATES.map((g) => g.file), SELF].sort()
+  const declared = [
+    ...SUITES.map((s) => s.file),
+    ...GATES.map((g) => g.file),
+    ...HELPERS.map((h) => h.file),
+    SELF,
+  ].sort()
   const actual = walkTestFiles('test').sort()
   if (declared.join('\n') !== actual.join('\n')) {
     const missing = actual.filter((f) => !declared.includes(f))
     const ghost = declared.filter((f) => !actual.includes(f))
-    console.error('✗ test/ 下的测试文件与清单不相等 —— 新增的测试文件必须进 SUITES 或 GATES，否则永远不会被跑到')
-    if (missing.length) console.error('  漏在清单外（该加进 SUITES）：' + missing.join(', '))
+    console.error('✗ test/ 下的测试文件与清单不相等 —— 新增的测试文件必须进 SUITES / GATES / HELPERS，否则永远不会被跑到')
+    if (missing.length) console.error('  漏在清单外（套件加进 SUITES，共享脚手架加进 HELPERS）：' + missing.join(', '))
     if (ghost.length) console.error('  清单里有、实际不存在（该删）：' + ghost.join(', '))
     process.exit(1)
   }

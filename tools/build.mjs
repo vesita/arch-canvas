@@ -100,6 +100,16 @@ const UI_PARTS = [
   // runtime 的分片：layout 是分词/色相/自动布局，edges 是连线几何/选边落点/图标/导出/定时器。
   'src/client/runtime-layout.js',
   'src/client/runtime-edges.js',
+  // studio 族：组件本体在 studio.js（只剩 hooks 与接线）；模块级常量与纯函数在 core，
+  // 事件与编辑动作在 actions-*（各自是一个工厂，吃本帧的运行时对象 S），
+  // 渲染子树在 render-*（同样吃 S）。名字不带编号，顺序由这里声明。
+  'src/client/studio-core.js',
+  'src/client/studio-actions-edit.js',
+  'src/client/studio-actions-drag.js',
+  'src/client/studio-actions-server.js',
+  'src/client/studio-render-canvas.js',
+  'src/client/studio-render-chrome.js',
+  'src/client/studio-render-root.js',
   'src/client/studio.js',
   'src/client/register.js',
 ]
@@ -348,7 +358,7 @@ expect('host-no-node-globals', leaked.length === 0,
 mkdirSync(join(ROOT, 'dist'), { recursive: true })
 writeFileSync(join(ROOT, 'dist/host.js'), hostLogic)
 writeFileSync(join(ROOT, 'dist/ui.js'), ui)
-// 解析器单独出一份：test/mermaid.test.cjs 要跑**当前构建**的解析器，
+// 解析器单独出一份：test/mermaid.parser.test.cjs 要跑**当前构建**的解析器，
 // 而不是 /tmp 下一份会腐烂的手工快照。它可能由多个分片拼成（mermaid*），按清单顺序整族拼。
 writeFileSync(join(ROOT, 'dist/mermaid.js'), joinParts(family(HOST_PARTS, 'mermaid'), hostOut))
 // 客户端那半的**纯函数**也单独出一份：test/layout.test.cjs 要跑当前构建的自动布局，

@@ -9,6 +9,9 @@
 // build-guards / client-config-card）**没有任何命令会跑它们**，仓库也没有 CI。
 // 于是「守门断言在、闸门没接电」：改坏协议层可以一路静默通过。这里把闸门接上。
 //
+// 拆分后这三个大文件各由若干分片组成（`*.shared.*` 是它们共用的装载脚手架，不是套件、不进这里）：
+//   mermaid.parser / mermaid.real · host.e2e.p1..p4 · ui.render.s1..s6
+//
 // 判据就是退出码：任何一个文件非 0 即整体非 0。
 //
 // 用法：node tools/run-tests.mjs [--no-build]
@@ -27,12 +30,21 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
  * 其它文件之后 —— 它们跑得最久，失败时也不该耽误前面的快测。
  */
 const FILES = [
-  'test/mermaid.test.cjs',
+  'test/mermaid.parser.test.cjs',
+  'test/mermaid.real.test.cjs',
   'test/edges.test.cjs',
   'test/layout.test.cjs',
   'test/prerender.test.mjs',
-  'test/ui.render.mjs',
-  'test/host.e2e.mjs',
+  'test/ui.render.s1.mjs',
+  'test/ui.render.s2.mjs',
+  'test/ui.render.s3.mjs',
+  'test/ui.render.s4.mjs',
+  'test/ui.render.s5.mjs',
+  'test/ui.render.s6.mjs',
+  'test/host.e2e.p1.mjs',
+  'test/host.e2e.p2.mjs',
+  'test/host.e2e.p3.mjs',
+  'test/host.e2e.p4.mjs',
   'test/host-loader.e2e.mjs',
   'test/plugin-mount.e2e.mjs',
   'test/client-config-card.mjs',
