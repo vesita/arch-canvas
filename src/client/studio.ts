@@ -2351,12 +2351,8 @@ function ArchStudio(props) {
     var fg = foldGeom[gb.id]
     var openFold = (function (gid) { return function (ev) { ev.stopPropagation(); toggleGroup(gid) } })(gb.id)
     if (fg) {
-      // 折叠态：一个块 + 一个**独立的**展开按钮。
-      // 折叠/展开只挂在按钮上，块本体不响应 —— 组块长得像个节点，点它多半是想选中或拖它，
-      // 顺手把它弹开是最烦的那种误触。
       inner.push(React.createElement('g', {
         key: 'g' + gb.id, className: 'ac-fold' + hueClassOf(hueOfGroup, gb.id),
-        // 折叠块整块可拖（拖的是组内所有人）—— 但**拖不等于展开**，展开只认右边那个按钮。
         onPointerDown: (function (gid) { return function (ev) { onGroupDown(ev, gid) } })(gb.id),
       },
         React.createElement('rect', { className: 'ac-fold-box', x: fg.x - fg.w / 2, y: fg.y - fg.h / 2, width: fg.w, height: fg.h, rx: 10 }),
@@ -2373,16 +2369,11 @@ function ArchStudio(props) {
       inner.push(React.createElement('g', {
         key: 'g' + gb.id,
         className: 'ac-grp' + hueClassOf(hueOfGroup, gb.id),
-        // 展开态的组框**整块可拖**（拖的是组内所有人）：用户要的是「展开的时候，组的背景也能被
-        // 捕捉并移动」—— 折叠态那个块早就能拖，展开态却只能平移画布，同一个东西一个能拖一个
-        // 不能，是没有道理的。节点自己是兄弟节点、又画在组框之上，所以点节点仍然是「拖那一个」。
         onPointerDown: (function (gid) { return function (ev) { onGroupDown(ev, gid) } })(gb.id),
       },
         React.createElement('rect', { className: 'ac-group-box', x: gb.x, y: gb.y, width: gb.w, height: gb.h, rx: 12 }),
         React.createElement('text', { className: 'ac-group-lbl', x: gb.x + 12, y: gb.y + 17 },
           String(gb.label == null ? gb.id : gb.label)),
-        // 收起按钮：收起/展开仍然**只挂在按钮上**，而它会 stopPropagation ——
-        // 所以点它不会顺手把整组拖走。
         React.createElement('g', {
           className: 'ac-group-btn',
           transform: 'translate(' + (gb.x + gb.w - 14) + ',' + (gb.y + 14) + ')',
@@ -2448,26 +2439,64 @@ function ArchStudio(props) {
         sideGroups[gkey].push({ ei: gi, end: gend, at: gax ? got.x : got.y })
       }
     }
+    // 识别需要建立分支锚点 (Junction Anchor) 的汇流集合
+    // 当多条线从同一侧指向同一个节点时，建立分支锚点，统一汇流入单箭头
+    var junctionAnchors = {}
+    var edgeToJunction = {}
+    for (var sk2 in sideGroups) {
+      var arr2 = sideGroups[sk2]
+      var parts2 = sk2.split('|')
+      var unit2 = parts2[0], side2 = parts2[1]
+      var inEdges = []
+      for (var ai = 0; ai < arr2.length; ai++) {
+        if (arr2[ai].end === 1) inEdges.push(arr2[ai])
+      }
+      if (inEdges.length > 1) {
+        var gmNode = visGeom(unit2)
+        if (gmNode) {
+          var jx = gmNode.x, jy = gmNode.y
+          var dist = 28
+          if (side2 === 'l') jx = gmNode.x - gmNode.w / 2 - dist
+          else if (side2 === 'r') jx = gmNode.x + gmNode.w / 2 + dist
+          else if (side2 === 't') jy = gmNode.y - gmNode.h / 2 - dist
+          else if (side2 === 'b') jy = gmNode.y + gmNode.h / 2 + dist
+
+          var targetX = gmNode.x, targetY = gmNode.y
+          if (side2 === 'l') targetX = gmNode.x - gmNode.w / 2
+          else if (side2 === 'r') targetX = gmNode.x + gmNode.w / 2
+          else if (side2 === 't') targetY = gmNode.y - gmNode.h / 2
+          else if (side2 === 'b') targetY = gmNode.y + gmNode.h / 2
+
+          var juncObj = {
+            key: sk2, side: side2, jx: jx, jy: jy, targetX: targetX, targetY: targetY,
+            count: inEdges.length
+          }
+          junctionAnchors[sk2] = juncObj
+          for (var ii = 0; ii < inEdges.length; ii++) {
+            edgeToJunction[inEdges[ii].ei] = juncObj
+          }
+        }
+      }
+    }
+
     var portSlots = {}
     for (var sk in sideGroups) {
       var sArr = sideGroups[sk]
       sArr.sort(function (x, y) { return x.at - y.at })
       for (var si2 = 0; si2 < sArr.length; si2++) {
-        portSlots[sArr[si2].ei + ':' + sArr[si2].end] = { n: sArr.length, i: si2 }
+        var sItem = sArr[si2]
+        if (edgeToJunction[sItem.ei] && sItem.end === 1) {
+          portSlots[sItem.ei + ':1'] = { n: 1, i: 0 }
+        } else {
+          portSlots[sItem.ei + ':' + sItem.end] = { n: sArr.length, i: si2 }
+        }
       }
     }
-    // 连线分三趟画，因为「平行间隔」和「交叉处弯折」都是**线与线之间**的关系，
-    // 一条线画的时候还不知道后面那条会落在哪：
-    //   第一趟 布线：逐条算出尖角折线，并把它占掉的车道记进 usedLanes —— 后来的线自己让开；
-    //   第二趟 找交叉：两两求正交交点，**后画的线**在交点上拱一下（用户要的「十字交叉弯折一下」）；
-    //   第三趟 出 d：把拱桥交给 edgeCleanPath 一起画。
     var usedLanes = []
     var pairSeen = {}
     var routed = []
     for (var ei = 0; ei < renderEdges.length; ei++) {
       var red = renderEdges[ei]
-      // 两端落在同一个折叠组里 → 那是组内的内部关系，收起来就该一起收掉。
-      // 留一条穿进块里的线会把「有东西被藏起来了」变成误导。
       if (foldMap[red.from] && foldMap[red.from] === foldMap[red.to]) continue
       var rek = red.from < red.to ? red.from + '|' + red.to : red.to + '|' + red.from
       var ren = pairCount[rek] || 1
@@ -2481,8 +2510,6 @@ function ArchStudio(props) {
       for (var rl = 0; rl < rlanes.length; rl++) usedLanes.push(rlanes[rl])
       routed.push({ ei: ei, ed: red, geo: rgeo, hops: [] })
     }
-    // 交叉检测：一根横线 × 一根竖线，交点必须落在**两段各自的内部**（端点贴边不算交叉）。
-    // 后来的线拱过去，先画的直走 —— 规则固定，所以同一张图每次画出来都一样。
     for (var ca = 0; ca < routed.length; ca++) {
       var pa = routed[ca].geo.pts
       for (var cb = ca + 1; cb < routed.length; cb++) {
@@ -2508,16 +2535,30 @@ function ArchStudio(props) {
         }
       }
     }
+    // 记录已经为分支锚点画过箭头的集合（同汇流点只画一次箭头）
+    var junctionArrowDrawn = {}
     for (var ri = 0; ri < routed.length; ri++) {
       var rt = routed[ri]
       var red2 = rt.ed
+      var juncForEdge = edgeToJunction[rt.ei]
+      var rpts = rt.geo.pts.slice()
       var rpath = rt.hops.length
-        ? edgeCleanPath(rt.geo.pts, rt.hops)
-        : { d: rt.geo.d, pts: rt.geo.pts }
+        ? edgeCleanPath(rpts, rt.hops)
+        : { d: edgeCleanPath(rpts, []).d, pts: rpts }
       var dashed = red2.arrow === '-.->'
       var isEdgeSel = sel && sel.kind === 'edge' && sel.from === red2.from && sel.to === red2.to
       var cls = 'ac-edge' + (dashed ? ' dashed' : '') + (isEdgeSel ? ' sel' : '')
+
+      // 同侧汇流入端：同一个分支汇流点只保留首条连线的单个箭头，其余汇入线不重复打箭头！
       var mk = arrowMarkerRef(red2.arrow)
+      if (juncForEdge) {
+        if (junctionArrowDrawn[juncForEdge.key]) {
+          mk = null
+        } else {
+          junctionArrowDrawn[juncForEdge.key] = true
+        }
+      }
+
       inner.push(React.createElement('g', { key: 'e' + red2.from + '-' + red2.to + '-' + rt.ei },
         React.createElement('path', { className: 'ac-edge-hit', d: rpath.d, onPointerDown: (function (efrom, eto) { return function (ev) { onEdgeDown(ev, efrom, eto) } })(red2.from, red2.to) }),
         React.createElement('path', { className: cls, d: rpath.d, markerEnd: mk || undefined }),
@@ -2526,6 +2567,15 @@ function ArchStudio(props) {
           React.createElement('text', { className: 'ac-elbl', x: rt.geo.mid.x, y: rt.geo.mid.y }, red2.label),
         ) : null,
       ))
+    }
+    // 渲染分支锚点小圆点标记
+    for (var jkey in junctionAnchors) {
+      var junc = junctionAnchors[jkey]
+      inner.push(React.createElement('circle', {
+        key: 'junc-dot-' + jkey,
+        className: 'ac-junc-dot',
+        cx: junc.jx, cy: junc.jy, r: 3
+      }))
     }
     for (var ni = 0; ni < model.nodes.length; ni++) {
       var node = model.nodes[ni]
@@ -2590,6 +2640,21 @@ function ArchStudio(props) {
         titleEl,
         descEl,
         refEl,
+        // 概念 Tag 胶囊徽章：当节点打有 tags 时，在节点上方以精致胶囊徽章呈现
+        (node.tags && node.tags.length > 0) ? React.createElement('g', {
+          key: 'tag', className: 'ac-tag-badge',
+          transform: 'translate(' + (x0 + 8) + ',' + (y0 - 9) + ')',
+        },
+          React.createElement('rect', {
+            rx: 4, width: Math.max(26, String(node.tags[0]).length * 10 + 12), height: 16,
+            fill: 'var(--dsw-alias-brand-primary,#3b82f6)', fillOpacity: 0.15,
+            stroke: 'var(--dsw-alias-brand-primary,#3b82f6)', strokeWidth: 1
+          }),
+          React.createElement('text', {
+            x: Math.max(13, (String(node.tags[0]).length * 10 + 12) / 2), y: 11.5,
+            fontSize: 10, fill: 'var(--dsw-alias-brand-primary,#3b82f6)', textAnchor: 'middle', fontWeight: 'bold'
+          }, '#' + node.tags[0] + (node.tags.length > 1 ? ' +' + (node.tags.length - 1) : ''))
+        ) : null,
         // 下钻角标：带 @link 的节点点它跳到那张图
         node.link ? React.createElement('g', {
           key: 'jump', className: 'ac-jump',

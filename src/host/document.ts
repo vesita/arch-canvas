@@ -1477,13 +1477,18 @@ function normalizeModel(model) {
       if (!fv || fv.length > 300) continue
       if (fileList.indexOf(fv) < 0) fileList.push(fv)
     }
+    var tagList = []
+    var rawTags = Array.isArray(n.tags) ? n.tags : []
+    for (var ti = 0; ti < rawTags.length && tagList.length < 20; ti++) {
+      if (typeof rawTags[ti] !== 'string') continue
+      var tv = rawTags[ti].trim()
+      if (tv && tagList.indexOf(tv) < 0) tagList.push(tv)
+    }
     nodes.push({
       id: id,
-      // 空标签在**回读**时会变成节点 id（解析器对 `n1[""]` 就是这么归的）。两边必须一致，
-      // 否则写盘前那条往返检查每次保存都会报警 —— 而它报的其实是真话：这份模型写出去再读回来
-      // 就变样了。所以在模型边界上就归一到「没有标题 = 用 id」。
       label: typeof n.label === 'string' && n.label ? normalizeBreaks(n.label) : id,
       shape: SHAPE_WRAP[n.shape] ? n.shape : 'rect',
+      tags: tagList,
       group: typeof n.group === 'string' && n.group ? cleanId(n.group) : null,
       x: typeof n.x === 'number' && isFinite(n.x) ? n.x : null,
       y: typeof n.y === 'number' && isFinite(n.y) ? n.y : null,
@@ -1969,6 +1974,14 @@ function applyOps(ops) {
       if (!hasEdge(lf, lt)) { problems.push(tag + ': 这两点之间没有连线（要新建用 add_edge）'); continue }
       setEdgeLabel(lf, lt, typeof op.label === 'string' ? normalizeBreaks(op.label) : '')
       done.push('改连线标签 ' + lf + ' -> ' + lt)
+    } else if (kind === 'set_tags') {
+      var tid0 = opRef(op.id, 'id', tag, problems)
+      if (tid0 === null) continue
+      var tn = findNode(tid0)
+      if (!tn) { problems.push(tag + ': 找不到节点 ' + String(op.id)); continue }
+      if (!Array.isArray(op.tags)) { problems.push(tag + ': tags 必须是字符串数组'); continue }
+      tn.tags = op.tags.filter(function (t) { return typeof t === 'string' && t.trim() }).map(function (t) { return t.trim() })
+      done.push('设置标签 ' + tn.id + ' -> ' + JSON.stringify(tn.tags))
     } else if (kind === 'set_group') {
       var gid0 = opRef(op.id, 'id', tag, problems)
       if (gid0 === null) continue

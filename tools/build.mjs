@@ -265,7 +265,7 @@ expect('shell-host-no-host-logic', !/\bonRpc\s*\(\s*'doc:get'/.test(bootstrapHos
 expect('host-rpc-ui-info', /\bonRpc\s*\(\s*'ui:info'/.test(hostLogicCode), 'dist/host.js 里没有 ui:info RPC')
 expect('host-route-ui', /\bonRoute\s*\(\s*'\/arch-canvas\/ui\.js'/.test(hostLogicCode), 'dist/host.js 没有登记 ui.js 路由')
 expect('host-route-mermaid', /\bonRoute\s*\(\s*'\/arch-canvas\/mermaid\.min\.js'/.test(hostLogicCode), 'dist/host.js 没有登记 mermaid 路由')
-expect('host-no-webserver-snapshot', !/\bctx\.get\s*\(\s*'webServer'/.test(hostLogicCode), 'dist/host.js 又去给 webServer 取快照了 —— 那是个不报错的哑故障')
+expect('host-no-webserver-snapshot', !/\bctx\.get\s*\(\s*['"]webServer['"]/.test(hostLogicCode), 'dist/host.js 又去给 webServer 取快照了 —— 那是个不报错的哑故障')
 expect('shell-host-points-dist', /\/dist\/host\.js/.test(bootstrapHostCode), 'bootstrap-host 没有指向 dist/host.js')
 expect('package-host-inject', /inject\s*:\s*\[\s*'fs'\s*,\s*'tools'\s*,\s*'systemPrompt'\s*\]/.test(codeOnly(hostOut('src/package/host.js'))),
   'lib/index.js 少了 inject 声明')

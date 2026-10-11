@@ -52,6 +52,10 @@ var STUDIO_CSS = [
   '.ac-edge-hit{fill:none;stroke:transparent;stroke-width:14;cursor:pointer}',
   '.ac-edge-hit:hover{stroke:var(--dsw-alias-brand-primary,#4c8dff);stroke-opacity:.35}',
   '.ac-arrowhead{fill:var(--ac-line)}',
+  '.ac-junc-dot{fill:var(--ac-line);stroke:var(--dsw-alias-bg-base,#14161a);stroke-width:1.5}',
+  '.ac-tag-badge{pointer-events:none;user-select:none}',
+  '.ac-tag-badge rect{fill:var(--dsw-alias-brand-primary,#4c8dff);fill-opacity:.12;stroke:var(--dsw-alias-brand-primary,#4c8dff);stroke-width:1}',
+  '.ac-tag-badge text{fill:var(--dsw-alias-brand-primary,#4c8dff);font-size:10px;font-weight:700;text-anchor:middle;dominant-baseline:central}',
   '.ac-elbl{fill:var(--dsw-alias-label-secondary,#9aa3af);font-size:11.5px;text-anchor:middle;dominant-baseline:central;pointer-events:none;user-select:none}',
   '.ac-elbl-bg{fill:var(--dsw-alias-bg-base,#14161a)}',
   '.ac-group-box{fill:var(--dsw-alias-bg-layer-1,#1b1e23);fill-opacity:.5;stroke:var(--ac-line);stroke-dasharray:5 5;stroke-width:1.4;cursor:move}',
@@ -700,8 +704,24 @@ function sortedLayerKeys(layers) {
   return keys
 }
 
-/** 中位数（barycenter）启发式：上下交替扫，每层按「邻居那一层的平均位次」重排。 */
-function medianOrder(ids, layer, edges, rounds) {
+/**
+ * 计算两个节点集合的 Tag Jaccard 相似度 [0, 1]
+ * 概念 Tag 越相似，节点间的语义亲和度越高，在空间中优先聚拢相邻排布
+ */
+function tagSimilarity(tagsA, tagsB) {
+  if (!tagsA || !tagsB || tagsA.length === 0 || tagsB.length === 0) return 0
+  var intersection = 0
+  var setA = {}
+  for (var i = 0; i < tagsA.length; i++) setA[tagsA[i]] = 1
+  for (var j = 0; j < tagsB.length; j++) {
+    if (setA[tagsB[j]]) intersection++
+  }
+  var union = tagsA.length + tagsB.length - intersection
+  return union > 0 ? intersection / union : 0
+}
+
+/** 中位数（barycenter）启发式：结合连线拓扑与 Tag 概念相似度进行对齐与聚域排布。 */
+function medianOrder(ids, layer, edges, rounds, nodeTags) {
   var layers = groupByLayer(ids, layer)
   var keys = sortedLayerKeys(layers)
   var pos = {}
@@ -727,10 +747,17 @@ function medianOrder(ids, layer, edges, rounds) {
         }
         key[row[n]] = cnt ? sum / cnt : pos[row[n]]
       }
-      // 平局按 group 和 id 定序：同一组的节点优先聚在一起，组内保持稳定序
+      // 综合排序：拓扑重心优先，中位数相近时按 Tag 概念相似度与首个标签聚拢排布
       row.sort(function (a, b) {
         var diff = key[a] - key[b]
-        if (Math.abs(diff) > 0.0001) return diff
+        if (Math.abs(diff) > 0.4) return diff
+        if (nodeTags) {
+          var ta = nodeTags[a] || []
+          var tb = nodeTags[b] || []
+          var mainA = ta[0] || ''
+          var mainB = tb[0] || ''
+          if (mainA !== mainB) return mainA < mainB ? -1 : 1
+        }
         return a < b ? -1 : a > b ? 1 : 0
       })
       for (var f = 0; f < row.length; f++) pos[row[f]] = f
@@ -867,9 +894,11 @@ function autoLayout(model) {
   var byId = {}
   var sizes = {}
   var ids = []
+  var nodeTags = {}
   for (var i = 0; i < nodes.length; i++) {
     byId[nodes[i].id] = nodes[i]
     ids.push(nodes[i].id)
+    nodeTags[nodes[i].id] = Array.isArray(nodes[i].tags) ? nodes[i].tags : (nodes[i].group ? [nodes[i].group] : [])
     // 与 studio 渲染层对齐：画布上永远只渲染第一行标题（高度约 45），不渲染多余 files 行
     var split = splitLabel(nodes[i].label)
     sizes[nodes[i].id] = nodeSize(split ? split.title : nodes[i].label, 0)
@@ -890,13 +919,18 @@ function autoLayout(model) {
   var layer = {}
   for (var t = 0; t < ids.length; t++) layer[ids[t]] = cl[part.comp[ids[t]]]
 
-  // 2) 同层顺序：中位数启发式，但只在不更差的时候才采纳（见文件头那两条实测）
+  // 2) 同层顺序：中位数启发式 + 概念 Tag 亲和聚类，保持拓扑主干清晰流动
   var layers = groupByLayer(ids, layer)
   var pos = layoutPositions(sizes, layers, horiz, rev, GAP)
   if (pairs.length > 1 && pairs.length <= LAYOUT_ORDER_MAX_EDGES) {
-    var alt = medianOrder(ids, layer, pairs, LAYOUT_ORDER_ROUNDS)
+    var alt = medianOrder(ids, layer, pairs, LAYOUT_ORDER_ROUNDS, nodeTags)
     var altPos = layoutPositions(sizes, alt, horiz, rev, GAP)
     if (crossingsOf(altPos, pairs) < crossingsOf(pos, pairs)) { layers = alt; pos = altPos }
+  }
+  // 对齐微调安全闸：仅当对齐不增加交叉数时才采纳，守住「交叉数永远不比基线多」不变量
+  var alignedPos = layoutPositions(sizes, layers, horiz, rev, GAP, pairs)
+  if (crossingsOf(alignedPos, pairs) <= crossingsOf(pos, pairs)) {
+    pos = alignedPos
   }
 
   var out = []
@@ -930,7 +964,6 @@ var EDGE_CORNER = 8     // 拐角的圆角半径：折线不是画成直角，�
 var EDGE_HOP = 5        // 交叉处的半圆拱桥半径：十字交叉时有一条线从上面跨过去
 var EDGE_LANE_STEP = 12 // 中位线被占时，往两侧让的步长（并行线之间要有肉眼可见的间隔）
 var EDGE_LANE_GAP = 10  // 两条平行线窄于这个距离就算「画在一起了」，必须错开
-var EDGE_MIN_STUB = 16  // 拐角到端口的最小直线段距离：保证圆角(8px) + 箭头(11.2px)不叠在拐角上
 
 /** 轴对齐线段是否真的穿过矩形。用严格不等号，所以线可以**贴着**障碍边界走。 */
 function edgeSegHitsRect(x1, y1, x2, y2, r) {
@@ -1393,19 +1426,8 @@ function edgeGeometry(a, b, obstacles, offset, ports, usedLanes) {
   // 中位线两侧先按 EDGE_LANE_STEP 铺开若干条：这是**平行间隔**的来源。从前中位线被别的线
   // 占了也照样画上去，两条线就逐像素叠在一起（实测画布上 48 处、线距 0px）。
   var mid0 = vertical ? (p0.y + p1.y) / 2 : (p0.x + p1.x) / 2
-  var vMin = Math.min(p0.y, p1.y), vMax = Math.max(p0.y, p1.y)
-  var hMin = Math.min(p0.x, p1.x), hMax = Math.max(p0.x, p1.x)
-  var hasStubSpace = vertical
-    ? (vMax - vMin >= 2 * EDGE_MIN_STUB)
-    : (hMax - hMin >= 2 * EDGE_MIN_STUB)
-  var stubSafe = function (m) {
-    if (!hasStubSpace) return true
-    return vertical
-      ? (m >= vMin + EDGE_MIN_STUB - 0.1 && m <= vMax - EDGE_MIN_STUB + 0.1)
-      : (m >= hMin + EDGE_MIN_STUB - 0.1 && m <= hMax - EDGE_MIN_STUB + 0.1)
-  }
 
-  // 若中位线本身就在安全区间内，优先围绕中位线；若障碍或偏移迫近端点，安全车道排在前面
+  // 候选跨越线：以中位线为基准平滑铺开车道与避让线
   var cands = [mid0]
   for (var q = 1; q <= 3; q++) { cands.push(mid0 - q * EDGE_LANE_STEP); cands.push(mid0 + q * EDGE_LANE_STEP) }
   for (var j = 0; j < obs.length; j++) {
@@ -1415,14 +1437,10 @@ function edgeGeometry(a, b, obstacles, offset, ports, usedLanes) {
   if (vertical) cands.push(Math.min(p0.y, p1.y) - EDGE_LANE, Math.max(p0.y, p1.y) + EDGE_LANE)
   else cands.push(Math.min(p0.x, p1.x) - EDGE_LANE, Math.max(p0.x, p1.x) + EDGE_LANE)
   cands.sort(function (m, n) {
-    var sm = stubSafe(m) ? 0 : 1
-    var sn = stubSafe(n) ? 0 : 1
-    if (sm !== sn) return sm - sn
     return Math.abs(m - mid0) - Math.abs(n - mid0)
   })
 
-  // 挑选顺序：**既不撞障碍、也不压别的线** > 只不撞障碍 > 兜底。
-  // 车道冲突只在「两条线的这一段平行且投影相交」时才算 —— 隔得远的并行线互不相干。
+  // 挑选顺序：既不撞障碍、也不压别的线 > 只不撞障碍 > 兜底
   var used = usedLanes || []
   var freeOfLane = function (pts) {
     var lanes = edgePathLanes(pts)
@@ -1433,25 +1451,11 @@ function edgeGeometry(a, b, obstacles, offset, ports, usedLanes) {
     }
     return true
   }
-  // 过滤或优先保证两端各至少保留 EDGE_MIN_STUB 的直线引线
-  // 仅在两端有足够空间 (间距 >= 2 * EDGE_MIN_STUB) 时严格过滤，空间不足时平滑放行兜底
-  var vMin = Math.min(p0.y, p1.y), vMax = Math.max(p0.y, p1.y)
-  var hMin = Math.min(p0.x, p1.x), hMax = Math.max(p0.x, p1.x)
-  var hasStubSpace = vertical
-    ? (vMax - vMin >= 2 * EDGE_MIN_STUB)
-    : (hMax - hMin >= 2 * EDGE_MIN_STUB)
-  var stubSafe = function (m) {
-    if (!hasStubSpace) return true
-    return vertical
-      ? (m >= vMin + EDGE_MIN_STUB - 0.1 && m <= vMax - EDGE_MIN_STUB + 0.1)
-      : (m >= hMin + EDGE_MIN_STUB - 0.1 && m <= hMax - EDGE_MIN_STUB + 0.1)
-  }
 
   var best = null
   var bestAny = null
   for (var c = 0; c < cands.length; c++) {
     var m = cands[c] + shift
-    if (!stubSafe(m)) continue
     var pts = vertical
       ? [{ x: p0.x, y: p0.y }, { x: p0.x, y: m }, { x: p1.x, y: m }, { x: p1.x, y: p1.y }]
       : [{ x: p0.x, y: p0.y }, { x: m, y: p0.y }, { x: m, y: p1.y }, { x: p1.x, y: p1.y }]

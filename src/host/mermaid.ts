@@ -606,6 +606,8 @@ function parseMermaid(text) {
   var legacyNotes = {};
   // 代码锚点（%% @file）与注释不同：**一个节点可以有多条**，所以存成数组、按出现顺序保留。
   var filesMap = Object.create(null);
+  // 概念标签（%% @tags）：每个节点可以打若干个业务或逻辑标签
+  var tagsMap = Object.create(null);
   // `归一 id → 原始写法`：归一撞名时（`a-b` / `a.b` / `a/b` 都到 `a_b`）靠它给后来者
   // 加稳定后缀，两条都活下来（详见 claimNodeId）。
   var idOwners = Object.create(null);
@@ -691,13 +693,27 @@ function parseMermaid(text) {
         }
         continue;
       }
+      // %% @tags <节点id> "标签1" "标签2" ...
+      var tm = /^%%\s*@tags\s+(\S+)\s+(.*)$/.exec(line);
+      if (tm) {
+        var rawTags = tm[2].trim();
+        var tList = [];
+        var tagRe = /"([^"]+)"|'([^']+)'|(\S+)/g;
+        var tagMatch;
+        while ((tagMatch = tagRe.exec(rawTags)) !== null) {
+          var tVal = tagMatch[1] || tagMatch[2] || tagMatch[3];
+          if (tVal) tList.push(tVal);
+        }
+        if (tList.length > 0) tagsMap[tm[1]] = tList;
+        continue;
+      }
       // 走到这儿既不是 %%!、也不是上面任何一种 **解析成功** 的元数据。两种可能：
       //   1. 形如 `%% @<已知字段>` 但写法坏了（`%% @pos a b 1 2` 的 id 含空格、
       //      `%% @pos a 1e5 2` 的科学计数法、`%% @file a` 缺路径…）—— 这必须出声，
       //      否则用户摆好的坐标 / 锚点会无声消失；
       //   2. 一条普通 `%%` 注释 —— 同样是用户写的东西，原样留进 extras，不许静默丢弃。
       //      （`%%!` 说明行与 HEADER_BANNER 上面已经跳过。）
-      var km = /^%%\s*@(summary|pos|link|note|done|file)\b/.exec(line);
+      var km = /^%%\s*@(summary|pos|link|note|done|file|tags)\b/.exec(line);
       if (km) {
         var why = {
           summary: '后面要跟一句话',
@@ -788,19 +804,26 @@ function parseMermaid(text) {
     if (lnk) pn.link = lnk;
     var fls = (praw !== undefined && filesMap[praw]) ? filesMap[praw] : filesMap[pn.id];
     if (fls) pn.files = fls.slice();
+    var tgs = (praw !== undefined && tagsMap[praw]) ? tagsMap[praw] : tagsMap[pn.id];
+    if (tgs && tgs.length) {
+      pn.tags = tgs.slice();
+    }
   }
   for (var pid in posMap) if (!byId[cleanId(pid)] && !rawOwned[pid]) warn('坐标注释 @pos ' + pid + ' 指向图里不存在的节点，已丢弃');
   for (var lid in linkMap) if (!byId[cleanId(lid)] && !rawOwned[lid]) warn('下钻注释 @link ' + lid + ' 指向图里不存在的节点，已丢弃');
   for (var fid3 in filesMap) if (!byId[cleanId(fid3)] && !rawOwned[fid3]) warn('代码锚点 @file ' + fid3 + ' 指向图里不存在的节点，已丢弃');
+  for (var tid in tagsMap) if (!byId[cleanId(tid)] && !rawOwned[tid]) warn('概念标签 @tags ' + tid + ' 指向图里不存在的节点，已丢弃');
   doc.legacyNotes = legacyNotes;
   var cleanNodes = [];
   for (var i = 0; i < doc.nodes.length; i++) {
     var nd = doc.nodes[i];
-    cleanNodes.push({
-      id: nd.id, label: nd.label, shape: nd.shape, group: nd.group, x: nd.x, y: nd.y,
+    var nodeObj: any = {
+      id: nd.id, label: nd.label, shape: nd.shape, group: nd.group || null, x: nd.x, y: nd.y,
       link: nd.link || null, note: nd.note || '', noteDone: nd.noteDone === true,
       files: (nd.files || []).slice(),
-    });
+    };
+    if (nd.tags && nd.tags.length) nodeObj.tags = nd.tags.slice();
+    cleanNodes.push(nodeObj);
   }
   doc.nodes = cleanNodes;
   return doc;
@@ -890,10 +913,16 @@ function serializeDoc(doc) {
       if (frefs[fr]) out.push('%% @file ' + cleanId(seq[ft].id) + ' ' + qRef(frefs[fr]));
     }
   }
+  // 概念标签：以 %% @tags 输出，支持节点多维标注与语义相似性聚类
+  for (var tt = 0; tt < seq.length; tt++) {
+    var ntags = seq[tt].tags || [];
+    if (ntags.length > 0) {
+      var tagStr = ntags.map(function (t) { return q(t) }).join(' ');
+      out.push('%% @tags ' + cleanId(seq[tt].id) + ' ' + tagStr);
+    }
+  }
   out.push('flowchart ' + (doc.direction || 'TD'));
   for (var bb = 0; bb < blocks.length; bb++) {
-    // 组 label 为空 / 纯空白时退化成组 id：`subgraph g1[""]` 是非法 Mermaid，
-    // `subgraph g1[" "]` 回读会被归一（见 parseMermaid），不统一就是每次保存都报 roundTripDiff。
     var gid = cleanId(blocks[bb].group.id);
     var glabel = blocks[bb].group.label;
     if (glabel == null || String(glabel).trim() === '') glabel = gid;
@@ -1013,6 +1042,7 @@ function roundTripNorm(m) {
       // 注意只归 `''`/null/undefined：**纯空白标签 `' '` 是内容**，它有自己的合法表达（`n1[" "]`），
       // 往返必须原样（见 test/mermaid.test.cjs 第 [10] 节）。
       if (c.label === null || c.label === undefined || c.label === '') c.label = c.id
+      if (!Array.isArray(c.tags) || c.tags.length === 0) delete c.tags
       return c
     })
   }
