@@ -4242,6 +4242,63 @@ console.log('\n[4z] 客户端交互缺陷修复：发送不顶草稿 / 文档身
     await dropZ(t)
   }
 
+  // ================= I. 输出侧共干：同一源节点同侧的多条出边共用出锚点与分支小圆点 =================
+  {
+    // 1. 三节点：源节点 a，两个目标 b、c 都在 a 右侧且竖直错开（同为右侧出边）
+    const OUT_JUNCTION_MODEL = {
+      nodes: [
+        { id: "oa", label: "源", shape: "rect", group: null, x: 0, y: 100 },
+        { id: "ob", label: "目标一", shape: "rect", group: null, x: 260, y: 40 },
+        { id: "oc", label: "目标二", shape: "rect", group: null, x: 260, y: 160 },
+      ],
+      edges: [
+        { id: "oe1", from: "oa", to: "ob", label: "", arrow: "-->" },
+        { id: "oe2", from: "oa", to: "oc", label: "", arrow: "-->" },
+      ],
+      groups: [], direction: "TD", extras: [],
+    }
+    const tSame = await mountZ({ sessionId: "s-out-junc" }, (method, args) => {
+      if (method === "doc:get") return fullDoc({ model: OUT_JUNCTION_MODEL, nodeCount: 3, edgeCount: 2 })
+      return prevZ(method, args)
+    })
+    const sameEdges = Array.from(tSame.host.querySelectorAll("path.ac-edge"))
+    eq("输出侧共干：两条出边都渲染出来了", sameEdges.length, 2)
+    const sameStarts = sameEdges.map((p) => {
+      const m = p.getAttribute("d").match(/^M\s*(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)/)
+      return m ? `${m[1]},${m[2]}` : ""
+    })
+    ok("输出侧共干：两条出边起点坐标完全相同（共干）", sameStarts.length === 2 && sameStarts[0] !== "" && sameStarts[0] === sameStarts[1], sameStarts)
+    const juncDots = Array.from(tSame.host.querySelectorAll(".ac-junc-dot"))
+    ok("输出侧共干：画布上存在 .ac-junc-dot 共干点标记", juncDots.length > 0, juncDots.length)
+    await dropZ(tSame)
+
+    // 2. 反向对照：目标分别在源节点的不同侧（一个在右、一个在下）
+    const DIFF_SIDE_MODEL = {
+      nodes: [
+        { id: "da", label: "源", shape: "rect", group: null, x: 0, y: 0 },
+        { id: "db", label: "右目标", shape: "rect", group: null, x: 260, y: 0 },
+        { id: "dc", label: "下目标", shape: "rect", group: null, x: 0, y: 260 },
+      ],
+      edges: [
+        { id: "de1", from: "da", to: "db", label: "", arrow: "-->" },
+        { id: "de2", from: "da", to: "dc", label: "", arrow: "-->" },
+      ],
+      groups: [], direction: "TD", extras: [],
+    }
+    const tDiff = await mountZ({ sessionId: "s-diff-side" }, (method, args) => {
+      if (method === "doc:get") return fullDoc({ model: DIFF_SIDE_MODEL, nodeCount: 3, edgeCount: 2 })
+      return prevZ(method, args)
+    })
+    const diffEdges = Array.from(tDiff.host.querySelectorAll("path.ac-edge"))
+    eq("反向对照：不同侧出边均渲染出来了", diffEdges.length, 2)
+    const diffStarts = diffEdges.map((p) => {
+      const m = p.getAttribute("d").match(/^M\s*(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)/)
+      return m ? `${m[1]},${m[2]}` : ""
+    })
+    ok("反向对照：不同侧出边不共干（两条路径起点不同）", diffStarts.length === 2 && diffStarts[0] !== "" && diffStarts[0] !== diffStarts[1], diffStarts)
+    await dropZ(tDiff)
+  }
+
   respond = prevZ
 }
 
