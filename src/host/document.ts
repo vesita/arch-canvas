@@ -1928,17 +1928,20 @@ function applyOps(ops) {
         if (doc.edges[d].from === f.id && doc.edges[d].to === t.id) { dupIdx = d; break }
       }
       if (dupIdx >= 0) {
-        if (op.merge === true) {
-          // 开启合并时将新标签合并到既有同向边，避免平行边泛滥
-          var newLbl = typeof op.label === 'string' ? normalizeBreaks(op.label) : ''
-          if (newLbl) {
-            var existingLbl = doc.edges[dupIdx].label || ''
-            doc.edges[dupIdx].label = existingLbl ? (existingLbl + ' / ' + newLbl) : newLbl
+        // 默认自动合并同向边：避免同向平行线泛滥
+        var newLbl = typeof op.label === 'string' ? normalizeBreaks(op.label) : ''
+        if (newLbl) {
+          var existingLbl = doc.edges[dupIdx].label || ''
+          if (existingLbl && existingLbl !== newLbl) {
+            // 避免重复追加同一标签
+            if (existingLbl.indexOf(newLbl) < 0) {
+              doc.edges[dupIdx].label = existingLbl + ' / ' + newLbl
+            }
+          } else {
+            doc.edges[dupIdx].label = newLbl
           }
-          done.push('合并连线 ' + f.id + ' -> ' + t.id)
-          continue
         }
-        problems.push(tag + ': ' + f.id + ' -> ' + t.id + ' 已存在，改用 set_edge_label 或传入 merge: true 进行同向合并')
+        done.push('合并连线 ' + f.id + ' -> ' + t.id)
         continue
       }
       doc.edges.push({ id: 'e' + (doc.edges.length + 1), from: f.id, to: t.id, label: typeof op.label === 'string' ? normalizeBreaks(op.label) : '', arrow: arrow })

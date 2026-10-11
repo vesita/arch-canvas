@@ -2420,9 +2420,13 @@ function ArchStudio(props) {
     // 「哪一侧」必须和布线器问同一个函数（`edgeSidesOf`）—— 从前这里自己算一遍
     // 「|dy| >= |dx| 就上下」，与 edgeGeometry 内部那套是同一条规则的两份拷贝；
     // 现在选边改成代价择优，两份拷贝必然分叉：端口会按 A 侧均分、线却从 B 侧出去。
+    // 连线视觉渲染层：自动执行同向边折叠合并（来自同一起点到同一终点的多条连线折叠为单条，标签用 " / " 拼接）
+    // 彻底解决平行叠线与文字黑块，直观呈现为单条清晰箭头
+    var consolidatedRenderModel = consolidateEdgesModel(model)
+    var renderEdges = consolidatedRenderModel.edges || []
     var sideGroups = {}
-    for (var gi = 0; gi < model.edges.length; gi++) {
-      var ge = model.edges[gi]
+    for (var gi = 0; gi < renderEdges.length; gi++) {
+      var ge = renderEdges[gi]
       if (foldMap[ge.from] && foldMap[ge.from] === foldMap[ge.to]) continue
       var ga2 = visGeom(ge.from)
       var gb2 = visGeom(ge.to)
@@ -2460,8 +2464,8 @@ function ArchStudio(props) {
     var usedLanes = []
     var pairSeen = {}
     var routed = []
-    for (var ei = 0; ei < model.edges.length; ei++) {
-      var red = model.edges[ei]
+    for (var ei = 0; ei < renderEdges.length; ei++) {
+      var red = renderEdges[ei]
       // 两端落在同一个折叠组里 → 那是组内的内部关系，收起来就该一起收掉。
       // 留一条穿进块里的线会把「有东西被藏起来了」变成误导。
       if (foldMap[red.from] && foldMap[red.from] === foldMap[red.to]) continue
