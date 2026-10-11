@@ -74,8 +74,14 @@ const clientOut = compile('client')
 // 比写进文件名更不容易骗人（改顺序只改这一处，不用重命名文件）。
 const HOST_PARTS = [
   'src/host/mermaid.js',
+  // 解析器的分片：mermaid.js 是「读」半边（扫描/解析），续片是「写 + 往返守恒」半边。
+  'src/host/mermaid-serialize.js',
   'src/host/log.js',
   'src/host/document.js',
+  // document 的分片：library 是扫描 + 加载/切层，model 是规范化 + op 辅助 + 回滚/继承 + 锚点校验。
+  'src/host/document-library.js',
+  'src/host/document-model.js',
+  // document-ops 是**独立分片**（老拆分留下的），不是续片 —— 它有自己的序言，不要加进 CONT_PARTS。
   'src/host/document-ops.js',
   'src/host/notes.js',
   // drift 排在 notes 之后：它复用 notes 的旁路表写入口（writeSidecarJson），
@@ -84,12 +90,57 @@ const HOST_PARTS = [
   // history 排在 document 之后：它读 doc / lastChange / serializeDoc，同属这一段作用域。
   'src/host/history.js',
   'src/host/plugin.js',
+  // plugin 的分片：library 是图库管理 RPC，tools 是检查点 RPC + 四个 AI 工具 + 上下文注册 + skill/扫描/挂载。
+  // `onRpc('ui:info')` / 两条静态路由留在 plugin.js —— `test/build-guards.mjs` 的负向对照按文件注入。
+  'src/host/plugin-library.js',
+  'src/host/plugin-tools.js',
 ]
 const UI_PARTS = [
   'src/client/runtime.js',
+  // runtime 的分片：layout 是分词/色相/自动布局，edges 是连线几何/选边落点/图标/导出/定时器。
+  'src/client/runtime-layout.js',
+  'src/client/runtime-edges.js',
   'src/client/studio.js',
   'src/client/register.js',
 ]
+
+/**
+ * **续片**：同一个源文件被切成若干段时，从第二段起的那几片。
+ *
+ * tsc 给每个编译单元都补一行 `"use strict";` 序言，拼接时每片之间还会加一个换行 ——
+ * 于是「把一个文件切成两片再按原顺序拼回去」会比切之前多出两行（`""` + `"use strict";`），
+ * 产物不再逐字节相同。搬家式拆分（零行为改动）要的恰恰是**逐字节相同**的产物：
+ * 拿旧产物当基线一比就知道边界有没有切错，不用去读一堆 diff。
+ *
+ * 所以续片：① 不吃分片之间的分隔换行；② 过 joinParts 时去掉自己那行序言。
+ * 首片照旧带序言、照旧吃分隔符 —— 既有的分片（含 `document-ops.js` 这种独立文件）一个字节都不动。
+ *
+ * 判定是**显式清单**，不按文件名猜：`document-ops.js` 名字看着像续片，但它有自己的序言，
+ * 猜错了就是把既有产物改掉。
+ */
+const CONT_PARTS = new Set([
+  'src/host/mermaid-serialize.js',
+  'src/host/document-library.js',
+  'src/host/document-model.js',
+  'src/host/plugin-library.js',
+  'src/host/plugin-tools.js',
+  'src/client/runtime-layout.js',
+  'src/client/runtime-edges.js',
+])
+
+/** 按分片清单拼出产物。没有续片时与 `parts.map(out).join('\n')` 逐字节相同。 */
+function joinParts(parts, out) {
+  let acc = ''
+  for (let i = 0; i < parts.length; i++) {
+    const code = out(parts[i])
+    if (!CONT_PARTS.has(parts[i])) acc += (i > 0 ? '\n' : '') + code
+    else acc += code.replace(/^"use strict";\n/, '')
+  }
+  return acc
+}
+
+/** 一族分片（如 mermaid* / runtime*），按 HOST_PARTS / UI_PARTS 里的顺序取 —— 单独产物要用整族拼。 */
+const family = (parts, base) => parts.filter((p) => new RegExp(`^src/(host|client)/${base}(-[a-z0-9]+)?\\.js$`).test(p))
 
 /** `src/**` 下的 .ts 源文件（递归）——守门人要看见**将来**加的文件，不能只数今天的清单。 */
 function walkTs(dir) {
@@ -167,7 +218,7 @@ const PLUGIN = {
 }
 
 /** 宿主逻辑：分片是 apply(ctx) 的函数体，这里套出插件对象。 */
-const hostLogic = ['return {', '  apply: function (ctx) {', ...HOST_PARTS.map(hostOut), '  },', '}', ''].join('\n')
+const hostLogic = ['return {', '  apply: function (ctx) {', joinParts(HOST_PARTS, hostOut), '  },', '}', ''].join('\n')
 
 /** 界面本体：普通脚本，末了把 install 挂到全局。 */
 const ui = [
@@ -179,7 +230,7 @@ const ui = [
   'var host = __deps.host',
   'var styles = __deps.styles',
   'var __rpc = __deps.rpc',
-  ...UI_PARTS.map(clientOut),
+  joinParts(UI_PARTS, clientOut),
   'globalThis.__archCanvas = {',
   '  install: function (ctx) {',
   "    if (!React || !styles) throw new Error('arch-canvas ui: 缺少依赖 React/styles')",
@@ -298,11 +349,12 @@ mkdirSync(join(ROOT, 'dist'), { recursive: true })
 writeFileSync(join(ROOT, 'dist/host.js'), hostLogic)
 writeFileSync(join(ROOT, 'dist/ui.js'), ui)
 // 解析器单独出一份：test/mermaid.test.cjs 要跑**当前构建**的解析器，
-// 而不是 /tmp 下一份会腐烂的手工快照。
-writeFileSync(join(ROOT, 'dist/mermaid.js'), hostOut('src/host/mermaid.js'))
+// 而不是 /tmp 下一份会腐烂的手工快照。它可能由多个分片拼成（mermaid*），按清单顺序整族拼。
+writeFileSync(join(ROOT, 'dist/mermaid.js'), joinParts(family(HOST_PARTS, 'mermaid'), hostOut))
 // 客户端那半的**纯函数**也单独出一份：test/layout.test.cjs 要跑当前构建的自动布局，
 // 而 lib/ui.js 里那些函数活在闭包里（它只把 install 挂出去），测试够不着。
-writeFileSync(join(ROOT, 'dist/client-runtime.js'), clientOut('src/client/runtime.js'))
+// 同上：runtime* 整族拼。
+writeFileSync(join(ROOT, 'dist/client-runtime.js'), joinParts(family(UI_PARTS, 'runtime'), clientOut))
 writeFileSync(join(ROOT, 'dist/bootstrap-host.js'), bootstrapHost)
 writeFileSync(join(ROOT, 'dist/bootstrap-client.js'), bootstrapClient)
 
