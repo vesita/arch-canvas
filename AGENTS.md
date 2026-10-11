@@ -6,7 +6,7 @@
 
 ## 写盘前的往返守恒检查
 
-`persist()` 每次落盘前跑 `roundTripDetail(doc)`（`src/host/mermaid.ts`）：**`parse(serialize(doc))` 必须在所有会被持久化的字段上与
+`persist()` 每次落盘前跑 `roundTripDetail(doc)`（`src/host/mermaid-serialize.ts`）：**`parse(serialize(doc))` 必须在所有会被持久化的字段上与
 `doc` 一致**；不一致就记 `serialize.not-idempotent`（带**差在哪个节点的哪个字段**）+ 面板挂一条警告，**照旧写盘** —— 拒绝保存比丢字段更糟。
 
 三条**排除项**（写错任何一条，每次保存都误报，等于没用）：
@@ -48,7 +48,10 @@ Package 形态下 `code.host` 是**源码字符串**，wasm 塞不进去；真�
    `set_group` 不会踩（它过 `cleanId`）。**`set_label` 里的换行传真实换行符**（写成 `<br/>` 也等价）：输入侧的 `normalizeBreaks()`（模型入口：`normalizeModel` 与各 op）把 `<br>` / `<\br>` / `</br>` / `<BR/>` 这类手写变体、以及老版本转义着写进文件的 `&lt;br&gt;` 一并收成真实换行，`q()` 再统一写成 `<br/>` —— 不这么做的话 AI 照抄来的 `<br>` 会被转义成 `#60;br/&gt;`，用户方块里就是那串字面垃圾。**只认 br 这一族，不碰 `\n` 这种反斜杠转义**（标签里的代码片段不能替用户猜）。守门人：`test/mermaid.test.cjs` 第 [10] 节、`test/host.e2e.mjs`【AI 编辑工具的格式容错】。
 3. **分片里不能有顶层 `return`**：`src/host/*` 是 `apply(ctx)` 的函数体，`src/client/*` 被拼进一个 IIFE（`UI_PARTS`），两者都不自带
    `return`；`return {...}` 只由 `src/bootstrap/*` 写。分片清单与顺序由 `tools/build.mjs` 的 `HOST_PARTS` / `UI_PARTS`
-   声明。
+   声明（`expectPartsCover` 要求清单与目录下的 `.ts` **集合相等**：新文件不进清单就不参与构建、产物里根本没有它）。
+   一个源文件按顶层语句边界切成多片时，**从第二片起还要登记进 `CONT_PARTS`**：tsc 给每个编译单元补的
+   `"use strict";` 序言与分片间换行由 `joinParts()` 吃掉，产物才与切分前逐字节相同（这套「续片」机制的判据就是
+   「拆前拆后 `dist/host.js` / `dist/ui.js` md5 不变」）。切点必须在**花括号深度 0**（每片要能独立过 tsc）。
 4. **工具的 `parameters` 必须是规范 JSON Schema**：根 `type: 'object'` + `properties`（`required`
    写在这一层的数组里），**不能**写「裸属性表」`{ key: schema }`。沙箱 `harness.defineTool` 会替裸属性表补上 `type:
    'object'`（看着是通的），装机形态走 `lib/index.js` 的 `ctx.tools.register(def)` **原样**送出，于是每次请求 400。守门人
@@ -106,7 +109,7 @@ Package 形态下 `code.host` 是**源码字符串**，wasm 塞不进去；真�
 11. **这些走的是读路径，与「谁能改图」无关**：它们是**用户 → AI** 的单向通道；改 `promptText` 时别把「`%%`
     是元数据、不要讨论」那条纪律盖到它们头上。`skills/arch-canvas/SKILL.md` 里同一句话也要跟着改。
 
-**加字段要同时改 `normalizeModel()` 的白名单（`document.ts`）与 `snapshotModel`/`restoreModel`** ——
+**加字段要同时改 `normalizeModel()` 的白名单（`src/host/document-model.ts`）与 `snapshotModel`/`restoreModel`** ——
 逐字段重建，漏了就是**用户每保存一次，那个字段被静默清空一次**。
 
 ### 文件头的格式说明行一律 `%%!` 前缀
@@ -238,7 +241,7 @@ add <本目录>`）下 `node_modules` 指向项目目录，`npm run build` 之�
   webCtx => …)` 在里面注册路由 —— **没有界面时 AI 工具与提示词上下文照常可用**。同理 `harness.route` 只**登记**路由，真正 `webServer.register`
   由外层在服务就绪后做。
 - **`timer`** 周期扫描要它，但**不进 `inject` 声明**；客户端 `exports.inject` 同理只列 `slots`，**不列 `timer`** —— 没有它界面靠
-  `ctxTimeout`/`ctxInterval` 回退到原生定时器（`src/client/runtime.ts`），列了而部署里没有就永远 park。
+  `ctxTimeout`/`ctxInterval` 回退到原生定时器（`src/client/runtime-edges.ts`），列了而部署里没有就永远 park。
 - **宿主逻辑用到的 ctx 能力，测试桩也得提供**：`ctx.inject` 是第四个必须的桩方法（`get` / `effect` / `on` / `inject`），加一个就要同步补
   host.e2e、host-loader、plugin-mount、tools.schema 四个文件里的桩。
 - **可选取用的服务必须走 `ctx.get(name)`**：Cordis 对**未 inject** 的服务直接读属性是**抛错**（`cannot get property "timer" without
@@ -295,7 +298,7 @@ add <本目录>`）下 `node_modules` 指向项目目录，`npm run build` 之�
 - host 半边：没有 `process` / `Buffer` / `fetch` / `require` / `fs`（`types/sandbox.d.ts`
   只为类型检查声明了它们，构建期正则会拦）。服务取用见「服务时序」；副作用一律 `ctx.effect(...)` 包住，否则卸载时泄漏。
 - client 半边：`setTimeout` / `setInterval` / `fetch` / `require` **被 trap 掉了**，用了会直接抛错；定时器一律走 `ctxTimeout` /
-  `ctxInterval`（`src/client/runtime.ts`）。`document` / `window` / `React` / `styles` / `host` 是可用的。
+  `ctxInterval`（`src/client/runtime-edges.ts`）。`document` / `window` / `React` / `styles` / `host` 是可用的。
 
 ## 客户端界面：没有浏览器怎么看
 
@@ -327,16 +330,20 @@ ArchStudio**。这条契约牵出四件事：
 
 ## 目录含义
 
-- `src/host/mermaid.ts` —— 纯函数，不碰服务不碰状态。测试的第一道防线在这里。
+- `src/host/mermaid.ts` + `src/host/mermaid-serialize.ts` —— 纯函数，不碰服务不碰状态。测试的第一道防线在这里
+  （前片是「读」：扫描/解析；续片是「写」：`serializeDoc` 与往返守恒 `roundTripDetail`）。
 - `src/host/log.ts` —— 文件日志与保留期；写盘能力由 `hostEnv.logBackend` 从外层注入，这里只认接口。
-- `src/host/document.ts` —— 状态与 op 应用；新增 op 类型要同时改 plugin.ts 的工具 schema 和这里。所有加载/切库都排 `loadQueue`
+- `src/host/document.ts` + `document-library.ts` + `document-model.ts` —— 状态与 op 应用
+  （前片：状态与 op；library 续片：扫描 + 加载/切层 + `ensureLoaded`；model 续片：`normalizeModel` 白名单、op 辅助、回滚/继承、锚点校验）；新增 op 类型要同时改 plugin.ts 的工具 schema 和这里。所有加载/切库都排 `loadQueue`
   这一条队列，并发进两个项目图库时谁也不能覆盖谁的 `lib`。**自动扫描**（`scanProject` / `walkProject` / `refreshLibrary`）：**2.5s 轮询**只走目录 +
   比 `name:bytes`，指纹没变就不读文件、不解析；**force**（`rescan:true` / 20s 慢速定时器 / 写路径收尾）**必须真读内容** ——
   同字节数的改写只有它看得见。`libraryRev` 是给界面的「清单变了」信号。**外部文件**（`doc.external`）是按路径打开的 `.mmd`
   / `.mermaid`：不属于任何图库，`ensureLoaded` 里那道「有 external 就直接返回」的闸不能拆 —— 拆了界面轮询就把它冲回图库的图；它的「key」就是路径，落盘写回原文件。
 - `src/host/history.ts` —— 检查点（快照）环形缓冲：按文件存正文、标明谁改的、退回即重放；排在 `document.ts` 之后拼接。
-- `src/host/plugin.ts` —— 对外接口面；改工具描述等于改 AI 的行为，要慎重。RPC 与工具注册统一走 `onRpc` / `onTool` /
+- `src/host/plugin.ts` + `plugin-library.ts` + `plugin-tools.ts` —— 对外接口面
+  （前片：静态路由、`onRpc('ui:info')`、上下文注册入口；library 续片：图库管理 RPC；tools 续片：检查点 RPC + 四个 AI 工具 + skill/扫描/挂载）；改工具描述等于改 AI 的行为，要慎重。RPC 与工具注册统一走 `onRpc` / `onTool` /
   `onRoute`，现场记录就挂在那一层。
+- `src/client/runtime.ts` + `runtime-layout.ts` + `runtime-edges.ts` —— 运行时与几何（前片：连接/服务面；续片：分词/色相/自动布局、连线几何/选点/导出/定时器）。
 - `src/client/studio.ts` —— 编辑历史的关键是 `committedRef`：**不能拿拖拽中的 `modelRef.current` 当「拖之前的状态」**，它每个
   pointermove 都在变。
 
