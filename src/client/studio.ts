@@ -422,6 +422,11 @@ function ArchStudio(props) {
   var filesDraft = filesState[0]
   var setFilesDraft = filesState[1]
 
+  // 概念标签草稿
+  var tagsState = React.useState('')
+  var tagsDraft = tagsState[0]
+  var setTagsDraft = tagsState[1]
+
   // 服务端返回的代码锚点校验状态映射：{ [nodeId]: { [ref]: 'ok' | 'missing' | 'symbol-missing' | 'unknown' } }
   var fileStatusRef = React.useRef({})
   var fileStatusTickState = React.useState(0)
@@ -1325,6 +1330,7 @@ function ArchStudio(props) {
     setNoteDraft(node.note || '')
     setNoteDoneDraft(node.noteDone === true)
     setFilesDraft((node.files || []).join('\n'))
+    setTagsDraft((node.tags || []).join(' '))
     // 但**手势**一次只允许一个（见 gestureBusy）：第二根手指按下时不能重开一次 drag ——
     // 那会把第一次还挂在 rAF 里的 pending 位移静默丢掉（新 drag 的 moved=false），
     // 抬手时于是走 toggleDockFor 当成点选：用户拖了一下、节点没动、详情反而被收起/展开一次。
@@ -2002,6 +2008,21 @@ function ArchStudio(props) {
     setStatus(list.length === 0 ? '已清除代码锚点' : '已保存代码锚点 (' + list.length + ' 个引用)')
   }
 
+  function commitTags() {
+    var s = selRef.current
+    var cur = modelRef.current
+    if (!s || s.kind !== 'node' || !cur) return
+    var parts = String(tagsDraft || '').split(/[\s,，]+/).map(function (x) { return x.trim().replace(/^#/, '') }).filter(Boolean)
+    var next = cloneModel(cur)
+    var node = null
+    for (var j = 0; j < next.nodes.length; j++) if (next.nodes[j].id === s.id) node = next.nodes[j]
+    if (!node) return
+    if (JSON.stringify(node.tags || []) === JSON.stringify(parts)) return
+    node.tags = parts
+    push(next, '用户改了概念标签')
+    setStatus(parts.length === 0 ? '已清除概念标签' : '已保存概念标签 (#' + parts.join(' #') + ')')
+  }
+
   /** 收起（挪进历史）/ 再送一次（放回待递）。`id` 省略时作用于当前选中的节点（留言清单里按 id 调用）。 */
   function markNote(done, id?) {
     var cur = modelRef.current
@@ -2039,6 +2060,7 @@ function ArchStudio(props) {
     setNoteDraft(node.note || '')
     setNoteDoneDraft(node.noteDone === true)
     setFilesDraft((node.files || []).join('\n'))
+    setTagsDraft((node.tags || []).join(' '))
     setNotesOpen(false)
     var g = geomRef.current[id]
     var svg = svgRef.current
@@ -2479,14 +2501,46 @@ function ArchStudio(props) {
       }
     }
 
+    // 输出侧共干：**输出端点由源节点管理**，与输入侧对称 —— 同一源节点同一侧的多条出边
+    // 共用该侧一个出锚点，于是它们从同一点出发、先叠成一条主干，再各自拐向目标。
+    // 从前只建了输入侧的汇流集合（只取 `end === 1`），所以源节点旁边是一排平行箭头：
+    // 「输入侧共干、输出侧不共干」是不对称的，端点归节点管，两侧都该共。
+    var outJunctionAnchors = {}
+    var edgeToOutJunction = {}
+    for (var sk3 in sideGroups) {
+      var arr3 = sideGroups[sk3]
+      var outEdges = []
+      for (var oi2 = 0; oi2 < arr3.length; oi2++) {
+        if (arr3[oi2].end === 0) outEdges.push(arr3[oi2])
+      }
+      if (outEdges.length <= 1) continue
+      var oParts = sk3.split('|')
+      var oUnit = oParts[0]
+      var oSide = oParts[1]
+      var ogNode = visGeom(oUnit)
+      if (!ogNode) continue
+      var ojx = ogNode.x
+      var ojy = ogNode.y
+      if (oSide === 'l') ojx = ogNode.x - ogNode.w / 2 - 28
+      else if (oSide === 'r') ojx = ogNode.x + ogNode.w / 2 + 28
+      else if (oSide === 't') ojy = ogNode.y - ogNode.h / 2 - 28
+      else if (oSide === 'b') ojy = ogNode.y + ogNode.h / 2 + 28
+      var oAnchor = { key: sk3, side: oSide, jx: ojx, jy: ojy, count: outEdges.length }
+      outJunctionAnchors[sk3] = oAnchor
+      for (var oj2 = 0; oj2 < outEdges.length; oj2++) edgeToOutJunction[outEdges[oj2].ei] = oAnchor
+    }
+
     var portSlots = {}
     for (var sk in sideGroups) {
       var sArr = sideGroups[sk]
       sArr.sort(function (x, y) { return x.at - y.at })
       for (var si2 = 0; si2 < sArr.length; si2++) {
         var sItem = sArr[si2]
-        if (edgeToJunction[sItem.ei] && sItem.end === 1) {
-          portSlots[sItem.ei + ':1'] = { n: 1, i: 0 }
+        // 两侧同一判据：入端有汇流点、或出端有共干点，就占**同一个**端点（n=1），
+        // 否则在该侧按对端投影坐标均分（避免箭头叠在一起）。
+        var sharedEnd = (sItem.end === 1 && edgeToJunction[sItem.ei]) || (sItem.end === 0 && edgeToOutJunction[sItem.ei])
+        if (sharedEnd) {
+          portSlots[sItem.ei + ':' + sItem.end] = { n: 1, i: 0 }
         } else {
           portSlots[sItem.ei + ':' + sItem.end] = { n: sArr.length, i: si2 }
         }
@@ -2568,13 +2622,21 @@ function ArchStudio(props) {
         ) : null,
       ))
     }
-    // 渲染分支锚点小圆点标记
+    // 渲染分支锚点小圆点标记（输入侧汇流点与输出侧共干点各画一次）
     for (var jkey in junctionAnchors) {
       var junc = junctionAnchors[jkey]
       inner.push(React.createElement('circle', {
         key: 'junc-dot-' + jkey,
         className: 'ac-junc-dot',
         cx: junc.jx, cy: junc.jy, r: 3
+      }))
+    }
+    for (var ojkey in outJunctionAnchors) {
+      var ojunc = outJunctionAnchors[ojkey]
+      inner.push(React.createElement('circle', {
+        key: 'ojunc-dot-' + ojkey,
+        className: 'ac-junc-dot',
+        cx: ojunc.jx, cy: ojunc.jy, r: 3
       }))
     }
     for (var ni = 0; ni < model.nodes.length; ni++) {
@@ -3096,7 +3158,6 @@ function ArchStudio(props) {
               var v = e.target.value
               setGroupPick(v)
               setGroupNewName('')
-              // 选「新建」时先不动模型 —— 名字还没打呢，下一步那个输入框回车才生效
               if (v === GROUP_NEW) return
               applyGroup(v ? v : null, null)
             },
@@ -3108,12 +3169,20 @@ function ArchStudio(props) {
             allGroups.map(function (g) {
               if (!g) return null
               var cnt = groupCounts[g.id] || 0
-              // 带上成员数：两个组名字像的时候，这个数字是唯一的区分办法
               return React.createElement('option', { key: g.id, value: g.id },
                 String(g.label || g.id) + (cnt ? '（' + cnt + '）' : '（空）'))
             }),
             React.createElement('option', { value: GROUP_NEW }, '＋ 新建组…'),
           ),
+        ),
+        React.createElement('div', { className: 'ac-field full' },
+          React.createElement('label', null, '概念标签（以空格分隔，如：AI端 接入层）'),
+          React.createElement('input', {
+            className: 'ac-input', value: tagsDraft, placeholder: '贴上概念标签，支持多维聚类与相似性排布',
+            onChange: function (e) { setTagsDraft(e.target.value) },
+            onBlur: commitTags,
+            onKeyDown: function (e) { if (e.key === 'Enter' && !isComposingEv(e)) { e.preventDefault(); commitTags() } },
+          }),
         ),
         groupPick === GROUP_NEW ? React.createElement('div', { className: 'ac-field full' },
           React.createElement('label', null, '新组名字（回车生效）'),
