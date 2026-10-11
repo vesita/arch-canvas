@@ -1662,6 +1662,47 @@ function setEdgeLabel(from, to, label) {
   return hit
 }
 
+/**
+ * 合并全图同向平行连线：
+ * 当两点之间存在多条同起点、同终点的边时，将其标签合并用 " / " 分隔，
+ * 保留第一条边的线型与属性并删除冗余平行线，降低画布缠绕度。
+ */
+function consolidateParallelEdges(targetDoc) {
+  var d = targetDoc || doc
+  if (!d || !Array.isArray(d.edges) || d.edges.length <= 1) return 0
+  var edgeMap = {}
+  var newEdges = []
+  var mergedCount = 0
+  for (var i = 0; i < d.edges.length; i++) {
+    var e = d.edges[i]
+    var key = e.from + '->' + e.to
+    if (!edgeMap[key]) {
+      edgeMap[key] = {
+        id: e.id,
+        from: e.from,
+        to: e.to,
+        labels: e.label ? [e.label] : [],
+        arrow: e.arrow || '-->'
+      }
+      newEdges.push(edgeMap[key])
+    } else {
+      mergedCount++
+      if (e.label && edgeMap[key].labels.indexOf(e.label) < 0) {
+        edgeMap[key].labels.push(e.label)
+      }
+    }
+  }
+  if (mergedCount > 0) {
+    for (var j = 0; j < newEdges.length; j++) {
+      var item = newEdges[j]
+      item.label = item.labels.join(' / ')
+      delete item.labels
+    }
+    d.edges = newEdges
+  }
+  return mergedCount
+}
+
 /** 落盘前的模型快照。写盘失败时用它把内存恢复回去，别让内存与磁盘各说各话。 */
 function snapshotModel() {
   // 版本三件套（revision / updatedBy / updatedAt）**必须一起快照**：落盘失败时会 restoreModel，
@@ -1882,13 +1923,29 @@ function applyOps(ops) {
       if (!t) { problems.push(tag + ': to 节点不存在 ' + String(op.to)); continue }
       if (f.id === t.id) { problems.push(tag + ': 不允许自环'); continue }
       var arrow = ARROW_SET[op.arrow] ? op.arrow : '-->'
-      var dup = false
+      var dupIdx = -1
       for (var d = 0; d < doc.edges.length; d++) {
-        if (doc.edges[d].from === f.id && doc.edges[d].to === t.id) { dup = true; break }
+        if (doc.edges[d].from === f.id && doc.edges[d].to === t.id) { dupIdx = d; break }
       }
-      if (dup) { problems.push(tag + ': ' + f.id + ' -> ' + t.id + ' 已存在，改用 set_edge_label'); continue }
+      if (dupIdx >= 0) {
+        if (op.merge === true) {
+          // 开启合并时将新标签合并到既有同向边，避免平行边泛滥
+          var newLbl = typeof op.label === 'string' ? normalizeBreaks(op.label) : ''
+          if (newLbl) {
+            var existingLbl = doc.edges[dupIdx].label || ''
+            doc.edges[dupIdx].label = existingLbl ? (existingLbl + ' / ' + newLbl) : newLbl
+          }
+          done.push('合并连线 ' + f.id + ' -> ' + t.id)
+          continue
+        }
+        problems.push(tag + ': ' + f.id + ' -> ' + t.id + ' 已存在，改用 set_edge_label 或传入 merge: true 进行同向合并')
+        continue
+      }
       doc.edges.push({ id: 'e' + (doc.edges.length + 1), from: f.id, to: t.id, label: typeof op.label === 'string' ? normalizeBreaks(op.label) : '', arrow: arrow })
       done.push('连线 ' + f.id + ' -> ' + t.id)
+    } else if (kind === 'consolidate_edges') {
+      var mergedN = consolidateParallelEdges(doc)
+      done.push('合并同向连线 ' + mergedN + ' 条')
     } else if (kind === 'remove_edge') {
       var xf = opRef(op.from, 'from', tag, problems)
       var xt = opRef(op.to, 'to', tag, problems)
@@ -2009,19 +2066,33 @@ function inheritUserMarks(parsed) {
   var old = {}
   for (var i = 0; i < doc.nodes.length; i++) {
     var n = doc.nodes[i]
-    if (n.note || (n.files && n.files.length)) {
-      old[n.id] = { note: n.note || '', done: n.noteDone === true, files: (n.files || []).slice() }
+    var hasPos = typeof n.x === 'number' && isFinite(n.x) && typeof n.y === 'number' && isFinite(n.y)
+    if (n.note || (n.files && n.files.length) || hasPos) {
+      old[n.id] = {
+        note: n.note || '',
+        done: n.noteDone === true,
+        files: (n.files || []).slice(),
+        pos: hasPos ? { x: n.x, y: n.y } : null
+      }
     }
   }
   var kept = 0
   for (var j = 0; j < parsed.nodes.length; j++) {
     var p = parsed.nodes[j]
-    if (p.note) continue        // 新文本自己带了注释，以它为准
     if (!old[p.id]) continue    // 节点没重画出来，注释与锚点跟着它一起走
-    p.note = old[p.id].note
-    p.noteDone = old[p.id].done
+    // 坐标继承：新文本没有自己指定坐标且旧图有坐标时，继承旧图坐标，避免重画导致排版打散
+    if (old[p.id].pos && (p.x == null || !isFinite(p.x))) {
+      p.x = old[p.id].pos.x
+      p.y = old[p.id].pos.y
+    }
+    if (!p.note && old[p.id].note) {
+      p.note = old[p.id].note
+      p.noteDone = old[p.id].done
+    }
     // 代码锚点同理：AI 重画时不该把用户标的文件引用抹掉（新文本自己写了就用新的）
-    if (!(p.files && p.files.length)) p.files = old[p.id].files.slice()
+    if (!(p.files && p.files.length) && old[p.id].files.length) {
+      p.files = old[p.id].files.slice()
+    }
     kept += 1
   }
   if (!cleanSummary(parsed.summary)) parsed.summary = cleanSummary(doc.summary)

@@ -315,3 +315,28 @@ async function computeDrift(): Promise<any> {
   }
   return out
 }
+
+/**
+ * 图改名时将 anchors.json 里的基线条目一起搬到新名字下。
+ * 键名是图文件名，不搬新图就会丢失 baseline 导致无法检测漂移，且留下孤儿。
+ */
+async function renameDriftStoreFor(fromFile: string, toFile: string, policy?: any): Promise<string | null> {
+  var fromKey = driftKeyFor(fromFile)
+  var toKey = driftKeyFor(toFile)
+  if (!fromKey || fromKey === toKey) return null
+  var store: any
+  try {
+    store = await loadDriftStoreFor(fromFile)
+  } catch (e) {
+    return msgOf(e)
+  }
+  if (!store || typeof store !== 'object') return null
+  if (!store[fromKey]) return null
+  store[toKey] = store[fromKey]
+  delete store[fromKey]
+  var storePath = driftStorePathFor(toFile)
+  var err = await writeSidecarJson(storePath, store, policy, 'drift')
+  if (err) return err
+  driftStoreCache[storePath] = store
+  return null
+}

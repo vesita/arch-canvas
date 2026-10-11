@@ -37,6 +37,7 @@ const SUITES = [
  * `npm run check` 第三段还会单独跑一次 `test:schema` —— 重复跑没关系（它很快，不 build）。
  */
 const GATES = [
+  { label: '预渲染验证', file: 'test/prerender.test.mjs' },
   { label: '工具 schema', file: 'test/tools.schema.mjs' },
 ]
 

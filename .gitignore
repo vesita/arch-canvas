@@ -2,3 +2,4 @@ dist/
 node_modules/
 *.log
 .arch-canvas/anchors.json
+test/output-preview.svg

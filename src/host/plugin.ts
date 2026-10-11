@@ -100,7 +100,7 @@ function foreignCanvasText(sessWhere: string, sameProject?: boolean) {
     return [
       '## 逻辑框架画布（arch-canvas）',
       '**画布现在停在全局兜底图库**（`' + lib.dir + '`）——它不属于任何项目。你这个会话的项目是 `' + sessWhere + '`。',
-      '这个项目的图库是 `' + wantLib.dir + '`：还没有的话，`arch_write`（需用户同意）会在那里建；已经有的话，调一次 `arch_read` 就切过来。',
+      '这个项目的图库是 `' + wantLib.dir + '`：还没有的话，先征得用户同意后用 `arch_switch { create: true }` 创建；已经有的话，调一次 `arch_read` 就切过来。',
       '提示词这一侧**不会**把兜底图库或别的项目的图读给你，也不会替它消费留言 —— 所以这一轮你看不到任何画布内容，别对上面那张图做任何操作。',
     ].join('\n')
   }
@@ -632,6 +632,10 @@ ctx.effect(function () {
     await ensureLoaded(args && args.where, args && args.session)
     var path = resolveDiagramPath(args && args.path)
     if (!path) return { ok: false, error: '需要一个文件路径：绝对路径，或相对项目根的路径' }
+    // 白名单拦截：仅允许 .mmd 或 .mermaid 格式的图文件，防止意外覆写普通源码
+    if (!/\.(mmd|mermaid)$/i.test(path)) {
+      return { ok: false, error: '外部文件必须是 .mmd 或 .mermaid 格式的图文件' }
+    }
     return openExternal(path, !!(args && args.create), policyOfSessionId(args && args.session))
   })
 })
@@ -716,6 +720,9 @@ ctx.effect(function () {
       // 留言表也得跟着搬：它以**文件名**为键，不搬就等于新名字那张图一条留言都没有
       var noteMoveErr = await renameNoteStoreFor(fileAt(a.dir, a.name), fileAt(b.dir, b.name), renamePolicy)
       if (noteMoveErr) logEvent('warn', 'notes.rename.fail', { from: a.name, to: b.name, error: noteMoveErr })
+      // 代码锚点指纹基线表也跟着搬：以图文件名为键，不搬新图就丢失 baseline 且留下孤儿
+      var driftMoveErr = await renameDriftStoreFor(fileAt(a.dir, a.name), fileAt(b.dir, b.name), renamePolicy)
+      if (driftMoveErr) logEvent('warn', 'drift.rename.fail', { from: a.name, to: b.name, error: driftMoveErr })
     } catch (e) {
       return { ok: false, error: '改名失败：' + msgOf(e) }
     }
@@ -1090,8 +1097,8 @@ var editTool = harness.defineTool({
           properties: {
             op: {
               type: 'string',
-              enum: ['add_node', 'set_label', 'set_shape', 'set_link', 'move_node', 'remove_node', 'add_edge', 'remove_edge', 'set_edge_label', 'add_group', 'set_group', 'remove_group', 'set_direction', 'set_files', 'set_summary', 'mark_note'],
-              description: '操作类型',
+              enum: ['add_node', 'set_label', 'set_shape', 'set_link', 'move_node', 'remove_node', 'add_edge', 'remove_edge', 'set_edge_label', 'add_group', 'set_group', 'remove_group', 'set_direction', 'set_files', 'set_summary', 'mark_note', 'consolidate_edges'],
+              description: '操作类型。consolidate_edges 为合并全图同向平行边',
             },
             id: { type: 'string', description: '节点 id（add_node/set_label/set_shape/set_link/move_node/remove_node/set_group/mark_note 用）' },
             done: { type: 'boolean', description: 'mark_note 用：省略或 true = 把该节点的留言标成已办；false = 重新打开。已办的留言不再进入你的上下文' },
@@ -1100,6 +1107,7 @@ var editTool = harness.defineTool({
             link: { type: 'string', description: 'set_link / add_node 用：把这个节点下钻到另一张图（图名，不含 .mmd）；传空串取消' },
             from: { type: 'string', description: '连线的起点节点 id' },
             to: { type: 'string', description: '连线的终点节点 id' },
+            merge: { type: 'boolean', description: 'add_edge 用：若同向连线已存在，是否将其合并追加到既有边（避免平行边泛滥，默认 false）' },
             group: { type: 'string', description: '分组 id；set_group 时传空串表示移出分组' },
             arrow: { type: 'string', description: '连线样式：--> 实线箭头 / --- 无箭头 / -.-> 虚线 / ==> 粗线' },
             x: { type: 'number', description: '画布横坐标（move_node / add_node 用）' },

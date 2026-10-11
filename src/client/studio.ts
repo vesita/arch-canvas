@@ -1232,13 +1232,14 @@ function ArchStudio(props) {
     setView(nv)
   }
 
-  function nodeAt(pt) {
+  function nodeAt(pt, pad) {
+    var p = typeof pad === 'number' ? pad : 0
     var cur = modelRef.current
     if (!cur) return null
     for (var i = cur.nodes.length - 1; i >= 0; i--) {
       var g = geomRef.current[cur.nodes[i].id]
       if (!g) continue
-      if (Math.abs(pt.x - g.x) <= g.w / 2 && Math.abs(pt.y - g.y) <= g.h / 2) return cur.nodes[i]
+      if (Math.abs(pt.x - g.x) <= g.w / 2 + p && Math.abs(pt.y - g.y) <= g.h / 2 + p) return cur.nodes[i]
     }
     return null
   }
@@ -1615,12 +1616,13 @@ function ArchStudio(props) {
     }
     if (d.kind === 'link') {
       var pt = toModelPt(e, d.rect)
-      var target = nodeAt(pt)
+      // 磁吸判定：借鉴主流图编辑器实践，提供 14px 判定容差，避免鼠标在边缘微偏导致连线丢失
+      var target = nodeAt(pt, 14)
       setLinkPt(null)
       if (!target || target.id === d.from) return
       var cur = modelRef.current
       for (var i = 0; i < cur.edges.length; i++) {
-        if (cur.edges[i].from === d.from && cur.edges[i].to === target.id) { setStatus('这条连线已经存在'); return }
+        if (cur.edges[i].from === d.from && cur.edges[i].to === target.id) { setStatus('这条连线已经存在（可在连线上修改标签）'); return }
       }
       var next = cloneModel(cur)
       next.edges.push({ id: 'e' + (next.edges.length + 1), from: d.from, to: target.id, label: '', arrow: '-->' })
@@ -1826,10 +1828,19 @@ function ArchStudio(props) {
   function relayout() {
     var cur = modelRef.current
     if (!cur) return
-    push(autoLayout(cur), '用户点了自动布局')
-    setStatus('已自动布局')
+    var cleaned = consolidateEdgesModel(cur)
+    push(autoLayout(cleaned), '用户点了自动布局')
+    setStatus('已整理连线并自动布局')
     fittedRef.current = false
     if (fitView(false)) fittedRef.current = true
+  }
+
+  function consolidateEdgesAction() {
+    var cur = modelRef.current
+    if (!cur) return
+    var cleaned = consolidateEdgesModel(cur)
+    push(cleaned, '用户点了整理连线')
+    setStatus('已合并同向平行边')
   }
 
   function commitLabel() {
@@ -2616,13 +2627,17 @@ function ArchStudio(props) {
             React.createElement('text', { y: 3.6 }, '▤'),
           )
         })() : null,
-        isSel ? React.createElement('circle', {
-          className: 'ac-handle', cx: gm.x + gm.w / 2 + 10, cy: gm.y, r: 6,
+        isSel ? React.createElement('g', {
+          key: 'h',
           onPointerDown: (function (nd) { return function (ev) { onHandleDown(ev, nd) } })(node),
         },
-          // 建边**只有这一条入口**（先选中 → 把这个半径 6px 的小圆点拖到另一个方块上）。
-          // 从前它一个字的说明都没有：整个界面上 0 个 title 提到连线，用户只能靠瞎试。
-          React.createElement('title', null, '拖到另一个方块上建立连线'),
+          // 透明热区（半径 15px）：消除小圆点易脱靶的体验痛点，实际交互面积扩大 6 倍以上
+          React.createElement('circle', { cx: gm.x + gm.w / 2 + 10, cy: gm.y, r: 15, fill: 'transparent', cursor: 'crosshair' }),
+          React.createElement('circle', {
+            className: 'ac-handle', cx: gm.x + gm.w / 2 + 10, cy: gm.y, r: 6,
+          },
+            React.createElement('title', null, '拖到另一个方块上建立连线'),
+          )
         ) : null,
       ))
     }
@@ -3267,6 +3282,7 @@ function ArchStudio(props) {
     React.createElement('div', { className: 'ac-tools' },
       tab === 'canvas' ? React.createElement('button', { className: 'ac-btn', onClick: addNode }, '＋ 节点') : null,
       tab === 'canvas' ? React.createElement('button', { className: 'ac-btn', onClick: relayout }, '自动布局') : null,
+      tab === 'canvas' ? React.createElement('button', { className: 'ac-btn', onClick: consolidateEdgesAction, title: '将相同两点间的同向多条平行线合并为复合连线' }, '整理连线') : null,
       tab === 'canvas' ? React.createElement('button', { className: 'ac-btn', onClick: function () { fitView(true) } }, '适应窗口') : null,
       tab === 'canvas' ? React.createElement('button', { className: 'ac-btn danger', onClick: deleteSel, disabled: !sel }, '删除') : null,
       tab === 'canvas' ? React.createElement('button', { className: 'ac-btn', onClick: exportSvg, title: '导出白底 SVG，可直接贴进文档' }, 'SVG') : null,

@@ -727,12 +727,58 @@ function medianOrder(ids, layer, edges, rounds) {
         }
         key[row[n]] = cnt ? sum / cnt : pos[row[n]]
       }
-      // 平局按 id 定序：同一份图跑两次必须得到同一个布局
-      row.sort(function (a, b) { return (key[a] - key[b]) || (a < b ? -1 : a > b ? 1 : 0) })
+      // 平局按 group 和 id 定序：同一组的节点优先聚在一起，组内保持稳定序
+      row.sort(function (a, b) {
+        var diff = key[a] - key[b]
+        if (Math.abs(diff) > 0.0001) return diff
+        return a < b ? -1 : a > b ? 1 : 0
+      })
       for (var f = 0; f < row.length; f++) pos[row[f]] = f
     }
   }
   return layers
+}
+
+/**
+ * 合并模型中的同向平行边：
+ * 当两点之间存在多条同起点、同终点的连线时，将其标签用 " / " 合并，
+ * 保留第一条边的线型与属性并删除冗余平行线，降低画布缠绕度。
+ */
+function consolidateEdgesModel(model) {
+  if (!model || !Array.isArray(model.edges) || model.edges.length <= 1) return model
+  var edgeMap = {}
+  var newEdges = []
+  var changed = false
+  for (var i = 0; i < model.edges.length; i++) {
+    var e = model.edges[i]
+    var key = e.from + '->' + e.to
+    if (!edgeMap[key]) {
+      edgeMap[key] = {
+        id: e.id,
+        from: e.from,
+        to: e.to,
+        labels: e.label ? [e.label] : [],
+        arrow: e.arrow || '-->'
+      }
+      newEdges.push(edgeMap[key])
+    } else {
+      changed = true
+      if (e.label && edgeMap[key].labels.indexOf(e.label) < 0) {
+        edgeMap[key].labels.push(e.label)
+      }
+    }
+  }
+  if (!changed) return model
+  var finalEdges = newEdges.map(function (item) {
+    return {
+      id: item.id,
+      from: item.from,
+      to: item.to,
+      arrow: item.arrow,
+      label: item.labels.length > 0 ? item.labels.join(' / ') : ''
+    }
+  })
+  return Object.assign({}, model, { edges: finalEdges })
 }
 
 /** 按层摆坐标。`rev` 只影响摆出去的值，**不能去改累加器本身** —— 从前的写法是
