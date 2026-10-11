@@ -783,7 +783,6 @@ ctx.effect(function () {
       doc.name = DEFAULT_DIAGRAM
       doc.file = fileAt(dk.dir, DEFAULT_DIAGRAM)
       doc.external = null
-      doc.workspace = projectKeyOfTarget(target)
       doc.tombstoned = false
       doc.absent = true
       doc.warnings = []

@@ -429,7 +429,8 @@ const N = await call('doc:open', { where: '/proj-a', name: '支付流程', creat
 ok('新建中文名的图', N.ok === true && N.diagram === '支付流程', N)
 await tool('arch_write').execute({ mermaid: 'flowchart TD\n  a["下单"] --> b["扣款"]\n' }, {})
 const L2 = await call('doc:list', { where: '/proj-a' })
-eq('清单里有 2 张', L2.items.length, 2, L2.items.map((x) => x.name))
+eq('清单里只有刚建的这一张', L2.items.length, 1, L2.items.map((x) => x.name))
+eq('清单里那张就是刚建的图', L2.items[0] && L2.items[0].name, '支付流程')
 
 const R = await call('doc:rename', { where: '/proj-a', from: '支付流程', to: '支付主流程' })
 ok('改名后当前图名跟着变', R.diagram === '支付主流程', R.diagram)
@@ -452,19 +453,11 @@ const bk = await call('doc:open', { where: '/proj-a', name: '支付主流程' })
 ok('切回那张图并带回内容', bk.diagram === '支付主流程' && bk.nodeCount === 2, { diagram: bk.diagram, nodeCount: bk.nodeCount })
 ok('切回来的是那张图自己的内容（不是默认图）', bk.model.nodes.some((n) => n.id === 'a'), bk.model.nodes.map((n) => n.id))
 
-console.log('【首次进项目图库：写盘时建目录 + 一次性继承】')
+console.log('【首次进项目图库：写盘时建目录，不复制全局图库】')
 ok('写盘后文件写出，目录因此存在',
   [...files.keys()].some((k) => k.indexOf('/proj-a/.arch-canvas/') === 0), [...files.keys()].filter((k) => k.indexOf('/proj-a/') === 0))
-ok('全局图库的图在首次写盘时被继承了过来',
-  files.has('/proj-a/.arch-canvas/architecture.mmd'), [...files.keys()].filter((k) => k.indexOf('/proj-a/') === 0))
-// 「只做一次」不再靠标记文件，而是靠「目标图库里已经有图了」这个事实本身：
-// 往全局图库**新加**一张，再在同一个项目里建图 —— 它不该被继承过来。
-// （不动全局那份 architecture.mmd：它是后面几个用例的公共夹具。）
-files.set(TEST_DATA_DIR + '/占位新图.mmd', 'flowchart TD\n  g9["全局后来加的"]\n')
-await call('doc:open', { where: '/proj-a', name: '另一张', create: true })
-ok('第二次进同一个项目图库：不再重新继承', !files.has('/proj-a/.arch-canvas/占位新图.mmd'),
-  [...files.keys()].filter((k) => k.indexOf('/proj-a/.arch-canvas/') === 0))
-files.delete(TEST_DATA_DIR + '/占位新图.mmd')
+ok('新项目图库建出来是空的，不会复制全局图库的图',
+  !files.has('/proj-a/.arch-canvas/architecture.mmd'), [...files.keys()].filter((k) => k.indexOf('/proj-a/') === 0))
 const P2 = await call('doc:get', { where: '/proj-b' })
 ok('读路径未建占位文件', !files.has('/proj-b/.arch-canvas/.gitkeep'))
 eq('第二个项目读路径也是干净空图', P2.nodeCount, 0)
@@ -473,10 +466,8 @@ eq('第二个项目读路径也是干净空图', P2.nodeCount, 0)
 const backA = await call('doc:open', { where: '/proj-a', name: '支付主流程' })
 ok('切回 /proj-a 并重新打开支付主流程', backA.diagram === '支付主流程', backA.diagram)
 
-// ---------- 回归：建新图绝不许覆盖目标图库里已有的图（2026-09-21 实测事故）----------
-// 事故现场：本仓库的 .arch-canvas/architecture.mmd（23 节点）在 arch_switch { create: true }
-// 里被全局兜底那张老图整份盖掉，日志里一条都没留。根因是 inheritGlobalOnce 用「全局目录下的
-// .inherited 标记」判「做过一次」，而且复制时同名直接覆盖。
+// ---------- 回归：建新图绝不许覆盖目标图库里已有的图 ----------
+// 「新建」只写目标文件该写的那一份；目标路径上已有内容时必须原样保留。
 console.log('【回归：建新图不许覆盖已有的图】')
 {
   const dirKeep = '/tmp/proj-keep'
@@ -486,11 +477,10 @@ console.log('【回归：建新图不许覆盖已有的图】')
   const keepOpen = await call('doc:open', { where: dirKeep, name: '第二张', create: true })
   ok('已有图的项目里建新图仍然成功', keepOpen && keepOpen.ok !== false, keepOpen && keepOpen.error)
   eq('已有的同名图一个字节都没被动', files.get(keepFile), keepBefore)
-  ok('全局图库没有盖过来（还是我自己的内容）', files.get(keepFile).indexOf('我自己的图') >= 0, files.get(keepFile))
+  ok('已有图的内容完好（还是我自己的内容）', files.get(keepFile).indexOf('我自己的图') >= 0, files.get(keepFile))
   ok('新图确实建出来了', files.has(dirKeep + '/.arch-canvas/第二张.mmd'))
 
-  // 护栏 2 单独验：目标图库里只有一张**已删除**的图时，护栏 1 不拦（没有活着的图），
-  // 但同名文件必须仍然不许被盖。
+  // 目标图库里只有一张**已删除**的图时，同名文件必须仍然不许被盖。
   const dirTomb = '/tmp/proj-tomb'
   const tombFile = dirTomb + '/.arch-canvas/architecture.mmd'
   files.set(tombFile, '%% @deleted\nflowchart TD\n  t1["已经删掉了，但内容还在文件里"]\n')
@@ -498,8 +488,6 @@ console.log('【回归：建新图不许覆盖已有的图】')
   const tombOpen = await call('doc:open', { where: dirTomb, name: '新图', create: true })
   ok('墓碑图库里的 create 也成功', tombOpen && tombOpen.ok !== false, tombOpen && tombOpen.error)
   eq('已删除的图（内容还在文件里）也不会被覆盖', files.get(tombFile), tombBefore)
-  ok('同一层里有别的图时，全局里同名的那张不会被复制进来',
-    files.get(tombFile).indexOf('全局') < 0, files.get(tombFile))
 
   // 这两段探过别的图库，必须切回来 —— 否则后面的用例会拿着别的项目的图跑（踩过一次）。
   const backKeep = await call('doc:open', { where: '/proj-a', name: '支付主流程' })
@@ -517,6 +505,9 @@ const rt = await call('doc:applyText', { where: '/proj-a', text: lk.mermaid })
 ok('@link 往返：解析回 link 字段', rt.model.nodes.filter((n) => n.id === 'a')[0].link === 'architecture', rt.model.nodes.filter((n) => n.id === 'a')[0])
 ok('带链接的节点会被清单统计', (await call('doc:list', { where: '/proj-a' })).items.some((x) => x.name === '支付主流程' && x.links === 1))
 
+// 显式铺一张 /proj-a 的 architecture（与全局那份同内容）：这条路径从前由「首次写盘的继承」铺出来，
+// 继承已删，夹具就得自己铺 —— 下面几节要读它、切它，T2 还要它里面的 n1。
+files.set('/proj-a/.arch-canvas/architecture.mmd', files.get(DOC))
 console.log('【AI 侧：只读别的图 / 切图】')
 const ro = await tool('arch_read').execute({ diagram: 'architecture' }, {})
 ok('arch_read 指定图名读到另一张', ro.ok === true && ro.diagram === 'architecture')
@@ -2124,7 +2115,7 @@ console.log('【H. drift：一张锚点都没有的图也要报「漏画」】')
     (afterDr0.drift && afterDr0.drift.stale.length) || 0, 0)
 }
 
-console.log('【I. 继承全局图库不再把同名新图清空】')
+console.log('【I. 新项目显式建默认图是干净空图且不覆盖已有内容】')
 {
   const dirInh = '/tmp/proj-inherit-fix'
   const inhFile = dirInh + '/.arch-canvas/architecture.mmd'
@@ -2139,14 +2130,15 @@ console.log('【I. 继承全局图库不再把同名新图清空】')
 
   const swInh = await tool('arch_switch').execute({ key: 'architecture', create: true }, { agent: agentInh })
   ok('I：建图成功', swInh && swInh.ok !== false, swInh && swInh.error)
-  ok('I：继承来的内容被保住了（节点数 > 0）', !!(swInh && swInh.nodeCount > 0), swInh && swInh.nodeCount)
-  eq('I：新项目里那份与全局那份逐字节相同（不是被一份空文档当场盖掉）',
-    files.get(inhFile), files.get(globalArch))
+  eq('I：新项目建默认图是空图（0 节点，不从全局复制）', swInh && swInh.nodeCount, 0)
+  ok('I：盘上文件存在且为空图文本（没有节点声明）',
+    files.has(inhFile) && (files.get(inhFile) || '').indexOf('["') < 0,
+    files.get(inhFile))
 
-  // 负向对照：全局没有同名的新图仍然是一张空图 —— 证明「保住内容」不是「永远不建空图」
+  // 负向对照：新建另一张新图也是干净空图
   const swFresh = await tool('arch_switch').execute({ key: 'fresh-i', create: true }, { agent: agentInh })
-  ok('I：负向对照 —— 新建一张全局没有同名的图成功', swFresh && swFresh.ok !== false, swFresh && swFresh.error)
-  eq('I：负向对照 —— 那是一张空图（0 节点）', swFresh && swFresh.nodeCount, 0)
+  ok('I：负向对照 —— 新建另一张新图成功', swFresh && swFresh.ok !== false, swFresh && swFresh.error)
+  eq('I：负向对照 —— 那也是一张空图（0 节点）', swFresh && swFresh.nodeCount, 0)
   ok('I：负向对照 —— 盘上那份也是空的（没有任何节点声明）',
     files.has(freshFile) && (files.get(freshFile) || '').indexOf('["') < 0,
     files.get(freshFile))

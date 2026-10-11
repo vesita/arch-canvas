@@ -1123,10 +1123,6 @@ function sideNormal(s) {
   return { x: 1, y: 0 }
 }
 
-/** 这条边上的「半个跨度」：上下边是 w/2，左右边是 h/2。 */
-function sideHalfSpan(g, s) {
-  return (s === 't' || s === 'b') ? g.w / 2 : g.h / 2
-}
 
 /** 边心（不带端口偏移）—— 只用来估代价。 */
 function sideCenter(g, s) {

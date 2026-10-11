@@ -11,7 +11,7 @@
 
 三条**排除项**（写错任何一条，每次保存都误报，等于没用）：
 
-1. **不进文件的运行期字段** —— 权威名单是代码里的 `RUNTIME_ONLY_FIELDS`（含 `drift` / `workspace`）。
+1. **不进文件的运行期字段** —— 权威名单是代码里的 `RUNTIME_ONLY_FIELDS`（含 `drift`）。
 2. **旁路表承载的字段**：`note` / `noteDone` 存在 `notes.json` 里，不由这份文本承载。
 3. **派生字段与集合顺序**：边的 `id` 每次解析重新编号、不进文件；节点/边/组的**顺序**（`serializeDoc` 会重排），所以按 key 排序后**按集合比**。
 
@@ -161,14 +161,12 @@ assets / docs…）并跳过 `*.min.*` 与 `*.d.ts`，`lib` / `es` / `cjs` 只�
 ## 图库不会自动创建（opt-in）
 
 **读路径一个字节都不创建。** 项目里没有 `.arch-canvas/`（或那张 `.mmd` 不存在）时，`loadInto` 把 `doc` 置成空文档并标记 `doc.absent =
-true`，**不 `ensureDir`、不 `inheritGlobalOnce`、不播种默认图**；只有 `doc:open { create: true }` / `arch_switch {
+true`，**不 `ensureDir`、不播种默认图**；只有 `doc:open { create: true }` / `arch_switch {
 create: true }` 两个显式入口会建（工具侧还要先征得用户同意）。
 
 - `arch_write` / `arch_edit` 在 `doc.absent`
   时**硬拒绝**（错误信息说明「图库不会自动创建」）：**唯一**一道写图闸门。守门人：`test/host.e2e.mjs`【任务 1 守门断言：读路径不建库，写路径防隐式创建】。
 - `persist()` 是唯一会把 `absent` 清掉的地方；`snapshotModel`/`restoreModel` 必须带上它，否则「写盘失败回滚」会把空库状态也一起回滚掉。
-
-**继承全局图库只在目标图库还是空的时候发生**（`inheritGlobalOnce`）：判据是「目标图库里有没有活着的图」，不是任何标记文件；逐张复制时**同名一律跳过**，一个字节都不往会话工作区之外写。守门人：`test/host.e2e.mjs`【回归：建新图不许覆盖已有的图】。
 
 ## 写盘必须带会话
 
@@ -396,7 +394,7 @@ lostpointercapture 提交）。
 3. **每一层一份内存画布（`docSlots`）**，槽里放的是**同一批对象引用**，切换只是换指针：换层时 `saveActiveSlot()` → `activateSlot(key)`
    命中就返回（**不读盘、不 bump 修订号**）；**只存「已经载入过」的状态**（`loadedFor` 为空时不存），否则下次「命中」就等于命中一张空图。
    **槽的键是图库目录（`lib.dir`）**：按会话 cwd 定身份时，同一份 `.mmd` 会有两个身份（cwd=项目根下钻 `A/x`、cwd=子目录直接打开 `x`）、
-   各持一份 doc，各自整份落盘 = **静默互相覆盖**。**归属**分两层判：**看哪一层**对比的是层目录（`layerForSession` 的 `want.dir` vs `lib.dir`），**是不是同一个项目**才看项目根（`sameProjectAsCurrent` 用 `projectKeyOfTarget(root)`）。`doc.workspace` 现在是**只写不读**的排查字段 —— 别再拿它当归属判据。
+   各持一份 doc，各自整份落盘 = **静默互相覆盖**。**归属**分两层判：**看哪一层**对比的是层目录（`layerForSession` 的 `want.dir` vs `lib.dir`），**是不是同一个项目**才看项目根（`sameProjectAsCurrent` 用 `projectKeyOfTarget(root)`）。
    **两条绑在一起的硬规矩**（2026-10-01 独立复核逮到的）：
    - **`root` 永远是项目根那一层，`lib` 才是当前层** —— 两者是**不同对象**。从前把它们设成同一个（`resetToWorkspace(next)`），
      槽被淘汰之后 `root` 就成了会话记住的子图库，`libOf('')`（界面给根图发的**裸 key**）跟着落进子图库：点项目根的同名图，打开的是子图库里的同名文件，且粘住不放。
@@ -436,8 +434,7 @@ lostpointercapture 提交）。
    （`forgetProjectRootsUnder`），整表清空会让别的会话失去缓存、于是同步路径退回原始 cwd 并对模型说「画布停在别的项目上」，
    而它其实就在自己项目里。
 
-另外两条：**`doc.workspace` 必须留在 `RUNTIME_ONLY_FIELDS`**（漏了就是每次保存都误报
-`serialize.not-idempotent`）；**残留（未修）**：`whereOfExec` 取不到 cwd 的会话（无 cwd 的 headless）仍按「当前文档」读写。
+**残留（未修）**：`whereOfExec` 取不到 cwd 的会话（无 cwd 的 headless）仍按「当前文档」读写。
 
 守门人：`test/host.e2e.mjs`【会话隔离：画布属于项目、不属于进程】（含「停在兜底图库」一条；Y 那一步读不到 X 的图/留言/源文本块、盘上 `done` 仍为 false、X
 那一步仍能拿到自己的留言、一次性投递语义不变、工具带回自己的画布、换回 X 修订号不动 + 负向对照、子图库归属仍按项目根、无会话信息时保持旧行为）、
