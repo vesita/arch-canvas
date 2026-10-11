@@ -76,6 +76,7 @@ const HOST_PARTS = [
   'src/host/mermaid.js',
   'src/host/log.js',
   'src/host/document.js',
+  'src/host/document-ops.js',
   'src/host/notes.js',
   // drift 排在 notes 之后：它复用 notes 的旁路表写入口（writeSidecarJson），
   // 又调 document 的 splitFileRef / fileRefRoot（函数声明提升，跨分片共享同一段作用域）。
