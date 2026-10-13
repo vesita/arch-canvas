@@ -497,7 +497,7 @@ console.log('\n[17] 文件头的格式说明行不算数据（%%!）');
 {
   // serializeDoc 写出的头里说明行一律用 %%!；头部不再写 %%! @note 模板
   const out = serializeDoc(parseMermaid('flowchart TD\n  a["A"]'));
-  check('说明行带 %%! 前缀且恰好 4 行', out.split('\n').filter(l => l.slice(0, 3) === '%%!').length === 4,
+  check('说明行带 %%! 前缀且恰好 5 行（@summary / @pos / @file / @tags + 「以上…」那句）', out.split('\n').filter(l => l.slice(0, 3) === '%%!').length === 5,
     out.split('\n').slice(0, 6));
   const back = parseMermaid(out);
   check('解析自己写出的头不产生任何警告', back.warnings.length === 0, back.warnings);
@@ -732,5 +732,38 @@ console.log('\n[22] `%% @file` 值的专用 reader：unquoteRef 只解 qRef 会�
     const once = unquoteRef(qRef(v));
     check('字面序列第二次往返稳定：' + JSON.stringify(v), unquoteRef(qRef(once)) === once, { once });
   }
+}
+
+console.log('\n[23] @tags 的实体转义与 q() 对称（不然每存一轮多一层）');
+{
+  // 写侧 q() 会把 `& # < " \`` 转义、换行写成 <br/>；读侧不 unquote 回来，盘上就会
+  // `C#` → `C#35;` → `C#35;35;` 一轮多一层，而且**不报错**（往返检查会报，但没人看得到标签变样）。
+  const tags = ['C#', 'Q&A', '含 空格', '带"引号', '`反引号`', '多行\n标签', '<尖括号>'];
+  for (const tag of tags) {
+    const d = parseMermaid('flowchart TD\n  a["入口"]');
+    d.nodes[0].tags = [tag];
+    const once = parseMermaid(serializeDoc(d));
+    check('标签往返：' + JSON.stringify(tag), eq(once.nodes[0].tags, [tag]), once.nodes[0].tags);
+    const twice = parseMermaid(serializeDoc(once));
+    check('标签第二次往返稳定：' + JSON.stringify(tag), eq(twice.nodes[0].tags, [tag]), twice.nodes[0].tags);
+    check('两次序列化逐字节相同：' + JSON.stringify(tag), serializeDoc(once) === serializeDoc(twice));
+  }
+  const d2 = parseMermaid('flowchart TD\n  a["入口"]\n  b["出口"]\n  a --> b');
+  d2.nodes[0].tags = ['鉴权', 'C#'];
+  d2.nodes[1].tags = ['出口侧'];
+  const back = parseMermaid(serializeDoc(d2));
+  check('多标签往返（顺序也保持）', eq(back.nodes.find(n => n.id === 'a').tags, ['鉴权', 'C#']), back.nodes.find(n => n.id === 'a').tags);
+  check('另一个节点的标签不受影响', eq(back.nodes.find(n => n.id === 'b').tags, ['出口侧']), back.nodes.find(n => n.id === 'b').tags);
+  const c = parseMermaid('flowchart TD\n  a["入口"]\n  c["无标签"]');
+  check('没有 @tags 行的节点不会被写出 @tags 行', serializeDoc(c).indexOf('%% @tags c') < 0,
+    serializeDoc(c).split('\n').filter(l => l.indexOf('@tags') >= 0));
+  // 手写的单引号写法也要解引号：unquote() 只认双引号（unquoteInner），所以 reader 先把单引号补成双引号再过它。
+  const single = parseMermaid("flowchart TD\n  %% @tags a 'C#35; 与 空格'\n  a[\"入口\"]");
+  check('手写单引号的标签也解引号与实体', eq(single.nodes[0].tags, ['C# 与 空格']), single.nodes[0].tags);
+  // 畸形行必须出声（`%% @tags` 后面没有标签），且提示里不能再出现 `undefined`。
+  const bad = parseMermaid('flowchart TD\n  %% @tags a\n  a["入口"]');
+  check('畸形 @tags 出声', bad.warnings.length === 1, bad.warnings);
+  check('畸形 @tags 的提示不再出现 undefined', bad.warnings[0].indexOf('undefined') < 0, bad.warnings[0]);
+  check('畸形 @tags 的提示带上正确写法', bad.warnings[0].indexOf('标签') >= 0, bad.warnings[0]);
 }
 endPhase();

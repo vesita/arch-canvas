@@ -46,6 +46,7 @@ function serializeDoc(doc) {
   out.push('%%! @summary <一句话> 这张图讲的是什么 —— 会随每一步注入给 AI');
   out.push('%%! @pos <节点id> <x> <y> 是画布坐标注释，@link <节点id> <图名> 是下钻到另一张图');
   out.push('%%! @file <节点id> <路径> 是这个节点对应的源码文件（可带 #符号），一个节点可多条');
+  out.push('%%! @tags <节点id> <标签>… 是节点的概念标签（空格分隔，含特殊字符用引号）');
   out.push('%%! 以上对 Mermaid 渲染都无任何影响，可忽略或手改');
   // 一句话总结紧跟头部：它描述整张图，所以写在所有节点级注释**之前**（人一眼就看到这张图是干嘛的）。
   var docSummary = cleanSummary(doc.summary)

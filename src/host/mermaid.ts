@@ -701,11 +701,17 @@ function parseMermaid(text) {
         var tagRe = /"([^"]+)"|'([^']+)'|(\S+)/g;
         var tagMatch;
         while ((tagMatch = tagRe.exec(rawTags)) !== null) {
-          var tVal = tagMatch[1] || tagMatch[2] || tagMatch[3];
+          // 值一律过 unquote()`（与 @summary / @link 同构）：写侧 q() 会实体转义并**加双引号**，
+          // 读侧不还原就是 `C#` → `C#35;` → `C#35;35;` 一轮多一层（不报错的静默数据损坏）。
+          // unquoteInner 只认双引号，所以单引号写法先补成双引号再过它 —— 手写的 `'C#35;'` 同样解码。
+          var token = tagMatch[1] != null ? tagMatch[0] : (tagMatch[2] != null ? '"' + tagMatch[2] + '"' : tagMatch[3]);
+          var tVal = unquote(token);
           if (tVal) tList.push(tVal);
         }
-        if (tList.length > 0) tagsMap[tm[1]] = tList;
-        continue;
+        if (tList.length > 0) {
+          tagsMap[tm[1]] = tList;
+          continue;
+        }
       }
       // 走到这儿既不是 %%!、也不是上面任何一种 **解析成功** 的元数据。两种可能：
       //   1. 形如 `%% @<已知字段>` 但写法坏了（`%% @pos a b 1 2` 的 id 含空格、
@@ -722,6 +728,7 @@ function parseMermaid(text) {
           note: '后面要跟 `<节点id> <文本>`',
           done: '后面要跟 `<节点id> <文本>`',
           file: '后面要跟 `<节点id> <路径>`',
+          tags: '后面要跟 `<节点id> <标签>…`',
         }[km[1]];
         warn('第 ' + (li + 1) + ' 行的 %% @' + km[1] + ' 没能解析（' + why + '），已丢弃：' + line);
         continue;

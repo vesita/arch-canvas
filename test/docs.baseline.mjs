@@ -186,3 +186,6 @@ if (problems.length === 0) {
   console.error('  ' + canonical)
   process.exit(1)
 }
+
+export { SUITES, GATES, HELPERS, SELF }
+
