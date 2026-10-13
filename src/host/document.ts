@@ -13,12 +13,17 @@ var DSH_ROOT = DATA_DIR.replace(/\/[^/]+$/, '')
 var GLOBAL_DIR = DATA_DIR
 var PROJECT_SUBDIR = '.arch-canvas'
 var DEFAULT_DIAGRAM = 'architecture'
+var LIB_EXT = '.mmd'
 /** 上一次真正落过 doc.load 的内容键：用来把「同一份图被反复读进来」的重复行压掉。 */
 var lastDocLoadKey = ''
 // 软删除：文件里出现这行即视为已删除，列表里隐藏但内容原样保留。
 // fs 服务没有 unlink/rename，而我不愿意为了删两个文件给插件开 bash 权限；
 // 软删除反而更契合「记录思路」——删错了能捞回来，彻底删由你自己 rm。
 var TOMBSTONE = '%% @deleted'
+// 墓碑正则从 TOMBSTONE 常量派生，避免手抄导致漂移。
+var TOMBSTONE_RE_SRC = TOMBSTONE.replace(/\s+/g, '\\s*')
+var TOMBSTONE_PREFIX_RE = new RegExp('^\\s*' + TOMBSTONE_RE_SRC)
+var TOMBSTONE_STRIP_RE = new RegExp('^\\s*' + TOMBSTONE_RE_SRC + '[^\\n]*\\n?')
 // mermaid 的第一来源是包内 assets/（由外层递 mermaidFile），这里是早期手工下载的缓存。
 var MERMAID_CACHE = DSH_ROOT + '/.cache/arch-canvas/mermaid.min.js'
 // 合法连接符集合。**从 ARROWS 派生，绝不手抄第二份**：从前这里只有 8 种，而 ARROWS 有 28 种，
@@ -99,7 +104,7 @@ function cleanName(raw) {
   return s.slice(0, 60)
 }
 
-function hasTombstone(text) { return /^\s*%%\s*@deleted/.test(text) }
+function hasTombstone(text) { return TOMBSTONE_PREFIX_RE.test(text) }
 
 function bump(by) {
   doc.revision += 1
@@ -124,8 +129,15 @@ function adopt(parsed) {
   applyNoteStore(doc.file, doc.nodes, parsed.legacyNotes)
 }
 
+/**
+ * 空文档的解析骨架（供 adopt 消费）。
+ * 它表达「换内容不换身份」：保留当前全局 doc 对象的身份标识与元信息（file/name/revision/external 等），
+ * 仅将其图内容结构（nodes/edges/groups/extras/direction/warnings）重置为空白状态。
+ * 为避免字段默认值漂移，基础结构从 newDocState() 派生。
+ */
 function emptyDoc() {
-  return { nodes: [], edges: [], groups: [], extras: [], direction: 'TD', warnings: [] }
+  var s = newDocState()
+  return { nodes: s.nodes, edges: s.edges, groups: s.groups, extras: s.extras, direction: s.direction, warnings: s.warnings }
 }
 
 function seedDoc() {
@@ -424,7 +436,7 @@ async function listDiagrams(dir) {
   for (var i = 0; i < entries.length; i++) {
     var entry = entries[i]
     if (entry.type !== 'file') continue
-    if (entry.name.slice(-4) !== '.mmd') continue
+    if (entry.name.slice(-LIB_EXT.length) !== LIB_EXT) continue
     var text = ''
     try {
       text = await fs.readText(entry.target)
@@ -433,7 +445,7 @@ async function listDiagrams(dir) {
     }
     var parsed = parseMermaid(text)
     items.push({
-      name: entry.name.slice(0, -4),
+      name: entry.name.slice(0, -LIB_EXT.length),
       deleted: hasTombstone(text),
       nodes: parsed.nodes.length,
       edges: parsed.edges.length,
@@ -497,7 +509,7 @@ function splitKey(key: string): { project: string; name: string } {
 
 function libOf(project: string): { dir: string; scope: string; workspace: string } | null {
   if (!project) return { dir: root.dir, scope: root.scope, workspace: root.workspace }
-  var base = String(root.workspace || '').replace(/\/+$/, '')
+  var base = cleanSessionDir(root.workspace)
   if (!base) return null // 没有项目可言，就没法引用子图库
   var ws = base + '/' + project
   return { dir: ws + '/' + PROJECT_SUBDIR, scope: 'project', workspace: ws }
@@ -536,7 +548,7 @@ function keyOf(name: string, project?: string) {
   return p ? p + '/' + name : name
 }
 
-function fileAt(dir, name) { return dir + '/' + name + '.mmd' }
+function fileAt(dir, name) { return dir + '/' + name + LIB_EXT }
 
 /** 节点的下钻链接统一按 key 存（允许 `子项目/图名`）；空串表示没有链接。 */
 function normLink(v) {
@@ -560,7 +572,7 @@ function resolveDiagramPath(raw) {
   if (p === '') return ''
   p = p.replace(/^\.\//, '').replace(/\/{2,}/g, '/')
   if (p.charAt(0) === '/') return p
-  var base = String((root && root.workspace) || (lib && lib.dir) || '').replace(/\/+$/, '')
+  var base = cleanSessionDir((root && root.workspace) || (lib && lib.dir))
   if (!base) return ''
   return base + '/' + p
 }

@@ -40,10 +40,14 @@ function logDay(ts) {
   return d.getFullYear() + '-' + (m < 10 ? '0' + m : '' + m) + '-' + (day < 10 ? '0' + day : '' + day)
 }
 
-function logFileName(day) { return 'arch-canvas-' + day + '.log' }
+var LOG_FILE_PREFIX = 'arch-canvas-'
+var LOG_FILE_EXT = '.log'
+var LOG_FILE_RE = new RegExp('^' + LOG_FILE_PREFIX + '(\\d{4}-\\d{2}-\\d{2})\\' + LOG_FILE_EXT + '$')
+
+function logFileName(day) { return LOG_FILE_PREFIX + day + LOG_FILE_EXT }
 
 function logDayOfName(name) {
-  var m = /^arch-canvas-(\d{4}-\d{2}-\d{2})\.log$/.exec(String(name == null ? '' : name))
+  var m = LOG_FILE_RE.exec(String(name == null ? '' : name))
   return m ? m[1] : ''
 }
 

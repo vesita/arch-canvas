@@ -36,7 +36,7 @@ async function collectLibrary(libDir, rel, out) {
     var entry = entries[i]
     if (entry.type !== 'file') continue
     // 图库里的图固定是 .mmd：改名/删除/落盘都靠「key + .mmd」定位文件，不能有第二种扩展名
-    if (entry.name.slice(-4) !== '.mmd') continue
+    if (entry.name.slice(-LIB_EXT.length) !== LIB_EXT) continue
     files.push({ name: entry.name, bytes: entry.size || 0 })
   }
   if (files.length > 0 && out.dirs.length < SCAN_MAX_LIBS) {
@@ -57,9 +57,9 @@ async function scanProject(): Promise<ProjectScan> {
   var out: ProjectScan = { dirs: [], files: [], visited: 0, truncated: false }
   if (!fs) return out
   if (root.scope !== 'project' || !root.workspace) return out
-  var anchor = String(root.scanFrom || root.workspace).replace(/\/+$/, '')
+  var anchor = cleanSessionDir(root.scanFrom || root.workspace)
   var rel = String(root.scanRel || '')
-  if (rel) await collectLibrary(String(root.workspace).replace(/\/+$/, '') + '/' + PROJECT_SUBDIR, '', out)
+  if (rel) await collectLibrary(cleanSessionDir(root.workspace) + '/' + PROJECT_SUBDIR, '', out)
   await walkProject(anchor, rel, 0, out)
   return out
 }
@@ -372,7 +372,7 @@ var PROJECT_ROOT_WALK_MAX = 16
 // 插件自己就能造出来：在没有任何图库的目录里 `doc:open {create:true}`）
 // 会把下面**所有**项目收成同一个项目 —— 各自的图库完全不被打开、互相覆盖、留言投错会话。
 var PROJECT_ROOT_CEILING = (function () {
-  var d = String(DATA_DIR || '').replace(/\/+$/, '')
+  var d = cleanSessionDir(DATA_DIR)
   if (!d) return ''
   var up1 = d.replace(/\/[^/]+$/, '')
   var up2 = up1.replace(/\/[^/]+$/, '')
@@ -395,7 +395,7 @@ async function isRealLibrary(libDir) {
   } catch (e) { return false }
   for (var i = 0; i < entries.length; i++) {
     var e = entries[i]
-    if (e && e.type === 'file' && e.name.slice(-4) === '.mmd') return true
+    if (e && e.type === 'file' && e.name.slice(-LIB_EXT.length) === LIB_EXT) return true
   }
   return false
 }
@@ -405,7 +405,7 @@ async function isRealLibrary(libDir) {
  * 没缓存就只能按原始 cwd 算，于是对模型说「画布停在别的项目上」，而事实是同一个项目。
  */
 function forgetProjectRootsUnder(projectDir) {
-  var base = String(projectDir || '').replace(/\/+$/, '')
+  var base = cleanSessionDir(projectDir)
   if (!base) { projectRootCache = {}; return }
   var keys = Object.keys(projectRootCache)
   for (var i = 0; i < keys.length; i++) {
@@ -414,7 +414,7 @@ function forgetProjectRootsUnder(projectDir) {
   }
 }
 async function canonicalProjectRoot(raw) {
-  var w = String(raw == null ? '' : raw).trim().replace(/\/+$/, '')
+  var w = cleanSessionDir(raw)
   if (w === '') return ''
   if (projectRootCache[w] !== undefined) return projectRootCache[w]
   var top = ''
@@ -449,20 +449,19 @@ async function canonicalProjectRoot(raw) {
  * （**不编 `../`**：图库根可能在上层，编出来的相对路径没人看得懂）。
  */
 function relFromTo(base, target) {
-  var b = String(base || '').replace(/\/+$/, '')
-  var t = String(target || '').replace(/\/+$/, '')
+  var b = cleanSessionDir(base)
+  var t = cleanSessionDir(target)
   if (!b || !t) return t
   if (t === b) return '.'
   if (t.indexOf(b + '/') === 0) return t.slice(b.length + 1)
   return t
 }
 
-/** 会话目录相对图库根的子路径（图库根自己、或在根之外时为空串）。 */
+/** 会话目录相对图库根的子路径（图库根自己、或在根之外时为空串）。由 relFromTo 派生。 */
 function relUnder(base, target) {
-  var b = String(base || '').replace(/\/+$/, '')
-  var t = String(target || '').replace(/\/+$/, '')
-  if (!b || !t || t === b) return ''
-  return t.indexOf(b + '/') === 0 ? t.slice(b.length + 1) : ''
+  var r = relFromTo(base, target)
+  var t = cleanSessionDir(target)
+  return (!r || r === '.' || r === t) ? '' : r
 }
 
 /**
@@ -485,7 +484,7 @@ function applyScanAnchor(sessDir, canon?) {
  * 全局兜底没有会话目录可对齐 → `rel` 如实给绝对路径，`relOutside` 一律 false。
  */
 function withRel(items, anchor) {
-  var base = String(anchor || '').replace(/\/+$/, '')
+  var base = cleanSessionDir(anchor)
   var out = []
   for (var i = 0; i < items.length; i++) {
     var it = items[i] || {}
@@ -504,14 +503,14 @@ function withRel(items, anchor) {
  * 一起列进「同图库」（2026-10-08 的污染就是这一条）。
  */
 function setScanAnchor(sessionDir) {
-  var sd = String(sessionDir || '').replace(/\/+$/, '')
-  root.scanFrom = sd || String(root.workspace || '').replace(/\/+$/, '')
+  var sd = cleanSessionDir(sessionDir)
+  root.scanFrom = sd || cleanSessionDir(root.workspace)
   root.scanRel = relUnder(root.workspace, root.scanFrom)
 }
 
 /** 同步版：只认已经缓存过的规范化结果，没缓存过就按原值算。 */
 function resolveLibCanonical(where) {
-  var w = typeof where === 'string' ? where.trim().replace(/\/+$/, '') : ''
+  var w = cleanSessionDir(where)
   if (w === '') return { dir: GLOBAL_DIR, scope: 'global', workspace: '' }
   var cached = projectRootCache[w]
   var base = (typeof cached === 'string' && cached) ? cached : w
@@ -657,7 +656,7 @@ function docBelongsTo(where: string, sessionId?: string) {
   if (want.dir === lib.dir) return true
   // 外部文件：按「文件落在不在这个工作区里」判（它是用户明确打开的文件，不属于图库）
   if (doc.external) {
-    var w = String(want.workspace || where).replace(/\/+$/, '')
+    var w = cleanSessionDir(want.workspace || where)
     var p = String(doc.external)
     return p === w || p.indexOf(w + '/') === 0
   }
@@ -691,7 +690,7 @@ async function ensureLoaded(where?: string, sessionId?: string) {
   var raw = hasWhere ? where : ''
   // **会话目录**：规范化之前的原值。检测范围（自动扫描）以它为准 —— 图库根可以往上找，
   // 但检测范围不许越过会话目录（见 setScanAnchor / canonicalProjectRoot）。
-  var sessDir = raw.trim() !== '' ? raw.trim().replace(/\/+$/, '') : ''
+  var sessDir = cleanSessionDir(raw)
   // cwd → 图库根：会话可能坐在项目里任意一层子目录（见 canonicalProjectRoot 的说明）。
   if (hasWhere && raw.trim() !== '') raw = await canonicalProjectRoot(raw)
   // 两个**不同**的东西：
@@ -739,7 +738,7 @@ async function ensureLoaded(where?: string, sessionId?: string) {
 
 /** 内存里这份文档是不是**真的**来自这一层（`doc.file` 落在这一层里）。 */
 function docInLayer(dir) {
-  var d = String(dir || '')
+  var d = cleanSessionDir(dir)
   var f = String(doc.file || '')
   return !!d && f.indexOf(d + '/') === 0
 }
@@ -772,8 +771,7 @@ function enqueueLoad(task) {
  */
 function noteLoaded(target) {
   var d = String((target && target.dir) || '')
-  var f = String(doc.file || '')
-  if (d && f.indexOf(d + '/') === 0) loadedFor = d
+  if (docInLayer(d)) loadedFor = d
 }
 
 /**

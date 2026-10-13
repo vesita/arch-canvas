@@ -33,7 +33,7 @@ ctx.effect(function () {
     var path = resolveDiagramPath(args && args.path)
     if (!path) return { ok: false, error: '需要一个文件路径：绝对路径，或相对项目根的路径' }
     // 白名单拦截：仅允许 .mmd 或 .mermaid 格式的图文件，防止意外覆写普通源码
-    if (!/\.(mmd|mermaid)$/i.test(path)) {
+    if (!isDiagramPath(path)) {
       return { ok: false, error: '外部文件必须是 .mmd 或 .mermaid 格式的图文件' }
     }
     return openExternal(path, !!(args && args.create), policyOfSessionId(args && args.session))
@@ -183,19 +183,16 @@ ctx.effect(function () {
           return outSw
         }
       }
-      // 一张活图都不剩：画布清成一份**空文档**（不 adopt 墓碑内容、不落盘）。
+      // 一张活图都不剩：画布清成一份**空文档**（以 newDocState() 为唯一源，补齐身份与空库字段；不 adopt 墓碑内容、不落盘）。
       // doc.file 仍写着默认图名，但它此刻带墓碑 —— 写路径的墓碑守卫会拒绝把它当活图改写，
       // 用户的软删除不会被一次无关保存抹掉；要拿回来走 doc:restore。
-      adopt(emptyDoc())
-      doc.name = DEFAULT_DIAGRAM
-      doc.file = fileAt(dk.dir, DEFAULT_DIAGRAM)
-      doc.external = null
-      doc.tombstoned = false
-      doc.absent = true
-      doc.warnings = []
-      doc.notes = []
-      doc.fileStatus = {}
-      doc.drift = null
+      var nextDoc = newDocState()
+      nextDoc.file = fileAt(dk.dir, DEFAULT_DIAGRAM)
+      nextDoc.absent = true
+      nextDoc.revision = doc.revision
+      nextDoc.updatedBy = doc.updatedBy
+      nextDoc.updatedAt = doc.updatedAt
+      doc = nextDoc
       // loadedFor 设上，这条空画布才「粘得住」：下一次 doc:get 不会又把墓碑文件读回来。
       loadedFor = lib.dir
       lastChange = { by: 'user', rev: doc.revision, nodes: [] }
@@ -227,7 +224,7 @@ ctx.effect(function () {
     }
     if (hasTombstone(text)) {
       try {
-        await fs.writeText(await fs.resolve(fileAt(rk.dir, rk.name)), text.replace(/^\s*%%\s*@deleted[^\n]*\n?/, ''), undefined, undefined, policyOfSessionId(args && args.session))
+        await fs.writeText(await fs.resolve(fileAt(rk.dir, rk.name)), text.replace(TOMBSTONE_STRIP_RE, ''), undefined, undefined, policyOfSessionId(args && args.session))
       } catch (e) {
         return { ok: false, error: '恢复失败：' + msgOf(e) }
       }
