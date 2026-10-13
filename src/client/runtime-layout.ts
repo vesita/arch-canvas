@@ -431,14 +431,19 @@ function autoLayout(model) {
   // 2) 同层顺序：中位数启发式 + 概念 Tag 亲和聚类，保持拓扑主干清晰流动
   var layers = groupByLayer(ids, layer)
   var pos = layoutPositions(sizes, layers, horiz, rev, GAP)
+  // 基线交叉数**只算一次**：下面两处安全闸各比它一次，而 `crossingsOf` 是 O(E²) 的双重循环
+  // （N=400 时单次约 3ms，占总布局的大头）。两处比的是同一组 pos/pairs，重算没有意义；
+  // 中途 pos 被换成 altPos 时把基线一起换掉 —— 判据与从前逐字等价。
+  var baseCrossings = crossingsOf(pos, pairs)
   if (pairs.length > 1 && pairs.length <= LAYOUT_ORDER_MAX_EDGES) {
     var alt = medianOrder(ids, layer, pairs, LAYOUT_ORDER_ROUNDS, nodeTags)
     var altPos = layoutPositions(sizes, alt, horiz, rev, GAP)
-    if (crossingsOf(altPos, pairs) < crossingsOf(pos, pairs)) { layers = alt; pos = altPos }
+    var altCrossings = crossingsOf(altPos, pairs)
+    if (altCrossings < baseCrossings) { layers = alt; pos = altPos; baseCrossings = altCrossings }
   }
   // 对齐微调安全闸：仅当对齐不增加交叉数时才采纳，守住「交叉数永远不比基线多」不变量
   var alignedPos = layoutPositions(sizes, layers, horiz, rev, GAP, pairs)
-  if (crossingsOf(alignedPos, pairs) <= crossingsOf(pos, pairs)) {
+  if (crossingsOf(alignedPos, pairs) <= baseCrossings) {
     pos = alignedPos
   }
 
