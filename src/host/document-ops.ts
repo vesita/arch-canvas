@@ -53,9 +53,6 @@ function applyOps(ops) {
         noteDone: false,
         files: [],
       }
-      if (Array.isArray(op.tags)) {
-        newNode.tags = op.tags.filter(function (t) { return typeof t === 'string' && t.trim() }).map(function (t) { return t.trim() })
-      }
       doc.nodes.push(newNode)
       done.push('新增节点 ' + nid)
     } else if (kind === 'set_label') {
@@ -146,14 +143,6 @@ function applyOps(ops) {
       if (!hasEdge(lf, lt)) { problems.push(tag + ': 这两点之间没有连线（要新建用 add_edge）'); continue }
       setEdgeLabel(lf, lt, typeof op.label === 'string' ? normalizeBreaks(op.label) : '')
       done.push('改连线标签 ' + lf + ' -> ' + lt)
-    } else if (kind === 'set_tags') {
-      var tid0 = opRef(op.id, 'id', tag, problems)
-      if (tid0 === null) continue
-      var tn = findNode(tid0)
-      if (!tn) { problems.push(tag + ': 找不到节点 ' + String(op.id)); continue }
-      if (!Array.isArray(op.tags)) { problems.push(tag + ': tags 必须是字符串数组'); continue }
-      tn.tags = op.tags.filter(function (t) { return typeof t === 'string' && t.trim() }).map(function (t) { return t.trim() })
-      done.push('设置标签 ' + tn.id + ' -> ' + JSON.stringify(tn.tags))
     } else if (kind === 'set_group') {
       var gid0 = opRef(op.id, 'id', tag, problems)
       if (gid0 === null) continue
@@ -201,7 +190,7 @@ function applyOps(ops) {
       if (!Array.isArray(op.files)) { problems.push(tag + ': files 必须是数组（清空传空数组）'); continue }
       var nextFiles = []
       var rawFs = op.files
-      for (var fk = 0; fk < rawFs.length && nextFiles.length < 20; fk++) {
+      for (var fk = 0; fk < rawFs.length && nextFiles.length < MAX_LIST_ITEMS; fk++) {
         if (typeof rawFs[fk] !== 'string') continue
         var fsv = normalizeBreaks(rawFs[fk]).trim()
         if (!fsv || fsv.length > 300) continue

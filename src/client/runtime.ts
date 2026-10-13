@@ -38,25 +38,31 @@ var STUDIO_CSS = [
   '.ac-node.sel .ac-shape{stroke:var(--dsw-alias-brand-primary,#4c8dff);stroke-width:2.5}',
   // 节点卡片：标题（.ac-lbl —— 保持既有契约，它的 textContent 就是标题本身；描述与引用行仅在检查器中查看）。
   '.ac-node .ac-lbl{fill:var(--dsw-alias-label-primary,#e8eaed);font-size:13px;font-weight:600;text-anchor:middle;dominant-baseline:central;pointer-events:none;user-select:none}',
+  '.ac-node:focus-visible{outline:none}',
+  '.ac-node:focus-visible .ac-shape{stroke:var(--dsw-alias-brand-primary,#4c8dff);stroke-width:2.4}',
   '.ac-edge{fill:none;stroke:var(--ac-line);stroke-width:1.6}',
   '.ac-edge.dashed{stroke-dasharray:6 5}',
+  '.ac-edge.thick{stroke-width:3}',
+  '.ac-edge.invisible{stroke:transparent}',
   '.ac-edge.sel{stroke:var(--dsw-alias-brand-primary,#4c8dff);stroke-width:2.6}',
+  '.ac-edge.thick.sel{stroke-width:4}',
   // 命中区**故意做宽**（14px）：线只有 1.6px，靠它自己几乎点不中。这里只补一条悬停反馈 ——
   // 光标扫过时那条细线才现形（平时完全透明），否则用户根本不知道这条线是可以点的。
   // **stroke-width 不许动**：实测 14px 的命中区是「细线可点」的全部依据。
   '.ac-edge-hit{fill:none;stroke:transparent;stroke-width:14;cursor:pointer}',
   '.ac-edge-hit:hover{stroke:var(--dsw-alias-brand-primary,#4c8dff);stroke-opacity:.35}',
   '.ac-arrowhead{fill:var(--ac-line)}',
+  '.ac-arrowcross{stroke:var(--ac-line);stroke-width:1.8;stroke-linecap:round;fill:none}',
   '.ac-junc-dot{fill:var(--ac-line);stroke:var(--dsw-alias-bg-base,#14161a);stroke-width:1.5}',
   '.ac-tag-badge{pointer-events:none;user-select:none}',
   '.ac-tag-badge rect{fill:var(--dsw-alias-brand-primary,#4c8dff);fill-opacity:.12;stroke:var(--dsw-alias-brand-primary,#4c8dff);stroke-width:1}',
   '.ac-tag-badge text{fill:var(--dsw-alias-brand-primary,#4c8dff);font-size:10px;font-weight:700;text-anchor:middle;dominant-baseline:central}',
-  '.ac-elbl{fill:var(--dsw-alias-label-secondary,#9aa3af);font-size:11.5px;text-anchor:middle;dominant-baseline:central;pointer-events:none;user-select:none}',
+  '.ac-elbl{fill:var(--dsw-alias-label-secondary,#9aa3af);font-size:11.5px;text-anchor:middle;dominant-baseline:central;pointer-events:none;user-select:none;paint-order:stroke fill;stroke:var(--dsw-alias-bg-base,#14161a);stroke-width:4px;stroke-linejoin:round}',
   '.ac-elbl-bg{fill:var(--dsw-alias-bg-base,#14161a)}',
   '.ac-group-box{fill:var(--dsw-alias-bg-layer-1,#1b1e23);fill-opacity:.5;stroke:var(--ac-line);stroke-dasharray:5 5;stroke-width:1.4;cursor:move}',
   // 组名从前是 cursor:pointer —— 可点它**不**折叠（收起只认那个按钮），所以那个手型是在骗人。
   // 现在它和组框一样，是「抓住整组」的意思。
-  '.ac-group-lbl{fill:var(--ac-line);font-size:11.5px;font-weight:600;cursor:move}',
+  '.ac-group-lbl{fill:var(--ac-line);font-size:11.5px;font-weight:600;cursor:move;paint-order:stroke fill;stroke:var(--dsw-alias-bg-base,#14161a);stroke-width:4px;stroke-linejoin:round}',
   // ==================== 描边与组配色 ====================
   // 为什么不直接用 --dsw-alias-border-*：「边框」与「图形描边」在令牌体系里是两件事。
   // 实测（2026-09-21，把两个 token 的合成色算出来比对）：border-l2 = #ffffff1f（12% 白），
@@ -213,7 +219,7 @@ var STUDIO_CSS = [
   '.ac-note-badge circle{fill:#e8a33d;stroke:var(--dsw-alias-bg-base,#14161a);stroke-width:1.5}',
   '.ac-note-badge.done circle{fill:var(--dsw-alias-label-secondary,#9aa3af)}',
   '.ac-note-badge text{fill:#14161a;font-size:11px;text-anchor:middle;pointer-events:none;user-select:none}',
-  '.ac-note-badge.done text{fill:#fff}',
+  '.ac-note-badge.done text{fill:var(--dsw-alias-bg-base,#14161a)}',
   '.ac-notes .ac-lib-item.done{opacity:.55;text-decoration:line-through}',
   // 检查点清单：AI 改的那几行左边一道蓝条，当前状态那一行加粗 —— 一眼看出「谁在什么时候动的」
   '.ac-hist .ac-hist-item{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;padding:3px 6px;border-left:3px solid transparent;color:var(--dsw-alias-label-secondary,#9aa3af)}',
@@ -325,9 +331,58 @@ function kindOf(shape) {
   return 'rect'
 }
 
+/**
+ * 28 种连接符视觉样式表（与宿主 ARROWS 28 项完全对齐）：
+ * - 线宽（普通 vs thick）
+ * - 虚线（dashed）
+ * - 隐线（invisible）
+ * - 两端形状：start / end 分别为 'arrow' | 'circle' | 'cross' | 'none'
+ */
+var ARROW_STYLE = {
+  '-->':   { thick: false, dashed: false, invisible: false, start: 'none',   end: 'arrow' },
+  '---':   { thick: false, dashed: false, invisible: false, start: 'none',   end: 'none' },
+  '-.->':  { thick: false, dashed: true,  invisible: false, start: 'none',   end: 'arrow' },
+  '==>':   { thick: true,  dashed: false, invisible: false, start: 'none',   end: 'arrow' },
+  '~~~':   { thick: false, dashed: false, invisible: true,  start: 'none',   end: 'none' },
+  '===':   { thick: true,  dashed: false, invisible: false, start: 'none',   end: 'none' },
+  '--o':   { thick: false, dashed: false, invisible: false, start: 'none',   end: 'circle' },
+  '--x':   { thick: false, dashed: false, invisible: false, start: 'none',   end: 'cross' },
+  '==o':   { thick: true,  dashed: false, invisible: false, start: 'none',   end: 'circle' },
+  '==x':   { thick: true,  dashed: false, invisible: false, start: 'none',   end: 'cross' },
+  'o---':  { thick: false, dashed: false, invisible: false, start: 'circle', end: 'none' },
+  'x---':  { thick: false, dashed: false, invisible: false, start: 'cross',  end: 'none' },
+  'o-->':  { thick: false, dashed: false, invisible: false, start: 'circle', end: 'arrow' },
+  'x-->':  { thick: false, dashed: false, invisible: false, start: 'cross',  end: 'arrow' },
+  'o--o':  { thick: false, dashed: false, invisible: false, start: 'circle', end: 'circle' },
+  'x--x':  { thick: false, dashed: false, invisible: false, start: 'cross',  end: 'cross' },
+  'o--x':  { thick: false, dashed: false, invisible: false, start: 'circle', end: 'cross' },
+  'x--o':  { thick: false, dashed: false, invisible: false, start: 'cross',  end: 'circle' },
+  'o==o':  { thick: true,  dashed: false, invisible: false, start: 'circle', end: 'circle' },
+  'x==x':  { thick: true,  dashed: false, invisible: false, start: 'cross',  end: 'cross' },
+  'o==>':  { thick: true,  dashed: false, invisible: false, start: 'circle', end: 'arrow' },
+  'x==>':  { thick: true,  dashed: false, invisible: false, start: 'cross',  end: 'arrow' },
+  'o---o': { thick: false, dashed: false, invisible: false, start: 'circle', end: 'circle' },
+  'x---x': { thick: false, dashed: false, invisible: false, start: 'cross',  end: 'cross' },
+  'o---x': { thick: false, dashed: false, invisible: false, start: 'circle', end: 'cross' },
+  'x---o': { thick: false, dashed: false, invisible: false, start: 'cross',  end: 'circle' },
+  '<-->':  { thick: false, dashed: false, invisible: false, start: 'arrow',  end: 'arrow' },
+  '<==>':  { thick: true,  dashed: false, invisible: false, start: 'arrow',  end: 'arrow' },
+}
+
+function arrowStyleOf(arrow) {
+  return ARROW_STYLE[arrow] || { thick: false, dashed: false, invisible: false, start: 'none', end: 'arrow' }
+}
+
+function arrowMarkerUrl(shape) {
+  if (shape === 'arrow') return 'url(#ac-arrow)'
+  if (shape === 'circle') return 'url(#ac-circle)'
+  if (shape === 'cross') return 'url(#ac-cross)'
+  return undefined
+}
+
 function arrowMarkerRef(arrow) {
-  if (arrow === '---' || arrow === '~~~') return ''
-  return 'url(#ac-arrow)'
+  var s = arrowStyleOf(arrow)
+  return arrowMarkerUrl(s.end) || ''
 }
 
 // ==================== 几何与布局 ====================

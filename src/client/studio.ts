@@ -376,7 +376,10 @@ function ArchStudio(props) {
         minY = Math.min(minY, gm.y - gm.h / 2); maxY = Math.max(maxY, gm.y + gm.h / 2)
       }
       if (!isFinite(minX)) continue
-      res.push({ id: g.id, label: g.label, x: minX - 20, y: minY - 34, w: maxX - minX + 40, h: maxY - minY + 54 })
+      // 顶部要留出**标题那一行**：标题画在 box.y + 17，而最上面那个成员节点的上沿在
+      // minY - 节点半高（高约 44 ⇒ 22）。原来给 34 ⇒ 标题与节点上沿重叠、被节点压住。
+      // 余量按「节点半高 + 标题行高」给足；底部照旧 20。
+      res.push({ id: g.id, label: g.label, x: minX - 20, y: minY - 52, w: maxX - minX + 40, h: maxY - minY + 72 })
     }
     return res
   }, [model, gstate])

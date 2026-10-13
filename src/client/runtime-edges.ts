@@ -227,6 +227,33 @@ function edgeMidOfPath(pts) {
   return { x: pts[0].x, y: pts[0].y }
 }
 
+function edgeTotalLen(pts) {
+  var total = 0
+  if (!pts) return 0
+  for (var i = 0; i + 1 < pts.length; i++) {
+    total += Math.abs(pts[i + 1].x - pts[i].x) + Math.abs(pts[i + 1].y - pts[i].y)
+  }
+  return total
+}
+
+function edgePointAtDist(pts, targetDist) {
+  if (!pts || pts.length === 0) return { x: 0, y: 0 }
+  if (pts.length === 1 || targetDist <= 0) return { x: pts[0].x, y: pts[0].y }
+  var remaining = targetDist
+  for (var k = 0; k + 1 < pts.length; k++) {
+    var seg = Math.abs(pts[k + 1].x - pts[k].x) + Math.abs(pts[k + 1].y - pts[k].y)
+    if (remaining <= seg || k + 2 === pts.length) {
+      var t = seg <= 0 ? 0 : remaining / seg
+      return {
+        x: pts[k].x + (pts[k + 1].x - pts[k].x) * t,
+        y: pts[k].y + (pts[k + 1].y - pts[k].y) * t,
+      }
+    }
+    remaining -= seg
+  }
+  return { x: pts[pts.length - 1].x, y: pts[pts.length - 1].y }
+}
+
 /**
  * 端口在它那一侧上偏离正中心的距离。`p = { n, i }` 是「这一侧一共 n 根线、我是第 i 根」
  * （调用方按对端方向排好序传入），于是同一侧的线会沿边**展开**而不是全挤在边心。
@@ -626,13 +653,17 @@ var EXPORT_CSS = [
   '.ac-lbl{fill:#1a202c;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;font-size:13px;font-weight:600;text-anchor:middle;dominant-baseline:central}',
   '.ac-edge{fill:none;stroke:#718096;stroke-width:1.6}',
   '.ac-edge.dashed{stroke-dasharray:6 5}',
+  '.ac-edge.thick{stroke-width:3}',
+  '.ac-edge.invisible{stroke:transparent}',
   '.ac-arrowhead{fill:#718096}',
-  '.ac-elbl{fill:#4a5568;font-size:11.5px;text-anchor:middle;dominant-baseline:central}',
+  '.ac-arrowcross{stroke:#718096;stroke-width:1.8;stroke-linecap:round;fill:none}',
+  '.ac-junc-dot{fill:#718096;stroke:#ffffff;stroke-width:1.5}',
+  '.ac-elbl{fill:#4a5568;font-size:11.5px;text-anchor:middle;dominant-baseline:central;paint-order:stroke fill;stroke:#ffffff;stroke-width:4px;stroke-linejoin:round}',
   '.ac-tag-badge rect{fill:#4c8dff;fill-opacity:.12;stroke:#4c8dff;stroke-width:1}',
   '.ac-tag-badge text{fill:#4c8dff;font-size:10px;font-weight:700;text-anchor:middle;dominant-baseline:central}',
   '.ac-elbl-bg{fill:#ffffff}',
   '.ac-group-box{fill:#f2f6fa;stroke:#7b8794;stroke-dasharray:5 5;stroke-width:1.4}',
-  '.ac-group-lbl{fill:#4a5568;font-size:11.5px;font-weight:600}',
+  '.ac-group-lbl{fill:#4a5568;font-size:11.5px;font-weight:600};paint-order:stroke fill;stroke:#ffffff;stroke-width:4px;stroke-linejoin:round',
   // 组配色：与屏幕同一套色相，这里写字面值（导出件没有主题上下文，取不到变量）。
   // 白的底上用的是浅色那一列：每一档对白底 ≈4.5:1，实测见 runtime.ts 里屏幕那一段的注释。
   '.ac-h0 .ac-shape,.ac-h0 .ac-group-box,.ac-h0 .ac-fold-box{stroke:#c238c2}',
@@ -689,6 +720,12 @@ function buildExportSvg(worldNode, box) {
     + '<defs>'
     + '<marker id="ac-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">'
     + '<path d="M 0 0 L 10 5 L 0 10 z" class="ac-arrowhead" fill="#718096"/>'
+    + '</marker>'
+    + '<marker id="ac-circle" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">'
+    + '<circle cx="5" cy="5" r="3.5" class="ac-arrowhead" fill="#718096"/>'
+    + '</marker>'
+    + '<marker id="ac-cross" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">'
+    + '<path d="M 2 2 L 8 8 M 8 2 L 2 8" class="ac-arrowcross" stroke="#718096" stroke-width="1.8" stroke-linecap="round"/>'
     + '</marker>'
     + '</defs>'
     + '<style>' + EXPORT_CSS + '</style>'
@@ -966,6 +1003,10 @@ function computeEdgeLayout(model, foldMap, foldGeom, gstate) {
           var hy = hor.p.y, vx = ver.p.x
           if (vx > hx1 + 3 && vx < hx2 - 3 && hy > hy1 + 3 && hy < hy2 - 3) {
             routed[cb].hops.push({ x: vx, y: hy })
+            if (!routed[ca].crossings) routed[ca].crossings = []
+            if (!routed[cb].crossings) routed[cb].crossings = []
+            routed[ca].crossings.push({ x: vx, y: hy, other: cb })
+            routed[cb].crossings.push({ x: vx, y: hy, other: ca })
           }
         }
       }
@@ -986,6 +1027,47 @@ function computeEdgeLayout(model, foldMap, foldGeom, gstate) {
       d: rpath.d,
       mid: rt.geo.mid,
     })
+  }
+
+  // 边标签相交与重叠避让：
+  // 1) 若十字相交且标签靠近交叉点（< 22px），沿自身路径错开，避免文字被相交横线切断
+  for (var fri = 0; fri < finalRouted.length; fri++) {
+    var frt = finalRouted[fri]
+    if (!frt.ed || !frt.ed.label) continue
+    var srcRt = routed[fri]
+    if (srcRt && srcRt.crossings && srcRt.crossings.length > 0) {
+      var ptsLen = edgeTotalLen(frt.geo.pts)
+      var midDist = ptsLen / 2
+      for (var ci = 0; ci < srcRt.crossings.length; ci++) {
+        var cPt = srcRt.crossings[ci]
+        var dToCross = Math.hypot(frt.mid.x - cPt.x, frt.mid.y - cPt.y)
+        if (dToCross < 22) {
+          var shift = (fri % 2 === 0 ? -1 : 1) * Math.min(24, Math.max(14, ptsLen * 0.18))
+          var shiftedDist = Math.max(12, Math.min(ptsLen - 12, midDist + shift))
+          frt.mid = edgePointAtDist(frt.geo.pts, shiftedDist)
+          break
+        }
+      }
+    }
+  }
+
+  // 2) 若两条带标签边的标签中心距 < 24px（包括相交、双向、汇流或平行边），沿各自路径错开
+  for (var f1 = 0; f1 < finalRouted.length; f1++) {
+    var r1 = finalRouted[f1]
+    if (!r1.ed || !r1.ed.label) continue
+    for (var f2 = f1 + 1; f2 < finalRouted.length; f2++) {
+      var r2 = finalRouted[f2]
+      if (!r2.ed || !r2.ed.label) continue
+      var dBetween = Math.hypot(r1.mid.x - r2.mid.x, r1.mid.y - r2.mid.y)
+      if (dBetween < 24) {
+        var len1 = edgeTotalLen(r1.geo.pts)
+        var len2 = edgeTotalLen(r2.geo.pts)
+        var s1 = Math.min(24, Math.max(14, len1 * 0.18))
+        var s2 = Math.min(24, Math.max(14, len2 * 0.18))
+        r1.mid = edgePointAtDist(r1.geo.pts, Math.max(12, Math.min(len1 - 12, len1 / 2 - s1)))
+        r2.mid = edgePointAtDist(r2.geo.pts, Math.max(12, Math.min(len2 - 12, len2 / 2 + s2)))
+      }
+    }
   }
 
   return {

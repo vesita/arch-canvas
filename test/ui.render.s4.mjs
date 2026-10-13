@@ -1041,4 +1041,49 @@ console.log('\n[4x] 连线几何解耦选中态与 DOM 级等价证明');
   respond = prevR
 }
 
+console.log('\n[4u] 画布键盘可达性：节点 tabindex="0"、role="button" 及 Enter 键选中态与鼠标点击一致')
+{
+  const prevR = respond
+  const KB_MODEL = {
+    nodes: [
+      { id: 'k1', label: '节点1', shape: 'rect', x: 50, y: 50 },
+      { id: 'k2', label: '节点2', shape: 'rect', x: 200, y: 50 },
+    ],
+    edges: [{ id: 'ke1', from: 'k1', to: 'k2', label: '', arrow: '-->' }],
+    groups: [], direction: 'TD', extras: [],
+  }
+  respond = function (method, args) {
+    if (method === 'doc:get') return fullDoc({ model: KB_MODEL, nodeCount: 2, edgeCount: 1 })
+    return { ok: true }
+  }
+  const kbHost = document.createElement('div')
+  document.body.appendChild(kbHost)
+  const kbRoot = createRoot(kbHost)
+  await act(async () => {
+    kbRoot.render(React.createElement(captured['conversation.view'], {
+      cwd: UI, sessionId: 's-kb-acc', useSessions: () => UI,
+    }))
+  })
+  await flush()
+
+  const tabNodes = kbHost.querySelectorAll('.ac-node[tabindex="0"]')
+  eq('所有节点均具有 tabindex="0" 属性且数量与模型一致', tabNodes.length, KB_MODEL.nodes.length)
+  const roleNodes = kbHost.querySelectorAll('.ac-node[role="button"]')
+  eq('所有节点均具有 role="button" 属性', roleNodes.length, KB_MODEL.nodes.length)
+
+  // 测试键盘 Enter 触发选中
+  const target = tabNodes[0]
+  await act(async () => {
+    target.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+  })
+  await flush()
+
+  const selNode = kbHost.querySelector('g.ac-node.sel')
+  ok('按 Enter 后节点获得 .ac-node.sel 选中态，且与鼠标点击一致', !!selNode && (selNode.textContent || '').indexOf('节点1') >= 0)
+
+  await act(async () => { kbRoot.unmount() })
+  kbHost.remove()
+  respond = prevR
+}
+
 endPhase()

@@ -31,6 +31,57 @@ ctx.effect(function () {
 // ==================== 给 AI 的动态工具 ====================
 var OUT_SCHEMA = { type: 'object', additionalProperties: true }
 
+async function collectNotesFor(file, liveNodes) {
+  var list = []
+  if (!file) {
+    return { list: [], text: '（没有表或没有留言）' }
+  }
+  var store = await loadNoteStoreFor(file)
+  var dKey = noteKeyFor(file)
+  var diagramNotes = (store && typeof store === 'object') ? store[dKey] : null
+  var map: Record<string, { id: string; text: string; done: boolean; at: number }> = {}
+  if (diagramNotes && typeof diagramNotes === 'object') {
+    for (var k in diagramNotes) {
+      var entry = diagramNotes[k]
+      if (entry && typeof entry.text === 'string' && entry.text) {
+        map[k] = {
+          id: k,
+          text: entry.text,
+          done: entry.done === true,
+          at: typeof entry.at === 'number' ? entry.at : 0,
+        }
+      }
+    }
+  }
+  if (Array.isArray(liveNodes)) {
+    for (var i = 0; i < liveNodes.length; i++) {
+      var n = liveNodes[i]
+      if (n && n.id && n.note) {
+        if (!map[n.id]) {
+          map[n.id] = { id: n.id, text: n.note, done: n.noteDone === true, at: 0 }
+        } else {
+          map[n.id].text = n.note
+          map[n.id].done = n.noteDone === true
+        }
+      }
+    }
+  }
+  for (var id in map) list.push(map[id])
+  if (list.length === 0) {
+    return { list: [], text: '（没有表或没有留言）' }
+  }
+  list.sort(function (a, b) {
+    var diff = (a.at || 0) - (b.at || 0)
+    return diff !== 0 ? diff : a.id.localeCompare(b.id)
+  })
+  var lines = []
+  for (var j = 0; j < list.length; j++) {
+    var it = list[j]
+    lines.push('- `' + it.id + '`（done: ' + (it.done ? 'true' : 'false') + '）：' + it.text)
+  }
+  return { list: list, text: lines.join('\n') }
+}
+
 var readTool = harness.defineTool({
   name: 'arch_read',
   description: '读取一张逻辑框架图的 Mermaid 源码。默认读当前与用户共享的这张；给 diagram 可以只读同一个图库里的另一张（不会切换用户看到的图）。注意：当前这张图通常已经自动出现在你的上下文里，只有怀疑它过期、或要看别的图时才需要调用。',
@@ -38,6 +89,7 @@ var readTool = harness.defineTool({
     type: 'object',
     properties: {
       diagram: { type: 'string', description: '要读的图名；省略则读当前这张' },
+      notes: { type: 'boolean', description: '是否在返回内容里附带当前图的留言清单（含历史已办，回看留言时传 true）；默认 false' },
     },
   },
   output: {
@@ -46,7 +98,11 @@ var readTool = harness.defineTool({
       try {
         var v = value || {}
         if (v.ok === false) return [{ type: 'text', text: 'arch_read 失败：' + String(v.error || '') }]
-        return [{ type: 'text', text: '【' + String(v.diagram || '?') + '】\n' + String(v.mermaid || '(空)') }]
+        var base = '【' + String(v.diagram || '?') + '】\n' + String(v.mermaid || '(空)')
+        if (args && args.notes === true) {
+          base += '\n\n【留言清单】\n' + String(v.notesText || '（没有表或没有留言）')
+        }
+        return [{ type: 'text', text: base }]
       } catch (e) {
         return [{ type: 'text', text: '(读取失败)' }]
       }
@@ -60,6 +116,9 @@ var readTool = harness.defineTool({
       if (typeof args.diagram !== 'string' || args.diagram.trim() === '') {
         return { ok: false, error: '需要 diagram（要读的图名，非空字符串；省略则读当前这张）', diagram: doc.name }
       }
+    }
+    if (args && args.notes !== undefined && typeof args.notes !== 'boolean') {
+      return { ok: false, error: 'notes 必须是布尔（默认 false）', diagram: doc.name }
     }
     var want = args && typeof args.diagram === 'string' ? args.diagram.trim() : ''
     var wantParts = want ? splitKey(want) : null
@@ -76,15 +135,25 @@ var readTool = harness.defineTool({
         return { ok: false, error: '读不到「' + want + '」：' + msgOf(e), diagram: doc.name }
       }
       var parsed = parseMermaid(text)
-      return {
+      var resOther: any = {
         ok: true, diagram: rk.name, key: wantKey, dir: rk.dir, scope: rk.scope,
         nodeCount: parsed.nodes.length, edgeCount: parsed.edges.length,
         mermaid: serializeDoc(parsed),
       }
+      if (args && args.notes === true) {
+        var infoOther = await collectNotesFor(fileAt(rk.dir, rk.name), parsed.nodes)
+        resOther.notes = infoOther.list
+        resOther.notesText = infoOther.text
+      }
+      return resOther
     }
     await verifyFileRefs()
-    var out = summaryOf()
-    out.mermaid = serializeDoc(doc)
+    var out = fullOf()
+    if (args && args.notes === true) {
+      var infoCurrent = await collectNotesFor(doc.file, doc.nodes)
+      out.notes = infoCurrent.list
+      out.notesText = infoCurrent.text
+    }
     return out
   },
 })
@@ -211,8 +280,7 @@ var writeTool = harness.defineTool({
     if (args && typeof args.note === 'string' && args.note) doc.notes = [args.note]
     var policy = policyOfAgent(exec && exec.agent)
     var saveError = await persistOrRollback(saved, 'arch_write', policy, expectFile)
-    var out = summaryOf()
-    out.mermaid = serializeDoc(doc)
+    var out = fullOf()
     out.keptNotes = keptNotes
     // 写盘失败时内存已经回滚了 —— 那就**不能说「已更新」**：回执必须让 AI 知道自己白改了。
     // （历史里也不会多一份检查点：那一版从来没落到盘上，见 history.ts。）

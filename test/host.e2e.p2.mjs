@@ -81,6 +81,34 @@ console.log('【留言历史封顶 6 条】')
   // 实测踩到过：盘上 6 条、内存 8 条。
   const capDoc = await call('doc:get', { where: dirNote })
   eq('内存里的历史条数与盘上一致（都是 6）', capDoc.resolvedNoteCount, capDone.length)
+
+  // 端到端断言：arch_read 支持可选 notes: true，回看历史已办留言
+  const rDefault = await tool('arch_read').execute({}, {})
+  const renderDef = tool('arch_read').output.render({}, rDefault)
+  eq('默认不传 notes 时 execute 不附带 notesText', rDefault.notesText, undefined)
+  ok('默认不传 notes 时 render 逐字一致（不含留言清单）',
+    renderDef[0].text === '【' + String(rDefault.diagram || '?') + '】\n' + String(rDefault.mermaid || '(空)'), renderDef[0].text)
+
+  const rWithNotes = await tool('arch_read').execute({ notes: true }, {})
+  const renderNotes = tool('arch_read').output.render({ notes: true }, rWithNotes)
+  ok('notes:true 时附带留言清单（含历史已办条目）', Array.isArray(rWithNotes.notes) && rWithNotes.notes.length >= 6)
+  ok('notes:true 标出了已办留言 (done: true)', rWithNotes.notes.some((n) => n.id === 'cap8' && n.done === true))
+  ok('notes:true 按 at 排序', rWithNotes.notes.every((n, idx, arr) => idx === 0 || (n.at || 0) >= (arr[idx - 1].at || 0)))
+  ok('notes:true 的 render 文本包含留言清单', renderNotes[0].text.indexOf('【留言清单】') >= 0)
+  ok('notes:true 的 render 文本列出全部已办留言', renderNotes[0].text.indexOf('cap8') >= 0 && renderNotes[0].text.indexOf('done: true') >= 0)
+
+  // 加上一条未办留言验证 done: false 亦正确标出
+  const mUnfinished = JSON.parse(JSON.stringify((await call('doc:get', { where: dirNote })).model))
+  const mnTarget = mUnfinished.nodes.find((n) => n.id === 'mn1')
+  mnTarget.note = '新未办留言'
+  mnTarget.noteDone = false
+  await call('doc:set', { model: mUnfinished, where: dirNote })
+  const rMixed = await tool('arch_read').execute({ notes: true }, {})
+  ok('notes:true 标出了未办留言 (done: false)', rMixed.notes.some((n) => n.id === 'mn1' && n.done === false))
+
+  // 负向对照：notes 传非布尔被拒
+  const rBadNotes = await tool('arch_read').execute({ notes: 'yes' }, {})
+  eq('notes 非布尔时被拒 (ok === false)', rBadNotes.ok, false)
 }
 eq('删节点后 resolvedNoteCount 为 0', getAfterDel.resolvedNoteCount, 0)
 // 把 warnings 的内容带出来：这条断言从前只说"多了几条"，多出来的是什么看不到
@@ -224,6 +252,7 @@ ok('清掉后文件里没有 %% @file 行', files.get(refFile).indexOf('%% @file
 // 4. AI 重画继承锚点；用户手改源码不继承（与元素注释同一条边界）
 const mRef2 = JSON.parse(JSON.stringify(getClr.model))
 mRef2.nodes.find((n) => n.id === 'r1').files = ['src/host/mermaid.ts#parseMermaid']
+mRef2.nodes.find((n) => n.id === 'r1').tags = ['core', 'parser']
 await call('doc:set', { model: mRef2, where: dirRef })
 const wRef = await tool('arch_write').execute({
   mermaid: 'flowchart TD\n  r1["解析器重画"] --> r3["新下游"]\n',
@@ -232,12 +261,16 @@ ok('arch_write 成功', wRef && wRef.ok !== false)
 const getWRef = await call('doc:get', { where: dirRef })
 eq('arch_write 后同 id 节点继承了锚点',
   JSON.stringify(getWRef.model.nodes.find((n) => n.id === 'r1').files), JSON.stringify(['src/host/mermaid.ts#parseMermaid']))
+eq('arch_write 后同 id 节点继承了标签',
+  JSON.stringify(getWRef.model.nodes.find((n) => n.id === 'r1').tags), JSON.stringify(['core', 'parser']))
 ok('继承的锚点也写回了文件（# 原样）', files.get(refFile).indexOf('%% @file r1 "src/host/mermaid.ts#parseMermaid"') >= 0)
 
 const aRef = await call('doc:applyText', { text: 'flowchart TD\n  r1["手改"] --> r3["新下游"]\n', where: dirRef })
 ok('doc:applyText 成功', aRef && aRef.ok !== false)
 eq('doc:applyText 不继承锚点（删了那行就是真的删）',
   (await call('doc:get', { where: dirRef })).model.nodes.find((n) => n.id === 'r1').files.length, 0)
+eq('doc:applyText 不继承标签',
+  (await call('doc:get', { where: dirRef })).model.nodes.find((n) => n.id === 'r1').tags.length, 0)
 ok('文件里也没有锚点了', files.get(refFile).indexOf('%% @file ') < 0)
 
 // 5. 幽灵锚点：节点不在了就丢弃 + 记 warning + 绝不凭注释复活节点

@@ -192,5 +192,40 @@ console.log('\n[6] 性能优化：autoLayout 复用 baseCrossings，守住交叉
   eq('crossingsOf 纯函数确定性', c1, c2);
 }
 
+console.log('\n[7] 可选参数 pinned：固定节点位移为 0，其余节点正常重排');
+{
+  const model = mk(['a', 'b', 'c', 'd'], [['a', 'b'], ['b', 'c'], ['c', 'd']]);
+  model.nodes[0].x = 888;
+  model.nodes[0].y = 999;
+  const out = autoLayout(model, { pinned: ['a'] });
+  const g = byId(out);
+  eq('pinned 节点的 x 坐标保持不变', g.a.x, 888);
+  eq('pinned 节点的 y 坐标保持不变', g.a.y, 999);
+  ok('非 pinned 节点分配了新坐标', g.b.x !== 888 || g.b.y !== 999);
+  ok('所有节点坐标有限有效', out.nodes.every((n) => isFinite(n.x) && isFinite(n.y)));
+}
+
+console.log('\n[8] 组感知：同层内同组节点聚集为连续区间，组块不被撕开');
+{
+  const gmodel = mk(['u1', 'u2', 'v1', 'v2', 'w1'], [['u1', 'v1'], ['u2', 'v2'], ['v1', 'w1']]);
+  gmodel.nodes[0].group = 'G1';
+  gmodel.nodes[1].group = 'G2';
+  gmodel.nodes[2].group = 'G1';
+  gmodel.nodes[3].group = 'G2';
+  gmodel.groups = [{ id: 'G1', label: '组1' }, { id: 'G2', label: '组2' }];
+  const out = autoLayout(gmodel);
+  ok('带组模型正常排布', out.nodes.every((n) => isFinite(n.x) && isFinite(n.y)));
+}
+
+console.log('\n[9] 虚拟节点与跨层长边优化：长边穿透层被感知，交叉数受控');
+{
+  const longModel = mk(['top', 'm1', 'm2', 'bot'], [['top', 'bot'], ['top', 'm1'], ['m1', 'm2'], ['m2', 'bot']]);
+  const out = autoLayout(longModel);
+  const posMap = byId(out);
+  const cross = crossingsOf(posMap, pairsOf(longModel, out));
+  eq('长边穿透图无交叉', cross, 0);
+  ok('所有节点坐标有限', out.nodes.every((n) => isFinite(n.x) && isFinite(n.y)));
+}
+
 console.log('\n结果: ' + pass + ' 通过 / ' + fail + ' 失败\n');
 process.exit(fail === 0 ? 0 : 1);

@@ -1,3 +1,5 @@
+var MAX_LIST_ITEMS = 20
+
 function normalizeModel(model) {
   var nodes = []
   var seen = {}
@@ -27,7 +29,7 @@ function normalizeModel(model) {
     // 代码锚点：数组，逐条 trim / 去重 / 设闸门 —— 它同样会进提示词，而且会被拿去 stat。
     var fileList = []
     var rawFiles = Array.isArray(n.files) ? n.files : []
-    for (var fi = 0; fi < rawFiles.length && fileList.length < 20; fi++) {
+    for (var fi = 0; fi < rawFiles.length && fileList.length < MAX_LIST_ITEMS; fi++) {
       if (typeof rawFiles[fi] !== 'string') continue
       // `@file` 的值走 `qRef()`/`unquoteRef()`（不套标签实体转义），读侧会把 br 变体解成换行 ——
       // 写侧不过同一道归一，往返检查每次保存都会报 serialize.not-idempotent。
@@ -37,7 +39,7 @@ function normalizeModel(model) {
     }
     var tagList = []
     var rawTags = Array.isArray(n.tags) ? n.tags : []
-    for (var ti = 0; ti < rawTags.length && tagList.length < 20; ti++) {
+    for (var ti = 0; ti < rawTags.length && tagList.length < MAX_LIST_ITEMS; ti++) {
       if (typeof rawTags[ti] !== 'string') continue
       var tv = rawTags[ti].trim()
       if (tv && tagList.indexOf(tv) < 0) tagList.push(tv)
@@ -392,11 +394,12 @@ function inheritUserMarks(parsed) {
   for (var i = 0; i < doc.nodes.length; i++) {
     var n = doc.nodes[i]
     var hasPos = typeof n.x === 'number' && isFinite(n.x) && typeof n.y === 'number' && isFinite(n.y)
-    if (n.note || (n.files && n.files.length) || hasPos) {
+    if (n.note || (n.files && n.files.length) || (n.tags && n.tags.length) || hasPos) {
       old[n.id] = {
         note: n.note || '',
         done: n.noteDone === true,
         files: (n.files || []).slice(),
+        tags: (n.tags || []).slice(),
         pos: hasPos ? { x: n.x, y: n.y } : null
       }
     }
@@ -417,6 +420,10 @@ function inheritUserMarks(parsed) {
     // 代码锚点同理：AI 重画时不该把用户标的文件引用抹掉（新文本自己写了就用新的）
     if (!(p.files && p.files.length) && old[p.id].files.length) {
       p.files = old[p.id].files.slice()
+    }
+    // 标签同理：AI 重画时不该把用户标的标签抹掉
+    if (!(p.tags && p.tags.length) && old[p.id].tags.length) {
+      p.tags = old[p.id].tags.slice()
     }
     kept += 1
   }

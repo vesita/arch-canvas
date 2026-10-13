@@ -27,6 +27,10 @@ function studioCanvasFns(S) {
   canvasKids.push(React.createElement('defs', { key: 'defs' },
     React.createElement('marker', { id: 'ac-arrow', viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: 'auto-start-reverse' },
       React.createElement('path', { d: 'M 0 0 L 10 5 L 0 10 z', className: 'ac-arrowhead' })),
+    React.createElement('marker', { id: 'ac-circle', viewBox: '0 0 10 10', refX: 5, refY: 5, markerWidth: 6, markerHeight: 6, orient: 'auto-start-reverse' },
+      React.createElement('circle', { cx: 5, cy: 5, r: 3.5, className: 'ac-arrowhead' })),
+    React.createElement('marker', { id: 'ac-cross', viewBox: '0 0 10 10', refX: 5, refY: 5, markerWidth: 6, markerHeight: 6, orient: 'auto-start-reverse' },
+      React.createElement('path', { d: 'M 2 2 L 8 8 M 8 2 L 2 8', className: 'ac-arrowcross' })),
   ))
 
   var inner = []
@@ -74,19 +78,25 @@ function studioCanvasFns(S) {
     if (elayout && elayout.routed) {
       // 记录已经为分支锚点画过箭头的集合（同汇流点只画一次箭头）
       var junctionArrowDrawn = {}
+      var edgeLabels = []
       for (var ri = 0; ri < elayout.routed.length; ri++) {
         var rt = elayout.routed[ri]
         var red2 = rt.ed
         var juncForEdge = elayout.edgeToJunction && elayout.edgeToJunction[rt.ei]
-        var dashed = red2.arrow === '-.->'
+        var style = arrowStyleOf(red2.arrow)
         var isEdgeSel = sel && sel.kind === 'edge' && sel.from === red2.from && sel.to === red2.to
-        var cls = 'ac-edge' + (dashed ? ' dashed' : '') + (isEdgeSel ? ' sel' : '')
+        var cls = 'ac-edge'
+          + (style.dashed ? ' dashed' : '')
+          + (style.thick ? ' thick' : '')
+          + (style.invisible ? ' invisible' : '')
+          + (isEdgeSel ? ' sel' : '')
 
-        // 同侧汇流入端：同一个分支汇流点只保留首条连线的单个箭头，其余汇入线不重复打箭头！
-        var mk = arrowMarkerRef(red2.arrow)
+        // 两端形状：实心三角·圆点·叉·无，marker-start 与 marker-end 都要能挂
+        var mkStart = arrowMarkerUrl(style.start)
+        var mkEnd = arrowMarkerUrl(style.end)
         if (juncForEdge) {
           if (junctionArrowDrawn[juncForEdge.key]) {
-            mk = null
+            mkEnd = undefined
           } else {
             junctionArrowDrawn[juncForEdge.key] = true
           }
@@ -94,12 +104,21 @@ function studioCanvasFns(S) {
 
         inner.push(React.createElement('g', { key: 'e' + red2.from + '-' + red2.to + '-' + rt.ei },
           React.createElement('path', { className: 'ac-edge-hit', d: rt.d, onPointerDown: (function (efrom, eto) { return function (ev) { onEdgeDown(ev, efrom, eto) } })(red2.from, red2.to) }),
-          React.createElement('path', { className: cls, d: rt.d, markerEnd: mk || undefined }),
-          red2.label ? React.createElement('g', { key: 'el' },
-            React.createElement('rect', { className: 'ac-elbl-bg', x: rt.mid.x - Math.max(12, visualLen(red2.label) * 3.3), y: rt.mid.y - 9, width: Math.max(24, visualLen(red2.label) * 6.6), height: 17, rx: 5 }),
-            React.createElement('text', { className: 'ac-elbl', x: rt.mid.x, y: rt.mid.y }, red2.label),
-          ) : null,
+          React.createElement('path', { className: cls, d: rt.d, markerStart: mkStart || undefined, markerEnd: mkEnd || undefined }),
         ))
+        if (red2.label) {
+          edgeLabels.push(React.createElement('g', { key: 'el-' + red2.from + '-' + red2.to + '-' + rt.ei },
+            React.createElement('rect', {
+              className: 'ac-elbl-bg',
+              x: rt.mid.x - Math.max(14, visualLen(red2.label) * 3.6 + 6),
+              y: rt.mid.y - 10,
+              width: Math.max(28, visualLen(red2.label) * 7.2 + 12),
+              height: 20,
+              rx: 5,
+            }),
+            React.createElement('text', { className: 'ac-elbl', x: rt.mid.x, y: rt.mid.y }, red2.label),
+          ))
+        }
       }
       // 渲染分支锚点小圆点标记（输入侧汇流点与输出侧共干点各画一次）
       for (var jkey in elayout.junctionAnchors) {
@@ -117,6 +136,10 @@ function studioCanvasFns(S) {
           className: 'ac-junc-dot',
           cx: ojunc.jx, cy: ojunc.jy, r: 3
         }))
+      }
+      // 标签统一画在所有连线与分支点之上，保证不会被后画的线条切穿
+      for (var eli = 0; eli < edgeLabels.length; eli++) {
+        inner.push(edgeLabels[eli])
       }
     }
     for (var ni = 0; ni < model.nodes.length; ni++) {
@@ -153,7 +176,29 @@ function studioCanvasFns(S) {
       inner.push(React.createElement('g', {
         key: 'n' + node.id,
         className: 'ac-node' + (isSel ? ' sel' : '') + (isHl ? ' hl' : '') + hueClassOf(hueOfGroup, node.group),
+        tabIndex: 0,
+        role: 'button',
         onPointerDown: (function (nd) { return function (ev) { onNodeDown(ev, nd) } })(node),
+        onKeyDown: (function (nd) {
+          return function (ev) {
+            if (ev.key === 'Enter' || ev.key === ' ' || ev.key === 'Spacebar') {
+              ev.preventDefault()
+              ev.stopPropagation()
+              var fakeEv = {
+                button: 0,
+                stopPropagation: function () {},
+                preventDefault: function () {},
+                clientX: 0,
+                clientY: 0,
+                pointerId: 1,
+                target: ev.target,
+                currentTarget: ev.currentTarget,
+              }
+              onNodeDown(fakeEv, nd)
+              onPointerUp(fakeEv)
+            }
+          }
+        })(node),
       },
         // key 里带 highlight.key：新一轮改动会强制重挂，动画才会重新播
         isHl ? React.createElement('rect', {
@@ -172,8 +217,7 @@ function studioCanvasFns(S) {
             rx: 4, width: Math.max(26, String(node.tags[0]).length * 10 + 12), height: 16,
           }),
           React.createElement('text', {
-            x: Math.max(13, (String(node.tags[0]).length * 10 + 12) / 2), y: 11.5,
-            fontSize: 10, fill: 'var(--dsw-alias-brand-primary,#3b82f6)', textAnchor: 'middle', fontWeight: 'bold'
+            x: Math.max(13, (String(node.tags[0]).length * 10 + 12) / 2), y: 8,
           }, '#' + node.tags[0] + (node.tags.length > 1 ? ' +' + (node.tags.length - 1) : ''))
         ) : null,
         // 下钻角标：带 @link 的节点点它跳到那张图

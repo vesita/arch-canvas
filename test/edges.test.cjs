@@ -19,8 +19,9 @@ const src = fs.readFileSync(FILE, 'utf8');
 const api = new Function(src + '\n;return {'
   + ' edgeGeometry: edgeGeometry, edgeSidesOf: edgeSidesOf, perimeterPoint: perimeterPoint,'
   + ' kindOf: kindOf, nodeSize: nodeSize, edgePortOffset: edgePortOffset, edgePathHits: edgePathHits,'
-  + ' edgeGaps: edgeGaps, EDGE_PAD: EDGE_PAD };')();
-const { edgeGeometry, edgeSidesOf, perimeterPoint, kindOf, nodeSize, edgePathHits, EDGE_PAD } = api;
+  + ' edgeGaps: edgeGaps, EDGE_PAD: EDGE_PAD, computeEdgeLayout: computeEdgeLayout,'
+  + ' ARROW_STYLE: ARROW_STYLE, arrowStyleOf: arrowStyleOf };')();
+const { edgeGeometry, edgeSidesOf, perimeterPoint, kindOf, nodeSize, edgePathHits, EDGE_PAD, computeEdgeLayout, ARROW_STYLE, arrowStyleOf } = api;
 
 let pass = 0;
 let fail = 0;
@@ -428,6 +429,82 @@ console.log('\n[9] 大图连线几何性能优化：AABB 保守预筛与 preSide
   eq('preSides/preObs 优化输出 d 属性与基准逐字节相等', precomputedGeo.d, standardGeo.d);
   eq('preSides/preObs 优化输出 pts 长度与基准一致', precomputedGeo.pts.length, standardGeo.pts.length);
   eq('preSides/preObs 优化输出 mid 点与基准一致', JSON.stringify(precomputedGeo.mid), JSON.stringify(standardGeo.mid));
+}
+
+console.log('\n[10] 边标签避让：两条相交边的标签中心距 ≥ 17px，且标签位置偏离严格中点');
+{
+  const crossModel = {
+    nodes: [
+      { id: 'h1', shape: 'rect' },
+      { id: 'h2', shape: 'rect' },
+      { id: 'v1', shape: 'rect' },
+      { id: 'v2', shape: 'rect' },
+    ],
+    edges: [
+      { id: 'eh', from: 'h1', to: 'h2', label: '水平标签', arrow: '-->' },
+      { id: 'ev', from: 'v1', to: 'v2', label: '垂直标签', arrow: '-->' },
+    ],
+    groups: [],
+  };
+  const gstate = {
+    h1: { x: 0, y: 100, w: 40, h: 40, shape: 'rect' },
+    h2: { x: 200, y: 100, w: 40, h: 40, shape: 'rect' },
+    v1: { x: 100, y: 0, w: 40, h: 40, shape: 'rect' },
+    v2: { x: 100, y: 200, w: 40, h: 40, shape: 'rect' },
+  };
+  const layout = computeEdgeLayout(crossModel, null, null, gstate);
+  eq('布线成功得到两条边', layout.routed.length, 2);
+  const midH = layout.routed[0].mid;
+  const midV = layout.routed[1].mid;
+  const dist = Math.hypot(midH.x - midV.x, midH.y - midV.y);
+  ok('两条相交边的标签中心距 ≥ 17px (实际距: ' + dist.toFixed(1) + 'px)', dist >= 17);
+  ok('水平边标签位置偏离严格相交中点 (100, 100)', midH.x !== 100 || midH.y !== 100);
+  ok('垂直边标签位置偏离严格相交中点 (100, 100)', midV.x !== 100 || midV.y !== 100);
+}
+
+console.log('\n[11] 连接符视觉样式表：全覆盖宿主 ARROWS 28 项，四种端点形状与线型可区分');
+{
+  const hostFile = path.join(__dirname, '..', 'src', 'host', 'mermaid.ts');
+  const hostCode = fs.readFileSync(hostFile, 'utf8');
+  const arrowMatch = hostCode.match(/var ARROWS = \[([\s\S]*?)\];/);
+  ok('成功解析宿主 mermaid.ts 的 ARROWS 列表', !!arrowMatch);
+  const hostArrows = eval('[' + arrowMatch[1] + ']');
+  eq('宿主 ARROWS 正好包含 28 项', hostArrows.length, 28);
+
+  const shapesSeen = new Set();
+  const stylesSeen = new Set();
+  let allCovered = true;
+
+  for (const arrow of hostArrows) {
+    const style = ARROW_STYLE[arrow];
+    if (!style) {
+      allCovered = false;
+      ok('连接符 ' + arrow + ' 在 ARROW_STYLE 中已定义', false);
+      continue;
+    }
+    shapesSeen.add(style.start);
+    shapesSeen.add(style.end);
+    const key = [
+      style.thick ? 'thick' : 'normal',
+      style.dashed ? 'dashed' : 'solid',
+      style.invisible ? 'invisible' : 'visible',
+      style.start,
+      style.end,
+    ].join(':');
+    stylesSeen.add(key);
+  }
+
+  ok('ARROW_STYLE 完整覆盖宿主全部 28 项连接符', allCovered);
+  eq('端点四种形状全部出现且可区分 (arrow/circle/cross/none)',
+    ['arrow', 'circle', 'cross', 'none'].every(s => shapesSeen.has(s)), true);
+  ok('包含隐线样式 (invisible)', ARROW_STYLE['~~~'] && ARROW_STYLE['~~~'].invisible === true);
+  ok('包含粗线样式 (thick)', ARROW_STYLE['==>'] && ARROW_STYLE['==>'].thick === true);
+  ok('包含虚线样式 (dashed)', ARROW_STYLE['-.->'] && ARROW_STYLE['-.->'].dashed === true);
+  ok('包含双向端点 (<--> / o--o / x--x)',
+    ARROW_STYLE['<-->'].start === 'arrow' && ARROW_STYLE['<-->'].end === 'arrow'
+    && ARROW_STYLE['o--o'].start === 'circle' && ARROW_STYLE['o--o'].end === 'circle'
+    && ARROW_STYLE['x--x'].start === 'cross' && ARROW_STYLE['x--x'].end === 'cross'
+  );
 }
 
 console.log('\n结果: ' + pass + ' 通过 / ' + fail + ' 失败\n');

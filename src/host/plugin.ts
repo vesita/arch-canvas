@@ -228,7 +228,7 @@ function promptText(asctx?) {
     // 宁可多送一次，也不丢用户写的东西（和「检查点：安全靠退得回去」同一个取向）。
     head.push('**这几条本轮之后就会从你的上下文里消失**（读一次即送达，历史只留最近 '
       + NOTE_HISTORY_MAX + ' 条）。所以**本轮一次处理完**：没处理完的当场说清楚，别指望下一轮还看得到。')
-    var listed = openNotes.length > 20 ? 20 : openNotes.length
+    var listed = openNotes.length > MAX_LIST_ITEMS ? MAX_LIST_ITEMS : openNotes.length
     for (var on = 0; on < listed; on++) {
       var ot = String(openNotes[on].note)
       if (ot.length > 400) ot = ot.slice(0, 400) + '…（已截断，完整内容见文件）'
@@ -243,7 +243,7 @@ function promptText(asctx?) {
     for (var dn = 0; dn < listed; dn++) openNotes[dn].noteDone = true
   }
   if (nc.done > 0) {
-    head.push('- 另有 ' + nc.done + ' 条留言已经投递过（在历史里）：**没有列出来，也不要据此行动**；需要回看用 `arch_read`。')
+    head.push('- 另有 ' + nc.done + ' 条留言已经投递过（在历史里）：**没有列出来，也不要据此行动**；要回看历史留言用 `arch_read` 的 `notes: true`。')
   }
   // 代码锚点：用户给节点标的源码文件。价值在于「中文标签 ↔ 英文路径」这个映射 grep 不出来，
   // 所以能省掉一次定位；但它会腐烂 —— 失效的必须显式标出来，并且明说别照着用。
@@ -277,8 +277,8 @@ function promptText(asctx?) {
     head.push('', '**图元素上标的代码锚点**（文件里写作 `%% @file`）：用户给的「这个节点对应哪些源码文件」，' +
       '可以先按它去读，省掉一次 grep 定位。动手前先确认文件在；标了 ⚠ 的**要么已经失效、要么在图之后被改过，' +
       '都不要照着用** —— 重新定位后告诉用户锚点该改成什么。')
-    for (var rk2 = 0; rk2 < refLines.length && rk2 < 20; rk2++) head.push(refLines[rk2])
-    if (refLines.length > 20) head.push('- …还有 ' + (refLines.length - 20) + ' 个节点带锚点，完整内容见文件。')
+    for (var rk2 = 0; rk2 < refLines.length && rk2 < MAX_LIST_ITEMS; rk2++) head.push(refLines[rk2])
+    if (refLines.length > MAX_LIST_ITEMS) head.push('- …还有 ' + (refLines.length - MAX_LIST_ITEMS) + ' 个节点带锚点，完整内容见文件。')
     head.push('- 锚点是**部分**节点的指路牌，不代表图与代码一致 —— 别据此认为图漏了或多了什么。')
   }
   // 保鲜报告本身只写「状态」，并且**只有非空才注入** —— 一张新鲜的图不该为它多付一行 token。
@@ -478,9 +478,7 @@ ctx.effect(function () {
       await ensureLoaded(args && args.where, args && args.session)
       await verifyFileRefs()
     }
-    var out = summaryOf()
-    out.model = modelOf()
-    out.mermaid = serializeDoc(doc)
+    var out = fullOf()
     doc.notes = []
     return out
   })
@@ -529,9 +527,7 @@ ctx.effect(function () {
     var policy = policyOfSessionId(args && args.session)
     var saveError = await persistOrRollback(saved, 'doc:set', policy, expectFile)
     await verifyFileRefs()
-    var out = summaryOf()
-    out.mermaid = serializeDoc(doc)
-    out.model = modelOf()
+    var out = fullOf()
     out.saved = !saveError
     return out
   })
@@ -559,9 +555,7 @@ ctx.effect(function () {
     var policy = policyOfSessionId(args && args.session)
     var saveError = await persistOrRollback(saved, 'doc:applyText', policy, expectFile)
     await verifyFileRefs()
-    var out = summaryOf()
-    out.mermaid = serializeDoc(doc)
-    out.model = modelOf()
+    var out = fullOf()
     out.saved = !saveError
     return out
   })
@@ -590,12 +584,12 @@ ctx.effect(function () {
       // 认下这一份文档 + 站点：从前连 site 都没传，日志里被记成 site:'unknown'（出问题查不到是谁写的）。
       var expectFile = doc.file
       var err = await persist(policyOfSessionId(args && args.session), 'doc:file', expectFile)
-      var out = summaryOf()
+      var out = fullOf()
       out.saved = !err
       if (err) out.error = err
       return out
     }
-    return summaryOf()
+    return fullOf()
   })
 })
 

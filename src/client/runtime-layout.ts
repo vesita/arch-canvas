@@ -345,7 +345,7 @@ function layoutPositions(sizes, layers, horiz, rev, GAP, edges?: any) {
       acc += (horiz ? sz.h : sz.w) + GAP
       pos[bucket[n]] = horiz ? { x: axis, y: cross } : { x: cross, y: axis }
     }
-    along += deep + 84
+    along += deep + (horiz ? Math.max(48, Math.round(deep * 0.6)) : Math.max(36, Math.round(deep * 0.8)))
   }
 
   // 针对父子节点进行居中微调（Alignment Bias）：当上一层父节点与子节点存在直接连线时，
@@ -403,21 +403,24 @@ function crossingsOf(pos, edges) {
   return n
 }
 
-/** 把一份 model 排成坐标。纯函数：不改入参，返回新的 nodes 数组。 */
-function autoLayout(model) {
+/** 把一份 model 排成坐标。纯函数：不改入参，返回新的 nodes 数组。可选支持 options.pinned。 */
+function autoLayout(model, options?: any) {
   var nodes = model.nodes || []
   if (nodes.length === 0) return model
   var byId = {}
   var sizes = {}
   var ids = []
   var nodeTags = {}
+  var nodeGroup = {}
   for (var i = 0; i < nodes.length; i++) {
-    byId[nodes[i].id] = nodes[i]
-    ids.push(nodes[i].id)
-    nodeTags[nodes[i].id] = Array.isArray(nodes[i].tags) ? nodes[i].tags : (nodes[i].group ? [nodes[i].group] : [])
+    var nid = nodes[i].id
+    byId[nid] = nodes[i]
+    ids.push(nid)
+    nodeTags[nid] = Array.isArray(nodes[i].tags) ? nodes[i].tags : (nodes[i].group ? [nodes[i].group] : [])
+    nodeGroup[nid] = nodes[i].group || null
     // 与 studio 渲染层对齐：画布上永远只渲染第一行标题（高度约 45），不渲染多余 files 行
     var split = splitLabel(nodes[i].label)
-    sizes[nodes[i].id] = nodeSize(split ? split.title : nodes[i].label, 0)
+    sizes[nid] = nodeSize(split ? split.title : nodes[i].label, 0)
   }
   var pairs = []
   for (var e = 0; e < (model.edges || []).length; e++) {
@@ -431,24 +434,223 @@ function autoLayout(model) {
 
   // 1) 分层：先把环折成强连通分量，再在缩点图上做最长路径
   var part = sccOf(ids, pairs)
-  var cl = layerOfComps(part.comps, pairs, part.comp)
+  var cl = layerOfComps(part.comps, pairs, part.comp).slice()
+  var nComps = part.comps.length
+
+  // 组感知分层聚拢：若模型定义了组，推导 late 边界并在 DAG 约束内消除源头组层号堆积与组内撕裂
+  var hasGroups = model.groups && model.groups.length > 0
+  if (hasGroups) {
+    var compPairs = []
+    for (var pi = 0; pi < pairs.length; pi++) {
+      var cu = part.comp[pairs[pi][0]], cv = part.comp[pairs[pi][1]]
+      if (cu !== cv) compPairs.push([cu, cv])
+    }
+    var maxL = 0
+    for (var ci = 0; ci < nComps; ci++) if (cl[ci] > maxL) maxL = cl[ci]
+    var late = new Array(nComps)
+    for (var li = 0; li < nComps; li++) late[li] = maxL
+    for (var pass = 0; pass <= nComps; pass++) {
+      for (var cpi = 0; cpi < compPairs.length; cpi++) {
+        var u = compPairs[cpi][0], v = compPairs[cpi][1]
+        if (late[u] > late[v] - 1) late[u] = late[v] - 1
+      }
+    }
+    var gComps = {}
+    for (var c = 0; c < nComps; c++) {
+      var g = nodeGroup[part.comps[c][0]]
+      if (g) {
+        if (!gComps[g]) gComps[g] = []
+        gComps[g].push(c)
+      }
+    }
+    for (var gid in gComps) {
+      var arr = gComps[gid]
+      if (arr.length <= 1) continue
+      var minE = cl[arr[0]], minL = late[arr[0]]
+      for (var ai = 1; ai < arr.length; ai++) {
+        if (cl[arr[ai]] < minE) minE = cl[arr[ai]]
+        if (late[arr[ai]] < minL) minL = late[arr[ai]]
+      }
+      if (minE === 0 && minL >= 1) {
+        for (var ai = 0; ai < arr.length; ai++) {
+          var cid = arr[ai]
+          if (cl[cid] === 0 && late[cid] >= 1) {
+            var valid = true
+            for (var cpi = 0; cpi < compPairs.length; cpi++) {
+              if (compPairs[cpi][0] === cid && 1 >= cl[compPairs[cpi][1]]) { valid = false; break }
+            }
+            if (valid) cl[cid] = 1
+          }
+        }
+      }
+    }
+  }
+
   var layer = {}
   for (var t = 0; t < ids.length; t++) layer[ids[t]] = cl[part.comp[ids[t]]]
 
-  // 2) 同层顺序：中位数启发式 + 概念 Tag 亲和聚类，保持拓扑主干清晰流动
-  var layers = groupByLayer(ids, layer)
-  var pos = layoutPositions(sizes, layers, horiz, rev, GAP)
-  // 基线交叉数**只算一次**：下面两处安全闸各比它一次，而 `crossingsOf` 是 O(E²) 的双重循环
-  // （N=400 时单次约 3ms，占总布局的大头）。两处比的是同一组 pos/pairs，重算没有意义；
-  // 中途 pos 被换成 altPos 时把基线一起换掉 —— 判据与从前逐字等价。
-  var baseCrossings = crossingsOf(pos, pairs)
-  if (pairs.length > 1 && pairs.length <= LAYOUT_ORDER_MAX_EDGES) {
-    var alt = medianOrder(ids, layer, pairs, LAYOUT_ORDER_ROUNDS, nodeTags)
-    var altPos = layoutPositions(sizes, alt, horiz, rev, GAP)
-    var altCrossings = crossingsOf(altPos, pairs)
-    if (altCrossings < baseCrossings) { layers = alt; pos = altPos; baseCrossings = altCrossings }
+  // 2) 跨层长边插装虚拟节点 (Dummy Nodes) 参与排序
+  var allIds = ids.slice()
+  var allLayer = Object.assign({}, layer)
+  var dummyEdges = []
+  var isDummy = {}
+  for (var p = 0; p < pairs.length; p++) {
+    var u = pairs[p][0], v = pairs[p][1]
+    var lu = layer[u], lv = layer[v]
+    if (lv - lu > 1) {
+      var prev = u
+      for (var k = lu + 1; k < lv; k++) {
+        var dummyId = '__d_' + u + '_' + v + '_' + k
+        allIds.push(dummyId)
+        allLayer[dummyId] = k
+        isDummy[dummyId] = true
+        nodeGroup[dummyId] = (nodeGroup[u] && nodeGroup[u] === nodeGroup[v]) ? nodeGroup[u] : null
+        dummyEdges.push([prev, dummyId])
+        prev = dummyId
+      }
+      dummyEdges.push([prev, v])
+    } else {
+      dummyEdges.push([u, v])
+    }
   }
-  // 对齐微调安全闸：仅当对齐不增加交叉数时才采纳，守住「交叉数永远不比基线多」不变量
+
+  // 3) 组感知重心法同层排序
+  var dLayers = {}
+  for (var ai = 0; ai < allIds.length; ai++) {
+    var L = allLayer[allIds[ai]]
+    if (!dLayers[L]) dLayers[L] = []
+    dLayers[L].push(allIds[ai])
+  }
+  var dKeys = sortedLayerKeys(dLayers)
+  var pos = {}
+  for (var ki = 0; ki < dKeys.length; ki++) {
+    var row0 = dLayers[dKeys[ki]]
+    for (var j = 0; j < row0.length; j++) pos[row0[j]] = j
+  }
+  var pred = {}, succ = {}
+  for (var m = 0; m < allIds.length; m++) { pred[allIds[m]] = []; succ[allIds[m]] = [] }
+  for (var de = 0; de < dummyEdges.length; de++) {
+    succ[dummyEdges[de][0]].push(dummyEdges[de][1])
+    pred[dummyEdges[de][1]].push(dummyEdges[de][0])
+  }
+
+  var ROUNDS = 8
+  for (var r = 0; r < ROUNDS; r++) {
+    var down = r % 2 === 0
+    var seq = down ? dKeys : dKeys.slice().reverse()
+    for (var s = 0; s < seq.length; s++) {
+      var row = dLayers[seq[s]]
+      var key = {}
+      for (var n = 0; n < row.length; n++) {
+        var nb = down ? pred[row[n]] : succ[row[n]]
+        var sum = 0, cnt = 0
+        for (var b = 0; b < nb.length; b++) {
+          var pp = pos[nb[b]]
+          if (pp !== undefined) { sum += pp; cnt++ }
+        }
+        key[row[n]] = cnt ? sum / cnt : (pos[row[n]] !== undefined ? pos[row[n]] : 0)
+      }
+
+      if (hasGroups) {
+        var blocks = []
+        var gMap = {}
+        for (var n = 0; n < row.length; n++) {
+          var gid = nodeGroup[row[n]]
+          if (gid) {
+            if (!gMap[gid]) {
+              gMap[gid] = { group: gid, items: [] }
+              blocks.push(gMap[gid])
+            }
+            gMap[gid].items.push(row[n])
+          } else {
+            blocks.push({ group: null, items: [row[n]] })
+          }
+        }
+        for (var bi = 0; bi < blocks.length; bi++) {
+          var blk = blocks[bi]
+          blk.items.sort(function (x, y) { return key[x] - key[y] })
+          var bSum = 0
+          for (var ii = 0; ii < blk.items.length; ii++) bSum += key[blk.items[ii]]
+          blk.bary = bSum / blk.items.length
+        }
+        blocks.sort(function (a, b) { return a.bary - b.bary })
+        var newRow = []
+        for (var bi = 0; bi < blocks.length; bi++) {
+          for (var ii = 0; ii < blocks[bi].items.length; ii++) newRow.push(blocks[bi].items[ii])
+        }
+        dLayers[seq[s]] = newRow
+        for (var f = 0; f < newRow.length; f++) pos[newRow[f]] = f
+      } else {
+        row.sort(function (a, b) {
+          var diff = key[a] - key[b]
+          if (Math.abs(diff) > 0.4) return diff
+          if (nodeTags) {
+            var ta = nodeTags[a] || [], tb = nodeTags[b] || []
+            var mainA = ta[0] || '', mainB = tb[0] || ''
+            if (mainA !== mainB) return mainA < mainB ? -1 : 1
+          }
+          return a < b ? -1 : a > b ? 1 : 0
+        })
+        for (var f = 0; f < row.length; f++) pos[row[f]] = f
+      }
+    }
+  }
+
+  // 抽掉虚拟占位节点，保留真实节点相对顺序
+  var layers = {}
+  for (var ki = 0; ki < dKeys.length; ki++) {
+    layers[dKeys[ki]] = dLayers[dKeys[ki]].filter(function (x) { return !isDummy[x] })
+  }
+
+  var baseLayers = groupByLayer(ids, layer)
+  var basePos = layoutPositions(sizes, baseLayers, horiz, rev, GAP)
+  var baseCrossings = crossingsOf(basePos, pairs)
+  pos = basePos
+
+  var candPos = layoutPositions(sizes, layers, horiz, rev, GAP)
+  var candCrossings = crossingsOf(candPos, pairs)
+  if (candCrossings < baseCrossings) {
+    baseCrossings = candCrossings
+    pos = candPos
+  } else {
+    layers = baseLayers
+  }
+
+  // 4) 2-opt 局部交换优化（相邻节点交换贪心搜索）
+  if (pairs.length > 1 && pairs.length <= LAYOUT_ORDER_MAX_EDGES) {
+    var kList = sortedLayerKeys(layers)
+    var improved = true, pass = 0
+    while (improved && pass < 3) {
+      improved = false
+      pass++
+      for (var ki = 0; ki < kList.length; ki++) {
+        var row = layers[kList[ki]]
+        if (row.length < 2) continue
+        for (var i = 0; i < row.length - 1; i++) {
+          var a = row[i], b = row[i + 1]
+          if (hasGroups && nodeGroup[a] && nodeGroup[b] && nodeGroup[a] !== nodeGroup[b]) {
+            var leftSame = (i > 0 && nodeGroup[row[i - 1]] === nodeGroup[a])
+            var rightSame = (i + 2 < row.length && nodeGroup[row[i + 2]] === nodeGroup[b])
+            if (leftSame && rightSame) continue
+          }
+          row[i] = b
+          row[i + 1] = a
+          var testPos = layoutPositions(sizes, layers, horiz, rev, GAP)
+          var testCross = crossingsOf(testPos, pairs)
+          if (testCross < baseCrossings) {
+            baseCrossings = testCross
+            pos = testPos
+            improved = true
+          } else {
+            row[i] = a
+            row[i + 1] = b
+          }
+        }
+      }
+    }
+  }
+
+  // 5) 对齐微调安全闸：仅当对齐不增加交叉数时才采纳，守住「交叉数永远不比基线多」不变量
   var alignedPos = layoutPositions(sizes, layers, horiz, rev, GAP, pairs)
   if (crossingsOf(alignedPos, pairs) <= baseCrossings) {
     pos = alignedPos
@@ -462,9 +664,26 @@ function autoLayout(model) {
     // （2026-09-20 客户端逻辑审计抓到的头号问题；节点上的这些字段本该跟着走。）
     out.push(Object.assign({}, nodes[q]))
   }
+  var pinned = options && options.pinned
+  var isPinned = function (nid) {
+    if (!pinned) return false
+    if (Array.isArray(pinned)) return pinned.indexOf(nid) >= 0
+    if (typeof pinned === 'object') return Boolean(pinned[nid])
+    return false
+  }
+
   for (var f = 0; f < out.length; f++) {
-    var pt = pos[out[f].id]
-    if (pt) { out[f].x = Math.round(pt.x); out[f].y = Math.round(pt.y) }
+    var nid = out[f].id
+    var pt = pos[nid]
+    if (pt) {
+      if (isPinned(nid) && typeof nodes[f].x === 'number' && typeof nodes[f].y === 'number') {
+        out[f].x = nodes[f].x
+        out[f].y = nodes[f].y
+      } else {
+        out[f].x = Math.round(pt.x)
+        out[f].y = Math.round(pt.y)
+      }
+    }
   }
   return { nodes: out, edges: model.edges, groups: model.groups, direction: dir, extras: model.extras }
 }
