@@ -185,7 +185,7 @@ const mi = await call('mermaid:info')
 eq('mermaid:info 给出本地路由', mi.url, '/arch-canvas/mermaid.min.js')
 const ui = await call('ui:info')
 eq('ui:info 给出界面路由', ui.url, '/arch-canvas/ui.js')
-eq('ui:info 指出界面文件在项目里', ui.file, '/home/vesita/coding/my/arch-canvas/dist/ui.js')
+eq('ui:info 指出界面文件在项目里', ui.file, UI_FILE)
 const res2 = { statusCode: 200, headers: {}, body: null, end(b) { this.body = b }, setHeader(k, v) { this.headers[k] = v } }
 await routes.find((r) => r.path === '/arch-canvas/ui.js').handler({}, res2)
 eq('界面路由回 200', res2.statusCode, 200)
@@ -533,7 +533,7 @@ eq('未删除的图内容不变（幂等）', files.get(fileRArch), contentArch)
 console.log('【R4 数据目录是外层的硬依赖】')
 const hostEnvNoData = {
   logBackend,
-  uiFile: '/home/vesita/coding/my/arch-canvas/dist/ui.js',
+  uiFile: UI_FILE,
   mermaidFile: CACHE,
 }
 const sandboxNoData = vm.createContext({ harness, console, hostEnv: hostEnvNoData })

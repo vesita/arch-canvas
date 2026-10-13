@@ -23,14 +23,14 @@ function eq(name, got, want) {
 
 // ---------- 桩服务 ----------
 const DOC = TEST_DATA_DIR + '/architecture.mmd'
-const CACHE = '/home/vesita/.dsh/.cache/arch-canvas/mermaid.min.js'
+// 界面路由要真能发出 dist/ui.js，所以按本文件位置派生，不写死本机路径
+const UI_FILE = new URL('../dist/ui.js', import.meta.url).pathname
+// CACHE 只是桩 fs 里那把键（内容是假的），跟着一次性临时目录走，别指向真实缓存
+const CACHE = TEST_DATA_DIR + '/mermaid.min.js'
 const files = new Map()
 files.set(CACHE, '/* fake mermaid bundle */')
 // 界面路由要真能发出 dist/ui.js，所以拿构建产物喂给桩 fs
-files.set(
-  '/home/vesita/coding/my/arch-canvas/dist/ui.js',
-  readFileSync(new URL('../dist/ui.js', import.meta.url), 'utf8'),
-)
+files.set(UI_FILE, readFileSync(new URL('../dist/ui.js', import.meta.url), 'utf8'))
 
 const failWritePaths = new Set()
 let lastWriteArgs = null
@@ -206,7 +206,7 @@ const logBackend = {
 const hostEnv = {
   logBackend,
   dataDir: TEST_DATA_DIR,
-  uiFile: '/home/vesita/coding/my/arch-canvas/dist/ui.js',
+  uiFile: UI_FILE,
   mermaidFile: CACHE,
   skillFile: '/tmp/fake-skill/SKILL.md',
   skillText: FAKE_SKILL_TEXT,
@@ -250,6 +250,7 @@ globalThis.ok = ok
 globalThis.eq = eq
 globalThis.DOC = DOC
 globalThis.CACHE = CACHE
+globalThis.UI_FILE = UI_FILE
 globalThis.files = files
 globalThis.failWritePaths = failWritePaths
 globalThis.allWriteArgs = allWriteArgs

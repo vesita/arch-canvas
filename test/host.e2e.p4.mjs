@@ -637,7 +637,7 @@ console.log('【随包 skill：负向对照（缺 name / 没有服务都不注�
   })
   const mkEnv = (skillText) => ({
     logBackend, dataDir: TEST_DATA_DIR,
-    uiFile: '/home/vesita/coding/my/arch-canvas/dist/ui.js', mermaidFile: CACHE,
+    uiFile: UI_FILE, mermaidFile: CACHE,
     skillFile: '/tmp/fake-skill/SKILL.md', skillText,
   })
   const mount = async (env, ctx2, name) => {
