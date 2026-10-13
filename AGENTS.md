@@ -384,7 +384,7 @@ ArchStudio**。这条契约牵出四件事：
 
 守门人：`test/edges.test.cjs`（轮廓有符号距离 × 两种摆放 × 8 种形状 × 1~4 端口、选边、420 点网格的「白绕/回头线/从背后出线」不变量 +
 **旧规则负向对照**、非矩形多端口「不穿别人也不穿自己」、平行间隔让道、避障、自环、坐标完全重合的退化输入）；`test/ui.render.s4.mjs` 第 [4r] G（面板三态 / Esc 分层 /
-分隔条）、第 [4p] 平行间隔（坐标**穷举搜出来**，否则断言空转）与第 [4w] 节（rAF 合帧 / 吸附阈值与迟滞 / Alt / pointercancel 回滚 /
+分隔条）、`test/ui.render.s3.mjs` 第 [4p] 平行间隔（坐标**穷举搜出来**，否则断言空转）与 `test/ui.render.s5.mjs` 第 [4w] 节（rAF 合帧 / 吸附阈值与迟滞 / Alt / pointercancel 回滚 /
 lostpointercapture 提交）。
 
 ## 画布属于项目，不属于进程
@@ -497,8 +497,8 @@ lostpointercapture 提交）。
 14. **留言表改名要按节点 id 合并。** `notes.json` 以**图文件名**为键，`doc:rename` 要把它那一格搬到新键；**目标键已存在时按节点 id 合并、源图优先**，
     不能直接把源图的留言 `delete` 掉 —— 那等于用户写给源图的留言全丢，反而留下孤儿条目。
 
-守门人：`test/host.e2e.p*.mjs` 的 A~U 各节（含逐条「撤回修复就红」的咬合检查）、`test/mermaid.parser.test.cjs` 第 [21]~[22] 节 + `test/mermaid.real.test.cjs` 第 [23]~[28] 节（真 Mermaid 合法性 /
-真图逐字节往返）+ 第 [17] 节（墓碑不进 extras）、`test/edges.test.cjs` 第 [8] 节、`test/ui.render.s4.mjs` 第 [4s] 节与第 [4r]
+守门人：`test/host.e2e.p*.mjs` 的 A~U 各节（含逐条「撤回修复就红」的咬合检查）、`test/mermaid.parser.test.cjs` 第 [17] 节（墓碑不进 extras）与第 [21]~[22] 节 + `test/mermaid.real.test.cjs` 第 [23]~[35] 节（真 Mermaid 合法性 /
+真图逐字节往返）、`test/edges.test.cjs` 第 [8] 节、`test/ui.render.s4.mjs` 第 [4s] 节与第 [4r]
 B2、`test/build-guards.mjs`。
 
 ## 与主会话协作

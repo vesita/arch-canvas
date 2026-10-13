@@ -214,6 +214,16 @@ const CONTROLS = {
       (dir) => append(dir, 'src/host/document.ts', 'var probeDir = __dirname\n'),
       'Node 专属全局'],
   ],
+  'vocab-arrows-consistent': [
+    ['客户端 ARROW_CHOICES 注入多余连接符 ->',
+      (dir) => edit(dir, 'src/client/studio-core.ts', "'<-->', '<==>',", "'<-->', '<==>', '->',"),
+      '客户端多出: [->]'],
+  ],
+  'vocab-shapes-consistent': [
+    ['客户端 SHAPE_CHOICES 注入多余形状 cloud',
+      (dir) => edit(dir, 'src/client/studio-core.ts', "'asym'", "'asym', 'cloud'"),
+      '客户端多出: [cloud]'],
+  ],
 }
 
 // ---------------------------------------------------------------------------

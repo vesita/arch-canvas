@@ -355,6 +355,135 @@ const leaked = walkTs('src/host').filter((rel) => NODE_ONLY.test(codeOnly(read(r
 expect('host-no-node-globals', leaked.length === 0,
   'src/host/* 里出现了 Node 专属全局（动态形态的沙箱没有 process / require / Buffer / __dirname）：' + leaked.join(', '))
 
+/**
+ * 源码字面量词表提取器：从 codeOnly 代码中提取 var/let/const 声明的数组项或对象顶层键。
+ * 容忍换行、单/双引号、以及对象属性值中出现的括号与引号。
+ */
+function extractLiteralVocab(code, varName, kind = 'array') {
+  const startRe = new RegExp(`\\b(?:var|let|const)\\s+${varName}\\s*=\\s*([\\[\\{])`, 'm')
+  const m = startRe.exec(code)
+  if (!m) return null
+  const startChar = m[1]
+  const closeChar = startChar === '[' ? ']' : '}'
+  const startIdx = m.index + m[0].length - 1
+  let depth = 0
+  let quoteChar = ''
+  let endIdx = -1
+  for (let i = startIdx; i < code.length; i++) {
+    const c = code[i]
+    if (quoteChar) {
+      if (c === '\\') { i++; continue }
+      if (c === quoteChar) quoteChar = ''
+      continue
+    }
+    if (c === "'" || c === '"') { quoteChar = c; continue }
+    if (c === startChar) depth++
+    else if (c === closeChar) {
+      depth--
+      if (depth === 0) { endIdx = i; break }
+    }
+  }
+  if (endIdx === -1) return null
+  const body = code.slice(startIdx + 1, endIdx)
+
+  if (kind === 'array') {
+    const items = []
+    let pos = 0, innerDepth = 0
+    while (pos < body.length) {
+      const c = body[pos]
+      if (c === '[' || c === '{') { innerDepth++; pos++; continue }
+      if (c === ']' || c === '}') { innerDepth--; pos++; continue }
+      if (innerDepth === 0 && (c === "'" || c === '"')) {
+        const q = c
+        const strStart = pos + 1
+        pos++
+        while (pos < body.length && (body[pos] !== q || body[pos - 1] === '\\')) pos++
+        items.push(body.slice(strStart, pos))
+        pos++
+        continue
+      }
+      pos++
+    }
+    return items
+  }
+
+  if (kind === 'object-keys') {
+    const keys = []
+    let pos = 0, innerDepth = 0
+    while (pos < body.length) {
+      const c = body[pos]
+      if (c === '[' || c === '{') { innerDepth++; pos++; continue }
+      if (c === ']' || c === '}') { innerDepth--; pos++; continue }
+      if (innerDepth === 0) {
+        if (c === "'" || c === '"') {
+          const q = c
+          const strStart = pos + 1
+          pos++
+          while (pos < body.length && (body[pos] !== q || body[pos - 1] === '\\')) pos++
+          const key = body.slice(strStart, pos)
+          pos++
+          while (pos < body.length && /\s/.test(body[pos])) pos++
+          if (pos < body.length && body[pos] === ':') {
+            keys.push(key)
+            pos++
+          }
+          continue
+        }
+        if (/[A-Za-z0-9_$]/.test(c)) {
+          const idStart = pos
+          while (pos < body.length && /[A-Za-z0-9_$]/.test(body[pos])) pos++
+          const id = body.slice(idStart, pos)
+          while (pos < body.length && /\s/.test(body[pos])) pos++
+          if (pos < body.length && body[pos] === ':') {
+            keys.push(id)
+            pos++
+          }
+          continue
+        }
+      }
+      pos++
+    }
+    return keys
+  }
+
+  return null
+}
+
+function diffVocab(actualList, expectedList) {
+  if (!actualList || !expectedList) return null
+  const actualSet = new Set(actualList)
+  const expectedSet = new Set(expectedList)
+  const extra = [...actualSet].filter((x) => !expectedSet.has(x))
+  const missing = [...expectedSet].filter((x) => !actualSet.has(x))
+  return { extra, missing }
+}
+
+function formatVocabDiff(label, diff, actualName, expectedName) {
+  if (!diff) return `${label}：无法解析 ${actualName} 或 ${expectedName}`
+  const parts = []
+  if (diff.extra.length > 0) parts.push(`客户端多出: [${diff.extra.join(', ')}]`)
+  if (diff.missing.length > 0) parts.push(`客户端缺少: [${diff.missing.join(', ')}]`)
+  return `${label}（${actualName} 与 ${expectedName} 集合不相等）：${parts.join('；')}`
+}
+
+// 客户端枚举照抄宿主词表守门：
+// 宿主 mermaid.ts 是权威真相，客户端 studio-core.ts 两个分片不能 import 只能手抄。
+// 机器守门保证两侧词表集合严格相等；出问题时点出差集。
+const mermaidCode = codeOnly(read('src/host/mermaid.ts'))
+const studioCoreCode = codeOnly(read('src/client/studio-core.ts'))
+
+const hostArrows = extractLiteralVocab(mermaidCode, 'ARROWS', 'array')
+const clientArrows = extractLiteralVocab(studioCoreCode, 'ARROW_CHOICES', 'array')
+const arrowDiff = diffVocab(clientArrows, hostArrows)
+expect('vocab-arrows-consistent', Boolean(arrowDiff && arrowDiff.extra.length === 0 && arrowDiff.missing.length === 0),
+  formatVocabDiff('连接符词表不一致', arrowDiff, 'src/client/studio-core.ts ARROW_CHOICES', 'src/host/mermaid.ts ARROWS'))
+
+const hostShapes = extractLiteralVocab(mermaidCode, 'SHAPE_WRAP', 'object-keys')
+const clientShapes = extractLiteralVocab(studioCoreCode, 'SHAPE_CHOICES', 'array')
+const shapeDiff = diffVocab(clientShapes, hostShapes)
+expect('vocab-shapes-consistent', Boolean(shapeDiff && shapeDiff.extra.length === 0 && shapeDiff.missing.length === 0),
+  formatVocabDiff('形状词表不一致', shapeDiff, 'src/client/studio-core.ts SHAPE_CHOICES', 'src/host/mermaid.ts SHAPE_WRAP 键'))
+
 mkdirSync(join(ROOT, 'dist'), { recursive: true })
 writeFileSync(join(ROOT, 'dist/host.js'), hostLogic)
 writeFileSync(join(ROOT, 'dist/ui.js'), ui)

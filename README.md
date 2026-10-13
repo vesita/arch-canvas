@@ -53,7 +53,7 @@
 cd /home/vesita/coding/my/arch-canvas          # 仓库根目录
 dsh plugin --profile web add  "$PWD"           # 装开发目录（链接部署）
 npm run pack                                   # 打 tgz，落点 ${DSH_HOME:-$HOME/.dsh}/packages
-dsh plugin --profile web add  "${DSH_HOME:-$HOME/.dsh}/packages/arch-canvas-0.6.18.tgz"   # 装分发包（快照）
+dsh plugin --profile web add  "${DSH_HOME:-$HOME/.dsh}/packages/arch-canvas-"*.tgz        # 装分发包（快照，版本号取自 package.json）
 dsh plugin --profile web update arch-canvas
 dsh plugin --profile web remove arch-canvas
 ```
@@ -95,7 +95,7 @@ curl -s -X POST http://127.0.0.1:3080/arch-canvas/rpc -H 'content-type: applicat
 ### 构建与测试
 
 ```sh
-npm run build     # 产出 dist/{host,ui,bootstrap-host,bootstrap-client}.js + payload.json
+npm run build     # 产出 dist/{host,ui,mermaid,client-runtime,bootstrap-host,bootstrap-client}.js + payload.json
 npm test          # build + 全部分片测试（入口 test/docs.baseline.mjs）
 npm run check     # 上面全部 + 工具 schema 校验（改完必须过这一关）
 ```
@@ -104,7 +104,7 @@ npm run check     # 上面全部 + 工具 schema 校验（改完必须过这一�
 再核对 README / PROJECT_STATE 的基线行与实测一致 —— **加了断言就要一起改这两份文档**，
 对不上时它会把该贴的那一行直接打出来。
 
-当前基线：**解析器·纯函数往返 294 · 解析器·真 Mermaid 773 · 布局 19 · 连线几何 44 · 宿主·A 316 · 宿主·B 231 · 宿主·C 238 · 宿主·D 197 · 引导层 20 · 插件挂载 23 · 配置卡 37 · 构建守门人 35 · 界面渲染·A 44 · 界面渲染·B 143 · 界面渲染·C 80 · 界面渲染·D 135 · 界面渲染·E 108 · 界面渲染·F 55 · 工具 schema 全通过 = 2792 条断言，EXIT=0**。
+当前基线：**解析器·纯函数往返 294 · 解析器·真 Mermaid 773 · 布局 19 · 连线几何 44 · 宿主·A 316 · 宿主·B 231 · 宿主·C 238 · 宿主·D 197 · 引导层 20 · 插件挂载 23 · 配置卡 37 · 构建守门人 37 · 界面渲染·A 44 · 界面渲染·B 143 · 界面渲染·C 80 · 界面渲染·D 135 · 界面渲染·E 108 · 界面渲染·F 55 · 工具 schema 全通过 = 2794 条断言，EXIT=0**。
 
 每个测试文件顶部的注释说明它守什么；各套件的守门断言见 `AGENTS.md`。
 
@@ -237,7 +237,7 @@ AI 每一步都会在上下文里看到当前状态，不用它主动问：
 - 记什么：`plugin.mount`（挂上了没、注册了几个工具 / 路由）、`doc.load` / `doc.switch`、
   `tool.arch_edit` / `tool.arch_write`（AI 改了什么、几个 op 没生效）、`tool.reject`（入参被拒）、
   `history.rollback`、`doc.absent`（项目里还没有图库，写被拒）、`rpc.fail`、
-  `persist.fail`（落盘失败并已回滚）、`doc.warnings`。轮询这类高频成功路径**不记**。
+  `persist.fail`（落盘失败并已回滚）。轮询这类高频成功路径**不记**。
 - **画布存不下来**（状态栏「已改图，但写盘失败」）：先看当天日志有没有 `persist.fail`。
   写入受会话的 workspace-write 边界约束，所以插件必须把会话一起递下去；日志里同时有
   `sandbox.policy.missing`，说明这次写拿不到会话 —— 此时如实失败，不偷偷放宽围栏。
