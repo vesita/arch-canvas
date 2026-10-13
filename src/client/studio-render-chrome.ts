@@ -3,7 +3,7 @@
 // 分片共享同一段作用域、不能 import，所以靠参数 S（本帧的 state / setter / ref 集合）通信。
 function studioChromeFns(S) {
   var currentDiagramRef = S.currentDiagramRef, descDraft = S.descDraft, dockH = S.dockH, dockOpen = S.dockOpen, dockRef = S.dockRef, draft = S.draft
-  var driftOpen = S.driftOpen, driftRef = S.driftRef, edgeDraft = S.edgeDraft, external = S.external, externalName = S.externalName, fileStatusRef = S.fileStatusRef
+  var driftOpen = S.driftOpen, driftRef = S.driftRef, edgeDraft = S.edgeDraft, external = S.external, fileStatusRef = S.fileStatusRef
   var filesDraft = S.filesDraft, groupNewName = S.groupNewName, groupPick = S.groupPick, hist = S.hist, hlRef = S.hlRef, inputActions = S.inputActions
   var labelDraft = S.labelDraft, libKey = S.libKey, liveDraft = S.liveDraft, model = S.model, noteDoneDraft = S.noteDoneDraft, noteDraft = S.noteDraft
   var notesOpen = S.notesOpen, patchHist = S.patchHist, renderError = S.renderError, saveFail = S.saveFail, sel = S.sel, setDescDraft = S.setDescDraft
@@ -156,7 +156,7 @@ function studioChromeFns(S) {
   // 总量（含历史）：按钮上那个数字以前只有待递数，读起来像「统计漏了历史里的」。
   var noteTotal = noteListOpen.length + noteListDone.length
   var noteBatch = function () {
-    var diagName = (external ? externalName : (libKey || currentDiagramRef.current)) || 'architecture'
+    var diagName = (external ? externalBaseName(external) : (libKey || currentDiagramRef.current)) || 'architecture'
     var lines = [
       '关于画布「' + diagName + '」上的 ' + noteListOpen.length + ' 条留言，请逐条回应（点名节点 id）：',
       '',

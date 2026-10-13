@@ -20,7 +20,14 @@ console.log('\n[4c] 元素注释：带注释渲染、角标、清单已解决切
   let currentModel = JSON.parse(JSON.stringify(NOTE_MODEL))
   respond = function (method, args) {
     if (method === 'doc:get') {
-      return fullDoc({ model: currentModel, nodeCount: currentModel.nodes.length })
+      return fullDoc({
+        external: '/tmp/project/docs/my-diag.mmd',
+        diagram: 'my-diag',
+        key: '/tmp/project/docs/my-diag.mmd',
+        file: '/tmp/project/docs/my-diag.mmd',
+        model: currentModel,
+        nodeCount: currentModel.nodes.length,
+      })
     }
     if (method === 'doc:set') {
       currentModel = args.model
@@ -88,7 +95,7 @@ console.log('\n[4c] 元素注释：带注释渲染、角标、清单已解决切
   ok('空输入框也能发：调了 setDraft 写进这一批',
     draftText.indexOf('`n1`（节点甲）：这里为什么不用队列？') >= 0 &&
     draftText.indexOf('`n2`（节点乙）：这里需要限流') >= 0 &&
-    draftText.indexOf('关于画布「') >= 0 &&
+    draftText.indexOf('关于画布「my-diag.mmd」') >= 0 &&
     draftText.indexOf('3 条留言') < 0 &&
     draftText.indexOf('2 条留言') >= 0,
     draftText)
@@ -666,7 +673,7 @@ console.log('\n[4g] 源码页语法高亮')
     '%% @pos n1 0 0',
     '%% @note n1 这里是注释',
     'flowchart TD',
-    '  n1["标签"] --> n9["a < b & c"]',
+    '  n1["标签"] --> n2 --o n3 o==> n9["a < b & c"]',
   ].join('\n')
 
   const prevRespond = respond
@@ -763,9 +770,9 @@ console.log('\n[4g] 源码页语法高亮')
   const labelStrToken = sTokens.find((s) => s.textContent === '"标签"')
   ok('"标签" 字符串字面量归 ac-hl-s', !!labelStrToken, sTokens.map((s) => s.textContent))
 
-  // g. --> 是 ac-hl-a（第 4 行）
-  const aToken = findTokenInLine(4, 'ac-hl-a')
-  ok('--> 连线箭头归 ac-hl-a', !!aToken && aToken.textContent.trim() === '-->', aToken?.textContent)
+  // g. 连线箭头归 ac-hl-a（第 4 行，覆盖标准箭头 --> 与扩展连接符 --o / o==>）
+  const aTokens = Array.from(lineDivs[4]?.querySelectorAll('span.ac-hl-a') || []).map((s) => s.textContent.trim())
+  ok('--> 连线箭头归 ac-hl-a', aTokens.includes('-->') && aTokens.includes('--o') && aTokens.includes('o==>'), aTokens)
 
   // h. 负向对照（安全）：桩文本里含 < 和 &（"a < b & c"），内部没有真的 <b> 等 HTML 元素被创建
   ok('.ac-hl 内部没有真的 <b> 元素生成', !hlPre?.querySelector('b'))

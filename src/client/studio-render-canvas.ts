@@ -2,7 +2,7 @@
 // 从 studio.ts 的 ArchStudio 组件体里原样搬出来的顶层函数 —— 行为不变。
 // 分片共享同一段作用域、不能 import，所以靠参数 S（本帧的 state / setter / ref 集合）通信。
 function studioCanvasFns(S) {
-  var dragHint = S.dragHint, dragging = S.dragging, driftRef = S.driftRef, fileStatusRef = S.fileStatusRef, foldGeom = S.foldGeom, foldMap = S.foldMap
+  var dragHint = S.dragHint, dragging = S.dragging, driftRef = S.driftRef, edgeLayout = S.edgeLayout, fileStatusRef = S.fileStatusRef, foldGeom = S.foldGeom, foldMap = S.foldMap
   var groups = S.groups, gstate = S.gstate, highlight = S.highlight, hostRef = S.hostRef, hueOfGroup = S.hueOfGroup, libFiles = S.libFiles
   var libItems = S.libItems, libKey = S.libKey, linkPt = S.linkPt, model = S.model, sel = S.sel, svgRef = S.svgRef
   var view = S.view, visGeom = S.visGeom
@@ -70,236 +70,54 @@ function studioCanvasFns(S) {
   }
 
   if (model) {
-    // 连线要避让**其它可见方块**。一律取 visGeom：被折叠收起的节点会映射到组块几何上，
-    // 于是"藏在块里的东西"天然不会挡路。按几何对象去重（折叠组里多个节点共用一个几何）。
-    var visList = []
-    var visSeen = []
-    for (var vi = 0; vi < model.nodes.length; vi++) {
-      var vg = visGeom(model.nodes[vi].id)
-      if (!vg || visSeen.indexOf(vg) >= 0) continue
-      visSeen.push(vg)
-      visList.push(vg)
-    }
-    // 同一对节点之间的多条线要错开，否则会完全重叠成一条（有向还是无向都按同一对算）。
-    var pairCount = {}
-    for (var pi = 0; pi < model.edges.length; pi++) {
-      var pe = model.edges[pi]
-      var pk = pe.from < pe.to ? pe.from + '|' + pe.to : pe.to + '|' + pe.from
-      pairCount[pk] = (pairCount[pk] || 0) + 1
-    }
-    // 端口分配：同一侧的 N 根线不能全挤在边心 —— 那就是"箭头叠在一起"。
-    // 按**对端方向**给同一侧的线排序再平分该侧；顺序反了的话线会在方块附近互相交叉。
-    // 判据是「可用边长 / 箭头宽」，**与缩放无关**：线宽与箭头都随画布变换缩放，两者比值恒定，
-    // 所以放大缩小不会改变"叠不叠"这件事（实测：CSS 里没有任何 non-scaling-stroke）。
-    //
-    // 「哪一侧」必须和布线器问同一个函数（`edgeSidesOf`）—— 从前这里自己算一遍
-    // 「|dy| >= |dx| 就上下」，与 edgeGeometry 内部那套是同一条规则的两份拷贝；
-    // 现在选边改成代价择优，两份拷贝必然分叉：端口会按 A 侧均分、线却从 B 侧出去。
-    // 连线视觉渲染层：自动执行同向边折叠合并（来自同一起点到同一终点的多条连线折叠为单条，标签用 " / " 拼接）
-    // 彻底解决平行叠线与文字黑块，直观呈现为单条清晰箭头
-    var consolidatedRenderModel = consolidateEdgesModel(model)
-    var renderEdges = consolidatedRenderModel.edges || []
-    var sideGroups = {}
-    for (var gi = 0; gi < renderEdges.length; gi++) {
-      var ge = renderEdges[gi]
-      if (foldMap[ge.from] && foldMap[ge.from] === foldMap[ge.to]) continue
-      var ga2 = visGeom(ge.from)
-      var gb2 = visGeom(ge.to)
-      if (!ga2 || !gb2) continue
-      // 障碍也一起传：选边要避开「这条轴根本没路」的情况，而端口分组必须和布线器选同一条轴
-      var gSides = edgeSidesOf(ga2, gb2, visList)
-      for (var gend = 0; gend < 2; gend++) {
-        var got = gend === 0 ? gb2 : ga2
-        var gside = gend === 0 ? gSides.a : gSides.b
-        // 端口按**可见单元**分组 —— 被折叠的组里，好几个成员节点连到外面时都挂在
-        // 同一个折叠块上，用原始节点 id 当 key 会把它们拆成 n=1 的小组，
-        // edgePortOffset 于是全部返回 0，箭头全叠在块边中心（审计第 5 条）。
-        var gunit = gend === 0 ? ge.from : ge.to
-        var gkey = (foldMap[gunit] || gunit) + '|' + gside
-        if (!sideGroups[gkey]) sideGroups[gkey] = []
-        // 排序键取「对端在**这条边**上的投影坐标」：上下边比 x、左右边比 y。
-        // 从前统一按 gvert 比 x/y，选边一变（比如从竖轴换到横轴），排序键也得跟着换。
-        var gax = gside === 't' || gside === 'b'
-        sideGroups[gkey].push({ ei: gi, end: gend, at: gax ? got.x : got.y })
-      }
-    }
-    // 识别需要建立分支锚点 (Junction Anchor) 的汇流集合
-    // 当多条线从同一侧指向同一个节点时，建立分支锚点，统一汇流入单箭头
-    var junctionAnchors = {}
-    var edgeToJunction = {}
-    for (var sk2 in sideGroups) {
-      var arr2 = sideGroups[sk2]
-      var parts2 = sk2.split('|')
-      var unit2 = parts2[0], side2 = parts2[1]
-      var inEdges = []
-      for (var ai = 0; ai < arr2.length; ai++) {
-        if (arr2[ai].end === 1) inEdges.push(arr2[ai])
-      }
-      if (inEdges.length > 1) {
-        var gmNode = visGeom(unit2)
-        if (gmNode) {
-          var jx = gmNode.x, jy = gmNode.y
-          var dist = 28
-          if (side2 === 'l') jx = gmNode.x - gmNode.w / 2 - dist
-          else if (side2 === 'r') jx = gmNode.x + gmNode.w / 2 + dist
-          else if (side2 === 't') jy = gmNode.y - gmNode.h / 2 - dist
-          else if (side2 === 'b') jy = gmNode.y + gmNode.h / 2 + dist
+    var elayout = edgeLayout || computeEdgeLayout(model, foldMap, foldGeom, gstate)
+    if (elayout && elayout.routed) {
+      // 记录已经为分支锚点画过箭头的集合（同汇流点只画一次箭头）
+      var junctionArrowDrawn = {}
+      for (var ri = 0; ri < elayout.routed.length; ri++) {
+        var rt = elayout.routed[ri]
+        var red2 = rt.ed
+        var juncForEdge = elayout.edgeToJunction && elayout.edgeToJunction[rt.ei]
+        var dashed = red2.arrow === '-.->'
+        var isEdgeSel = sel && sel.kind === 'edge' && sel.from === red2.from && sel.to === red2.to
+        var cls = 'ac-edge' + (dashed ? ' dashed' : '') + (isEdgeSel ? ' sel' : '')
 
-          var targetX = gmNode.x, targetY = gmNode.y
-          if (side2 === 'l') targetX = gmNode.x - gmNode.w / 2
-          else if (side2 === 'r') targetX = gmNode.x + gmNode.w / 2
-          else if (side2 === 't') targetY = gmNode.y - gmNode.h / 2
-          else if (side2 === 'b') targetY = gmNode.y + gmNode.h / 2
-
-          var juncObj = {
-            key: sk2, side: side2, jx: jx, jy: jy, targetX: targetX, targetY: targetY,
-            count: inEdges.length
-          }
-          junctionAnchors[sk2] = juncObj
-          for (var ii = 0; ii < inEdges.length; ii++) {
-            edgeToJunction[inEdges[ii].ei] = juncObj
+        // 同侧汇流入端：同一个分支汇流点只保留首条连线的单个箭头，其余汇入线不重复打箭头！
+        var mk = arrowMarkerRef(red2.arrow)
+        if (juncForEdge) {
+          if (junctionArrowDrawn[juncForEdge.key]) {
+            mk = null
+          } else {
+            junctionArrowDrawn[juncForEdge.key] = true
           }
         }
-      }
-    }
 
-    // 输出侧共干：**输出端点由源节点管理**，与输入侧对称 —— 同一源节点同一侧的多条出边
-    // 共用该侧一个出锚点，于是它们从同一点出发、先叠成一条主干，再各自拐向目标。
-    // 从前只建了输入侧的汇流集合（只取 `end === 1`），所以源节点旁边是一排平行箭头：
-    // 「输入侧共干、输出侧不共干」是不对称的，端点归节点管，两侧都该共。
-    var outJunctionAnchors = {}
-    var edgeToOutJunction = {}
-    for (var sk3 in sideGroups) {
-      var arr3 = sideGroups[sk3]
-      var outEdges = []
-      for (var oi2 = 0; oi2 < arr3.length; oi2++) {
-        if (arr3[oi2].end === 0) outEdges.push(arr3[oi2])
+        inner.push(React.createElement('g', { key: 'e' + red2.from + '-' + red2.to + '-' + rt.ei },
+          React.createElement('path', { className: 'ac-edge-hit', d: rt.d, onPointerDown: (function (efrom, eto) { return function (ev) { onEdgeDown(ev, efrom, eto) } })(red2.from, red2.to) }),
+          React.createElement('path', { className: cls, d: rt.d, markerEnd: mk || undefined }),
+          red2.label ? React.createElement('g', { key: 'el' },
+            React.createElement('rect', { className: 'ac-elbl-bg', x: rt.mid.x - Math.max(12, visualLen(red2.label) * 3.3), y: rt.mid.y - 9, width: Math.max(24, visualLen(red2.label) * 6.6), height: 17, rx: 5 }),
+            React.createElement('text', { className: 'ac-elbl', x: rt.mid.x, y: rt.mid.y }, red2.label),
+          ) : null,
+        ))
       }
-      if (outEdges.length <= 1) continue
-      var oParts = sk3.split('|')
-      var oUnit = oParts[0]
-      var oSide = oParts[1]
-      var ogNode = visGeom(oUnit)
-      if (!ogNode) continue
-      var ojx = ogNode.x
-      var ojy = ogNode.y
-      if (oSide === 'l') ojx = ogNode.x - ogNode.w / 2 - 28
-      else if (oSide === 'r') ojx = ogNode.x + ogNode.w / 2 + 28
-      else if (oSide === 't') ojy = ogNode.y - ogNode.h / 2 - 28
-      else if (oSide === 'b') ojy = ogNode.y + ogNode.h / 2 + 28
-      var oAnchor = { key: sk3, side: oSide, jx: ojx, jy: ojy, count: outEdges.length }
-      outJunctionAnchors[sk3] = oAnchor
-      for (var oj2 = 0; oj2 < outEdges.length; oj2++) edgeToOutJunction[outEdges[oj2].ei] = oAnchor
-    }
-
-    var portSlots = {}
-    for (var sk in sideGroups) {
-      var sArr = sideGroups[sk]
-      sArr.sort(function (x, y) { return x.at - y.at })
-      for (var si2 = 0; si2 < sArr.length; si2++) {
-        var sItem = sArr[si2]
-        // 两侧同一判据：入端有汇流点、或出端有共干点，就占**同一个**端点（n=1），
-        // 否则在该侧按对端投影坐标均分（避免箭头叠在一起）。
-        var sharedEnd = (sItem.end === 1 && edgeToJunction[sItem.ei]) || (sItem.end === 0 && edgeToOutJunction[sItem.ei])
-        if (sharedEnd) {
-          portSlots[sItem.ei + ':' + sItem.end] = { n: 1, i: 0 }
-        } else {
-          portSlots[sItem.ei + ':' + sItem.end] = { n: sArr.length, i: si2 }
-        }
+      // 渲染分支锚点小圆点标记（输入侧汇流点与输出侧共干点各画一次）
+      for (var jkey in elayout.junctionAnchors) {
+        var junc = elayout.junctionAnchors[jkey]
+        inner.push(React.createElement('circle', {
+          key: 'junc-dot-' + jkey,
+          className: 'ac-junc-dot',
+          cx: junc.jx, cy: junc.jy, r: 3
+        }))
       }
-    }
-    var usedLanes = []
-    var pairSeen = {}
-    var routed = []
-    for (var ei = 0; ei < renderEdges.length; ei++) {
-      var red = renderEdges[ei]
-      if (foldMap[red.from] && foldMap[red.from] === foldMap[red.to]) continue
-      var rek = red.from < red.to ? red.from + '|' + red.to : red.to + '|' + red.from
-      var ren = pairCount[rek] || 1
-      var reidx = pairSeen[rek] || 0
-      pairSeen[rek] = reidx + 1
-      var rgeo = edgeGeometry(visGeom(red.from), visGeom(red.to), visList,
-        ren > 1 ? (reidx - (ren - 1) / 2) * 10 : 0,
-        { a: portSlots[ei + ':0'], b: portSlots[ei + ':1'] }, usedLanes)
-      if (!rgeo) continue
-      var rlanes = rgeo.lanes || []
-      for (var rl = 0; rl < rlanes.length; rl++) usedLanes.push(rlanes[rl])
-      routed.push({ ei: ei, ed: red, geo: rgeo, hops: [] })
-    }
-    for (var ca = 0; ca < routed.length; ca++) {
-      var pa = routed[ca].geo.pts
-      for (var cb = ca + 1; cb < routed.length; cb++) {
-        var pb = routed[cb].geo.pts
-        for (var sa = 0; sa + 1 < pa.length; sa++) {
-          var a1 = pa[sa], a2 = pa[sa + 1]
-          var aVert = Math.abs(a1.x - a2.x) < 0.5
-          if (Math.abs(a1.x - a2.x) > 0.5 && Math.abs(a1.y - a2.y) > 0.5) continue
-          for (var sb = 0; sb + 1 < pb.length; sb++) {
-            var b1 = pb[sb], b2 = pb[sb + 1]
-            var bVert = Math.abs(b1.x - b2.x) < 0.5
-            if (aVert === bVert) continue
-            if (Math.abs(b1.x - b2.x) > 0.5 && Math.abs(b1.y - b2.y) > 0.5) continue
-            var hor = aVert ? { p: b1, q: b2 } : { p: a1, q: a2 }
-            var ver = aVert ? { p: a1, q: a2 } : { p: b1, q: b2 }
-            var hx1 = Math.min(hor.p.x, hor.q.x), hx2 = Math.max(hor.p.x, hor.q.x)
-            var hy1 = Math.min(ver.p.y, ver.q.y), hy2 = Math.max(ver.p.y, ver.q.y)
-            var hy = hor.p.y, vx = ver.p.x
-            if (vx > hx1 + 3 && vx < hx2 - 3 && hy > hy1 + 3 && hy < hy2 - 3) {
-              routed[cb].hops.push({ x: vx, y: hy })
-            }
-          }
-        }
+      for (var ojkey in elayout.outJunctionAnchors) {
+        var ojunc = elayout.outJunctionAnchors[ojkey]
+        inner.push(React.createElement('circle', {
+          key: 'ojunc-dot-' + ojkey,
+          className: 'ac-junc-dot',
+          cx: ojunc.jx, cy: ojunc.jy, r: 3
+        }))
       }
-    }
-    // 记录已经为分支锚点画过箭头的集合（同汇流点只画一次箭头）
-    var junctionArrowDrawn = {}
-    for (var ri = 0; ri < routed.length; ri++) {
-      var rt = routed[ri]
-      var red2 = rt.ed
-      var juncForEdge = edgeToJunction[rt.ei]
-      var rpts = rt.geo.pts.slice()
-      var rpath = rt.hops.length
-        ? edgeCleanPath(rpts, rt.hops)
-        : { d: edgeCleanPath(rpts, []).d, pts: rpts }
-      var dashed = red2.arrow === '-.->'
-      var isEdgeSel = sel && sel.kind === 'edge' && sel.from === red2.from && sel.to === red2.to
-      var cls = 'ac-edge' + (dashed ? ' dashed' : '') + (isEdgeSel ? ' sel' : '')
-
-      // 同侧汇流入端：同一个分支汇流点只保留首条连线的单个箭头，其余汇入线不重复打箭头！
-      var mk = arrowMarkerRef(red2.arrow)
-      if (juncForEdge) {
-        if (junctionArrowDrawn[juncForEdge.key]) {
-          mk = null
-        } else {
-          junctionArrowDrawn[juncForEdge.key] = true
-        }
-      }
-
-      inner.push(React.createElement('g', { key: 'e' + red2.from + '-' + red2.to + '-' + rt.ei },
-        React.createElement('path', { className: 'ac-edge-hit', d: rpath.d, onPointerDown: (function (efrom, eto) { return function (ev) { onEdgeDown(ev, efrom, eto) } })(red2.from, red2.to) }),
-        React.createElement('path', { className: cls, d: rpath.d, markerEnd: mk || undefined }),
-        red2.label ? React.createElement('g', { key: 'el' },
-          React.createElement('rect', { className: 'ac-elbl-bg', x: rt.geo.mid.x - Math.max(12, visualLen(red2.label) * 3.3), y: rt.geo.mid.y - 9, width: Math.max(24, visualLen(red2.label) * 6.6), height: 17, rx: 5 }),
-          React.createElement('text', { className: 'ac-elbl', x: rt.geo.mid.x, y: rt.geo.mid.y }, red2.label),
-        ) : null,
-      ))
-    }
-    // 渲染分支锚点小圆点标记（输入侧汇流点与输出侧共干点各画一次）
-    for (var jkey in junctionAnchors) {
-      var junc = junctionAnchors[jkey]
-      inner.push(React.createElement('circle', {
-        key: 'junc-dot-' + jkey,
-        className: 'ac-junc-dot',
-        cx: junc.jx, cy: junc.jy, r: 3
-      }))
-    }
-    for (var ojkey in outJunctionAnchors) {
-      var ojunc = outJunctionAnchors[ojkey]
-      inner.push(React.createElement('circle', {
-        key: 'ojunc-dot-' + ojkey,
-        className: 'ac-junc-dot',
-        cx: ojunc.jx, cy: ojunc.jy, r: 3
-      }))
     }
     for (var ni = 0; ni < model.nodes.length; ni++) {
       var node = model.nodes[ni]
@@ -371,8 +189,6 @@ function studioCanvasFns(S) {
         },
           React.createElement('rect', {
             rx: 4, width: Math.max(26, String(node.tags[0]).length * 10 + 12), height: 16,
-            fill: 'var(--dsw-alias-brand-primary,#3b82f6)', fillOpacity: 0.15,
-            stroke: 'var(--dsw-alias-brand-primary,#3b82f6)', strokeWidth: 1
           }),
           React.createElement('text', {
             x: Math.max(13, (String(node.tags[0]).length * 10 + 12) / 2), y: 11.5,

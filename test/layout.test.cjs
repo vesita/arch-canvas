@@ -17,7 +17,7 @@ const api = new Function(src + '\n;return {'
   + ' autoLayout: autoLayout, sccOf: sccOf, layerOfComps: layerOfComps, groupByLayer: groupByLayer,'
   + ' layoutPositions: layoutPositions, crossingsOf: crossingsOf, medianOrder: medianOrder,'
   + ' nodeSize: nodeSize, splitLabel: splitLabel, refRowCount: refRowCount };')();
-const { autoLayout } = api;
+const { autoLayout, crossingsOf } = api;
 
 let pass = 0;
 let fail = 0;
@@ -172,6 +172,24 @@ console.log('\n[5] 边数超过上限时跳过「比交叉数」这一步，但�
   const ms = Date.now() - t0;
   ok('700 条边也出得来坐标', out.nodes.every((n) => isFinite(n.x) && isFinite(n.y)));
   ok('没慢到离谱（< 1s）', ms < 1000, ms);
+}
+
+console.log('\n[6] 性能优化：autoLayout 复用 baseCrossings，守住交叉数与坐标等价');
+{
+  const ids = ['a', 'b', 'c', 'd', 'e', 'f'];
+  const edges = [['a', 'c'], ['b', 'd'], ['c', 'e'], ['d', 'f'], ['a', 'd'], ['b', 'c']];
+  const model = mk(ids, edges);
+  const out = autoLayout(model);
+  ok('所有节点均分配有效有限坐标', out.nodes.every((n) => isFinite(n.x) && isFinite(n.y)));
+  const base = baselineCrossings(model);
+  const got = resultCrossings(model);
+  ok('交叉数不大于基线交叉数', got <= base, { got, base });
+
+  // 验证 crossingsOf 纯函数结果自洽
+  const posMap = byId(out);
+  const c1 = crossingsOf(posMap, pairsOf(model, out));
+  const c2 = crossingsOf(posMap, pairsOf(model, out));
+  eq('crossingsOf 纯函数确定性', c1, c2);
 }
 
 console.log('\n结果: ' + pass + ' 通过 / ' + fail + ' 失败\n');

@@ -28,9 +28,21 @@ function edgeSegHitsRect(x1, y1, x2, y2, r) {
 }
 
 function edgePathHits(pts, obs) {
-  for (var i = 0; i + 1 < pts.length; i++) {
-    for (var j = 0; j < obs.length; j++) {
-      if (edgeSegHitsRect(pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y, obs[j])) return true
+  if (!obs || obs.length === 0 || !pts || pts.length < 2) return false
+  var minX = pts[0].x, maxX = pts[0].x
+  var minY = pts[0].y, maxY = pts[0].y
+  for (var k = 1; k < pts.length; k++) {
+    var px = pts[k].x, py = pts[k].y
+    if (px < minX) minX = px
+    if (px > maxX) maxX = px
+    if (py < minY) minY = py
+    if (py > maxY) maxY = py
+  }
+  for (var j = 0; j < obs.length; j++) {
+    var r = obs[j]
+    if (r.x2 <= minX || r.x1 >= maxX || r.y2 <= minY || r.y1 >= maxY) continue
+    for (var i = 0; i + 1 < pts.length; i++) {
+      if (edgeSegHitsRect(pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y, r)) return true
     }
   }
   return false
@@ -418,11 +430,17 @@ function portPointOf(g, side, p) {
  *
  * 几何里可以带 `shape`（studio 传的就是带 shape 的那份）；不带就按矩形处理。
  */
-function edgeGeometry(a, b, obstacles, offset, ports, usedLanes) {
+function edgeGeometry(a, b, obstacles, offset, ports, usedLanes, preSides, preObs) {
   if (!a || !b) return null
   var shift = (typeof offset === 'number' && isFinite(offset)) ? offset : 0
   var obs = []
-  if (obstacles) {
+  if (preObs) {
+    for (var oi = 0; oi < preObs.length; oi++) {
+      var po = preObs[oi]
+      if (po.node === a || po.node === b) continue
+      obs.push(po)
+    }
+  } else if (obstacles) {
     for (var i = 0; i < obstacles.length; i++) {
       var o = obstacles[i]
       if (!o || o === a || o === b) continue
@@ -447,11 +465,8 @@ function edgeGeometry(a, b, obstacles, offset, ports, usedLanes) {
     return { d: lc.d, mid: { x: loopL, y: a.y }, pts: lc.pts, lanes: edgePathLanes(lc.pts) }
   }
   // 选边（两端同轴）→ 落点（投到真实轮廓上，而不是包围盒）
-  // **必须把 obstacles 交进去**：studio 的端口分组用的是带障碍的那一份（它决定每个端口落在哪条边、
-  // 以及同一侧多端口怎么均分），这里不交就会挑出另一条轴 —— 端口按 A 侧均分、线却从 B 侧出去，
-  // 更坏的是会选中代价函数刚判过「这条轴根本走不通」的那条轴，候选车道全被拒、落到硬穿兜底，
-  // 画出一条穿过第三方方块的线（2026-09-24 客户端审计第 2 条，是上一轮改动留下的回归）。
-  var sides = edgeSidesOf(a, b, obstacles)
+  // 若调用方已预先计算 preSides，则直接复用；否则内部调用 edgeSidesOf
+  var sides = preSides || edgeSidesOf(a, b, obstacles)
   var vertical = sides.vertical
   var p0 = portPointOf(a, sides.a, pA)
   var p1 = portPointOf(b, sides.b, pB)
@@ -619,6 +634,8 @@ var EXPORT_CSS = [
   '.ac-edge.dashed{stroke-dasharray:6 5}',
   '.ac-arrowhead{fill:#718096}',
   '.ac-elbl{fill:#4a5568;font-size:11.5px;text-anchor:middle;dominant-baseline:central}',
+  '.ac-tag-badge rect{fill:#4c8dff;fill-opacity:.12;stroke:#4c8dff;stroke-width:1}',
+  '.ac-tag-badge text{fill:#4c8dff;font-size:10px;font-weight:700;text-anchor:middle;dominant-baseline:central}',
   '.ac-elbl-bg{fill:#ffffff}',
   '.ac-group-box{fill:#f2f6fa;stroke:#7b8794;stroke-dasharray:5 5;stroke-width:1.4}',
   '.ac-group-lbl{fill:#4a5568;font-size:11.5px;font-weight:600}',
@@ -763,5 +780,224 @@ function ctxInterval(fn: () => void, ms: number): () => void {
   if (timer && typeof timer.interval === 'function') return timer.interval(fn, ms)
   var id = globalThis.setInterval(fn, ms)
   return function () { globalThis.clearInterval(id) }
+}
+
+/**
+ * 连线几何管线计算：从模型、折叠映射、折叠几何与节点几何计算整图所有连线的几何。
+ * 纯函数，按 [model, foldMap, foldGeom, gstate] 缓存，解耦选中有助于大幅提升点选交互响应速度。
+ */
+function computeEdgeLayout(model, foldMap, foldGeom, gstate) {
+  if (!model || !model.nodes || !model.edges) {
+    return { routed: [], junctionAnchors: {}, outJunctionAnchors: {}, edgeToJunction: {} }
+  }
+  var visGeom = function (id) {
+    var fid = foldMap && foldMap[id]
+    if (fid && foldGeom && foldGeom[fid]) return foldGeom[fid]
+    return gstate && gstate[id]
+  }
+
+  var visList = []
+  var visSeen = []
+  for (var vi = 0; vi < model.nodes.length; vi++) {
+    var vg = visGeom(model.nodes[vi].id)
+    if (!vg || visSeen.indexOf(vg) >= 0) continue
+    visSeen.push(vg)
+    visList.push(vg)
+  }
+
+  // 每次渲染只算一次整图可见节点的障碍 AABB 盒
+  var preObs = []
+  for (var oi = 0; oi < visList.length; oi++) {
+    var vo = visList[oi]
+    if (!vo || typeof vo.w !== 'number' || typeof vo.h !== 'number') continue
+    preObs.push({
+      x1: vo.x - vo.w / 2 - EDGE_PAD, y1: vo.y - vo.h / 2 - EDGE_PAD,
+      x2: vo.x + vo.w / 2 + EDGE_PAD, y2: vo.y + vo.h / 2 + EDGE_PAD,
+      node: vo,
+    })
+  }
+
+  var pairCount = {}
+  for (var pi = 0; pi < model.edges.length; pi++) {
+    var pe = model.edges[pi]
+    var pk = pe.from < pe.to ? pe.from + '|' + pe.to : pe.to + '|' + pe.from
+    pairCount[pk] = (pairCount[pk] || 0) + 1
+  }
+
+  var consolidatedRenderModel = consolidateEdgesModel(model)
+  var renderEdges = consolidatedRenderModel.edges || []
+  var sideGroups = {}
+  var edgeSidesList = []
+  for (var gi = 0; gi < renderEdges.length; gi++) {
+    var ge = renderEdges[gi]
+    if (foldMap && foldMap[ge.from] && foldMap[ge.from] === foldMap[ge.to]) {
+      edgeSidesList.push(null)
+      continue
+    }
+    var ga2 = visGeom(ge.from)
+    var gb2 = visGeom(ge.to)
+    if (!ga2 || !gb2) {
+      edgeSidesList.push(null)
+      continue
+    }
+    var gSides = edgeSidesOf(ga2, gb2, visList)
+    edgeSidesList.push(gSides)
+    for (var gend = 0; gend < 2; gend++) {
+      var got = gend === 0 ? gb2 : ga2
+      var gside = gend === 0 ? gSides.a : gSides.b
+      var gunit = gend === 0 ? ge.from : ge.to
+      var gkey = ((foldMap && foldMap[gunit]) || gunit) + '|' + gside
+      if (!sideGroups[gkey]) sideGroups[gkey] = []
+      var gax = gside === 't' || gside === 'b'
+      sideGroups[gkey].push({ ei: gi, end: gend, at: gax ? got.x : got.y })
+    }
+  }
+
+  var junctionAnchors = {}
+  var edgeToJunction = {}
+  for (var sk2 in sideGroups) {
+    var arr2 = sideGroups[sk2]
+    var parts2 = sk2.split('|')
+    var unit2 = parts2[0], side2 = parts2[1]
+    var inEdges = []
+    for (var ai = 0; ai < arr2.length; ai++) {
+      if (arr2[ai].end === 1) inEdges.push(arr2[ai])
+    }
+    if (inEdges.length > 1) {
+      var gmNode = visGeom(unit2)
+      if (gmNode) {
+        var jx = gmNode.x, jy = gmNode.y
+        var dist = 28
+        if (side2 === 'l') jx = gmNode.x - gmNode.w / 2 - dist
+        else if (side2 === 'r') jx = gmNode.x + gmNode.w / 2 + dist
+        else if (side2 === 't') jy = gmNode.y - gmNode.h / 2 - dist
+        else if (side2 === 'b') jy = gmNode.y + gmNode.h / 2 + dist
+
+        var targetX = gmNode.x, targetY = gmNode.y
+        if (side2 === 'l') targetX = gmNode.x - gmNode.w / 2
+        else if (side2 === 'r') targetX = gmNode.x + gmNode.w / 2
+        else if (side2 === 't') targetY = gmNode.y - gmNode.h / 2
+        else if (side2 === 'b') targetY = gmNode.y + gmNode.h / 2
+
+        var juncObj = {
+          key: sk2, side: side2, jx: jx, jy: jy, targetX: targetX, targetY: targetY,
+          count: inEdges.length
+        }
+        junctionAnchors[sk2] = juncObj
+        for (var ii = 0; ii < inEdges.length; ii++) {
+          edgeToJunction[inEdges[ii].ei] = juncObj
+        }
+      }
+    }
+  }
+
+  var outJunctionAnchors = {}
+  var edgeToOutJunction = {}
+  for (var sk3 in sideGroups) {
+    var arr3 = sideGroups[sk3]
+    var outEdges = []
+    for (var oi2 = 0; oi2 < arr3.length; oi2++) {
+      if (arr3[oi2].end === 0) outEdges.push(arr3[oi2])
+    }
+    if (outEdges.length <= 1) continue
+    var oParts = sk3.split('|')
+    var oUnit = oParts[0]
+    var oSide = oParts[1]
+    var ogNode = visGeom(oUnit)
+    if (!ogNode) continue
+    var ojx = ogNode.x
+    var ojy = ogNode.y
+    if (oSide === 'l') ojx = ogNode.x - ogNode.w / 2 - 28
+    else if (oSide === 'r') ojx = ogNode.x + ogNode.w / 2 + 28
+    else if (oSide === 't') ojy = ogNode.y - ogNode.h / 2 - 28
+    else if (oSide === 'b') ojy = ogNode.y + ogNode.h / 2 + 28
+    var oAnchor = { key: sk3, side: oSide, jx: ojx, jy: ojy, count: outEdges.length }
+    outJunctionAnchors[sk3] = oAnchor
+    for (var oj2 = 0; oj2 < outEdges.length; oj2++) edgeToOutJunction[outEdges[oj2].ei] = oAnchor
+  }
+
+  var portSlots = {}
+  for (var sk in sideGroups) {
+    var sArr = sideGroups[sk]
+    sArr.sort(function (x, y) { return x.at - y.at })
+    for (var si2 = 0; si2 < sArr.length; si2++) {
+      var sItem = sArr[si2]
+      var sharedEnd = (sItem.end === 1 && edgeToJunction[sItem.ei]) || (sItem.end === 0 && edgeToOutJunction[sItem.ei])
+      if (sharedEnd) {
+        portSlots[sItem.ei + ':' + sItem.end] = { n: 1, i: 0 }
+      } else {
+        portSlots[sItem.ei + ':' + sItem.end] = { n: sArr.length, i: si2 }
+      }
+    }
+  }
+
+  var usedLanes = []
+  var pairSeen = {}
+  var routed = []
+  for (var ei = 0; ei < renderEdges.length; ei++) {
+    var red = renderEdges[ei]
+    if (foldMap && foldMap[red.from] && foldMap[red.from] === foldMap[red.to]) continue
+    var rek = red.from < red.to ? red.from + '|' + red.to : red.to + '|' + red.from
+    var ren = pairCount[rek] || 1
+    var reidx = pairSeen[rek] || 0
+    pairSeen[rek] = reidx + 1
+    var rgeo = edgeGeometry(visGeom(red.from), visGeom(red.to), visList,
+      ren > 1 ? (reidx - (ren - 1) / 2) * 10 : 0,
+      { a: portSlots[ei + ':0'], b: portSlots[ei + ':1'] }, usedLanes,
+      edgeSidesList[ei], preObs)
+    if (!rgeo) continue
+    var rlanes = rgeo.lanes || []
+    for (var rl = 0; rl < rlanes.length; rl++) usedLanes.push(rlanes[rl])
+    routed.push({ ei: ei, ed: red, geo: rgeo, hops: [] })
+  }
+
+  for (var ca = 0; ca < routed.length; ca++) {
+    var pa = routed[ca].geo.pts
+    for (var cb = ca + 1; cb < routed.length; cb++) {
+      var pb = routed[cb].geo.pts
+      for (var sa = 0; sa + 1 < pa.length; sa++) {
+        var a1 = pa[sa], a2 = pa[sa + 1]
+        var aVert = Math.abs(a1.x - a2.x) < 0.5
+        if (Math.abs(a1.x - a2.x) > 0.5 && Math.abs(a1.y - a2.y) > 0.5) continue
+        for (var sb = 0; sb + 1 < pb.length; sb++) {
+          var b1 = pb[sb], b2 = pb[sb + 1]
+          var bVert = Math.abs(b1.x - b2.x) < 0.5
+          if (aVert === bVert) continue
+          if (Math.abs(b1.x - b2.x) > 0.5 && Math.abs(b1.y - b2.y) > 0.5) continue
+          var hor = aVert ? { p: b1, q: b2 } : { p: a1, q: a2 }
+          var ver = aVert ? { p: a1, q: a2 } : { p: b1, q: b2 }
+          var hx1 = Math.min(hor.p.x, hor.q.x), hx2 = Math.max(hor.p.x, hor.q.x)
+          var hy1 = Math.min(ver.p.y, ver.q.y), hy2 = Math.max(ver.p.y, ver.q.y)
+          var hy = hor.p.y, vx = ver.p.x
+          if (vx > hx1 + 3 && vx < hx2 - 3 && hy > hy1 + 3 && hy < hy2 - 3) {
+            routed[cb].hops.push({ x: vx, y: hy })
+          }
+        }
+      }
+    }
+  }
+
+  var finalRouted = []
+  for (var ri = 0; ri < routed.length; ri++) {
+    var rt = routed[ri]
+    var rpts = rt.geo.pts.slice()
+    var rpath = rt.hops.length
+      ? edgeCleanPath(rpts, rt.hops)
+      : { d: edgeCleanPath(rpts, []).d, pts: rpts }
+    finalRouted.push({
+      ei: rt.ei,
+      ed: rt.ed,
+      geo: rt.geo,
+      d: rpath.d,
+      mid: rt.geo.mid,
+    })
+  }
+
+  return {
+    routed: finalRouted,
+    junctionAnchors: junctionAnchors,
+    outJunctionAnchors: outJunctionAnchors,
+    edgeToJunction: edgeToJunction,
+  }
 }
 

@@ -222,3 +222,11 @@ function studioMemoFor(key, create) {
  */
 var GROUP_NEW = '#new'
 
+
+/**
+ * 外部文件路径提取基础文件名（反斜杠归一后取最后一段）。
+ * 一个事实一个家：给 studio-render-root 与 studio-render-chrome 统一使用。
+ */
+function externalBaseName(p) {
+  return p ? String(p).replace(/\\/g, "/").split("/").pop() || "" : ""
+}

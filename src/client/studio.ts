@@ -297,7 +297,7 @@ function ArchStudio(props) {
     }
     geomRef.current = out
     return out
-  }, [model, sel])
+  }, [model])
 
   // 折叠后每个节点落在哪个「可见单元」上：普通节点是它自己，被收起来的组内节点合到组块上。
   // 边只有经过这张映射，才会从「连到节点」正确改接到「连到折叠块」。
@@ -344,6 +344,11 @@ function ArchStudio(props) {
     return out
   }, [model, gstate, collapsed])
 
+  // 连线几何管线缓存：解耦 sel，仅在 [model, foldMap, foldGeom, gstate] 改变时重算
+  var edgeLayout = React.useMemo(function () {
+    return computeEdgeLayout(model, foldMap, foldGeom, gstate)
+  }, [model, foldMap, foldGeom, gstate])
+
   // 给边用的几何：折叠组内的节点，一律换成它所属的那个折叠块。
   var visGeom = function (id) {
     var fid = foldMap[id]
@@ -382,7 +387,7 @@ function ArchStudio(props) {
   var S: any = {
     committedRef, currentDiagramRef, cwd, cwdRef, descDraft, diagKeyRef,
     dockForRef, dockH, dockOpen, dockOpenRef, dockRef, draft,
-    dragHint, dragRef, dragging, driftOpen, driftRef, edgeDraft,
+    dragHint, dragRef, dragging, driftOpen, driftRef, edgeDraft, edgeLayout,
     external, filePath, fileStatusRef, filesDraft, fittedRef, foldGeom,
     foldMap, geomRef, groupNewName, groupPick, groups, gstate,
     helpOpen, highlight, hist, histRef, historyCount, hlRef,

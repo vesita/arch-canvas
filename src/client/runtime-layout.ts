@@ -3,7 +3,13 @@
 // 认的是 AC 那个 mermaid 子集：`%%` 注释行分三类、关键字、引号标签、箭头、id。
 // 三类注释的颜色不同是有意的：`%%!` 是格式说明（最淡，可以无视）、
 // `@pos/@link/@summary` 是元数据、`@note/@done/@file` 是**用户写在这个元素上的东西**。
-var HL_ARROWS = ['<==>', '<-->', '-.->', '==>', '-->', '---', '~~~', '===', '->']
+var _HL_ARROWS = null
+function hlArrows() {
+  if (!_HL_ARROWS && typeof ARROW_CHOICES !== 'undefined') {
+    _HL_ARROWS = ARROW_CHOICES.slice().sort(function (a, b) { return b.length - a.length })
+  }
+  return _HL_ARROWS || []
+}
 var HL_KEYWORDS = {
   flowchart: 1, graph: 1, subgraph: 1, end: 1, direction: 1,
   classDef: 1, class: 1, style: 1, linkStyle: 1, click: 1, link: 1,
@@ -49,8 +55,9 @@ function tokenizeMermaidLine(line) {
       continue
     }
     var arrow = null
-    for (var a = 0; a < HL_ARROWS.length; a++) {
-      if (t.slice(i, i + HL_ARROWS[a].length) === HL_ARROWS[a]) { arrow = HL_ARROWS[a]; break }
+    var arrows = hlArrows()
+    for (var a = 0; a < arrows.length; a++) {
+      if (t.slice(i, i + arrows[a].length) === arrows[a]) { arrow = arrows[a]; break }
     }
     if (arrow) { flush(); out.push({ k: 'a', s: arrow }); i += arrow.length; continue }
     if ('[](){}|&;,>'.indexOf(ch) >= 0) { flush(); out.push({ k: 'p', s: ch }); i++; continue }

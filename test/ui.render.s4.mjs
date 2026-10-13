@@ -125,7 +125,7 @@ console.log('\n[4r] 客户端逻辑审计的修复：自动布局不许丢字段
   // （连线的透明命中区，宽 14）、组框、边标签 —— 否则 C 段「导出里没有命中区」是空断言。
   const EXP_MODEL = {
     nodes: [
-      { id: 'ex1', label: '导出的方块', shape: 'rect', group: 'eg', x: 0, y: 0, note: '有留言', files: ['a.ts'], link: 'sub' },
+      { id: 'ex1', label: '导出的方块', shape: 'rect', group: 'eg', x: 0, y: 0, note: '有留言', files: ['a.ts'], link: 'sub', tags: ['核心'] },
       { id: 'ex2', label: '另一个方块', shape: 'rect', group: null, x: 260, y: 200 },
     ],
     edges: [{ id: 'ee1', from: 'ex1', to: 'ex2', label: '连着', arrow: '-->' }],
@@ -945,6 +945,99 @@ console.log('\n[4u] 描边亮度与组配色：描边不再用「边框」令牌
   await act(async () => { p2.root.unmount() })
   p2.host.remove()
 
+  respond = prevR
+}
+
+console.log('\n[4x] 连线几何解耦选中态与 DOM 级等价证明');
+{
+  const prevR = respond
+  const SEL_MODEL = {
+    nodes: [
+      { id: 'sa', label: '节点A', x: 100, y: 100, w: 100, h: 50, shape: 'rect' },
+      { id: 'sb', label: '节点B', x: 300, y: 100, w: 100, h: 50, shape: 'diamond' },
+      { id: 'sc', label: '节点C', x: 200, y: 300, w: 100, h: 50, shape: 'round' },
+    ],
+    edges: [
+      { id: 'se1', from: 'sa', to: 'sb', arrow: '-->' },
+      { id: 'se2', from: 'sb', to: 'sc', arrow: '-->' },
+      { id: 'se3', from: 'sc', to: 'sa', arrow: '-.->' },
+    ],
+    groups: [],
+    direction: 'TD',
+  }
+  respond = function (method, args) {
+    if (method === 'doc:get') return fullDoc({ model: SEL_MODEL, nodeCount: 3, key: 'sel_test', diagram: 'sel_test' })
+    if (method === 'doc:rev') return { revision: 1, updatedBy: 'switch', diagram: 'sel_test', dir: UI + '/.arch-canvas', libraryRev: 1, external: null }
+    if (method === 'doc:history') return { ok: true, entries: [] }
+    return prevR(method, args)
+  }
+
+  const host = document.createElement('div')
+  document.body.appendChild(host)
+  const root = createRoot(host)
+  await act(async () => {
+    root.render(React.createElement(captured['conversation.view'], {
+      cwd: UI, sessionId: 's-sel-test', useSessions: () => UI,
+    }))
+  })
+  await flush()
+
+  const getEdgePaths = (container) => Array.from(container.querySelectorAll('path.ac-edge')).map(p => p.getAttribute('d'))
+
+  // 1. 初次渲染拿到的 paths
+  const pathsMount = getEdgePaths(host)
+  ok('初次整树挂载时渲染出 3 条边', pathsMount.length === 3, pathsMount.length)
+
+  // 2. 模拟点选一个节点
+  const targetNode = Array.from(host.querySelectorAll('g.ac-node'))
+    .find(el => (el.textContent || '').indexOf('节点A') >= 0)
+  ok('找到目标节点进行点选', !!targetNode)
+  await act(async () => {
+    clickEl(targetNode, 100, 100)
+  })
+  await flush()
+
+  // 验证选中态生效
+  const selNode = host.querySelector('g.ac-node.sel')
+  ok('点选后目标节点获得 .ac-node.sel 描边类', !!selNode && (selNode.textContent || '').indexOf('节点A') >= 0)
+
+  // 验证点选后每条边的 path 逐字节完全一致
+  const pathsAfterSelect = getEdgePaths(host)
+  eq('点选后每条边的 path 与初次整树挂载得到的 path 完全一致',
+    JSON.stringify(pathsAfterSelect), JSON.stringify(pathsMount))
+
+  // 3. 点击空白清空选中
+  const svg = host.querySelector('svg.ac-svg')
+  if (svg) {
+    await act(async () => {
+      svg.dispatchEvent(new window.PointerEvent('pointerdown', { bubbles: true, button: 0, clientX: 10, clientY: 10 }))
+      svg.dispatchEvent(new window.PointerEvent('pointerup', { bubbles: true, button: 0, clientX: 10, clientY: 10 }))
+    })
+    await flush()
+  }
+  const pathsAfterDeselect = getEdgePaths(host)
+  eq('取消选中后每条边的 path 依然完全一致',
+    JSON.stringify(pathsAfterDeselect), JSON.stringify(pathsMount))
+
+  // 4. 清理并进行整树全新重挂载，证明与全新挂载的 path 完全一致
+  await act(async () => { root.unmount() })
+  host.remove()
+
+  const freshHost = document.createElement('div')
+  document.body.appendChild(freshHost)
+  const freshRoot = createRoot(freshHost)
+  await act(async () => {
+    freshRoot.render(React.createElement(captured['conversation.view'], {
+      cwd: UI, sessionId: 's-sel-fresh', useSessions: () => UI,
+    }))
+  })
+  await flush()
+  const pathsFreshMount = getEdgePaths(freshHost)
+  eq('全新整树重渲染得到的 path 与点选渲染得到的 path 完全一致',
+    JSON.stringify(pathsFreshMount), JSON.stringify(pathsAfterSelect))
+
+  await act(async () => { freshRoot.unmount() })
+  freshHost.remove()
   respond = prevR
 }
 

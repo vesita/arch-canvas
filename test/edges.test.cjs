@@ -20,7 +20,7 @@ const api = new Function(src + '\n;return {'
   + ' edgeGeometry: edgeGeometry, edgeSidesOf: edgeSidesOf, perimeterPoint: perimeterPoint,'
   + ' kindOf: kindOf, nodeSize: nodeSize, edgePortOffset: edgePortOffset, edgePathHits: edgePathHits,'
   + ' edgeGaps: edgeGaps, EDGE_PAD: EDGE_PAD };')();
-const { edgeGeometry, edgeSidesOf, perimeterPoint, kindOf, nodeSize, edgePathHits } = api;
+const { edgeGeometry, edgeSidesOf, perimeterPoint, kindOf, nodeSize, edgePathHits, EDGE_PAD } = api;
 
 let pass = 0;
 let fail = 0;
@@ -398,6 +398,36 @@ console.log('\n[8] 端口分组与布线器必须问同一个 edgeSidesOf（带�
   const side = { x: 600, y: 200, w: 100, h: 40, shape: 'rect' };
   eq('负向对照：上下堆叠 + 侧面远处的障碍，仍然选竖轴（与不带障碍一致）',
     s3(edgeSidesOf(A2, B2, [side])), 'btv');
+}
+
+console.log('\n[9] 大图连线几何性能优化：AABB 保守预筛与 preSides/preObs 复用逐字节等价');
+{
+  // 1) edgePathHits AABB 保守预筛验证
+  const line = [{ x: 50, y: 50 }, { x: 50, y: 200 }, { x: 150, y: 200 }, { x: 150, y: 350 }];
+  const hitObs = [{ x1: 40, y1: 100, x2: 60, y2: 120 }]; // 挡在第一段垂直线上
+  const farObs = [{ x1: 500, y1: 500, x2: 600, y2: 600 }]; // 远在天边，AABB 必跳过
+  const edgeTouchObs = [{ x1: 50, y1: 0, x2: 100, y2: 50 }]; // 顶点接触，严格不等号不算穿过
+  eq('真实挡路的障碍必定检出相交', edgePathHits(line, hitObs), true);
+  eq('AABB 外侧远距障碍必定不相交（保守跳过）', edgePathHits(line, farObs), false);
+  eq('贴合边缘走不算穿进障碍', edgePathHits(line, edgeTouchObs), false);
+
+  // 2) edgeGeometry 传入 preSides 与 preObs 时输出逐字节等价
+  const nA = { x: 100, y: 100, w: 120, h: 50, shape: 'rect' };
+  const nB = { x: 260, y: 320, w: 100, h: 60, shape: 'diamond' };
+  const blocker = { x: 150, y: 180, w: 80, h: 50, shape: 'round' };
+  const obstacles = [blocker];
+  const preSides = edgeSidesOf(nA, nB, obstacles);
+  const preObs = obstacles.map(o => ({
+    x1: o.x - o.w / 2 - EDGE_PAD, y1: o.y - o.h / 2 - EDGE_PAD,
+    x2: o.x + o.w / 2 + EDGE_PAD, y2: o.y + o.h / 2 + EDGE_PAD,
+    node: o
+  }));
+
+  const standardGeo = edgeGeometry(nA, nB, obstacles, 0, null, []);
+  const precomputedGeo = edgeGeometry(nA, nB, obstacles, 0, null, [], preSides, preObs);
+  eq('preSides/preObs 优化输出 d 属性与基准逐字节相等', precomputedGeo.d, standardGeo.d);
+  eq('preSides/preObs 优化输出 pts 长度与基准一致', precomputedGeo.pts.length, standardGeo.pts.length);
+  eq('preSides/preObs 优化输出 mid 点与基准一致', JSON.stringify(precomputedGeo.mid), JSON.stringify(standardGeo.mid));
 }
 
 console.log('\n结果: ' + pass + ' 通过 / ' + fail + ' 失败\n');

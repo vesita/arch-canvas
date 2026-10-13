@@ -33,7 +33,7 @@ function studioRootFns(S) {
   function undo(...args) { return S.undo.apply(null, args) }
   var tabs = [['canvas', '画布'], ['text', '源码'], ['preview', '预览']]
   var busy = status.indexOf('加载') === 0 || status.indexOf('失败') >= 0
-  var externalName = external ? String(external).replace(/\\/g, '/').split('/').pop() : ''
+  var externalName = externalBaseName(external)
 
   // 隐藏手势与快捷键的**静态**清单。硬编码就够 —— 这不是帮助系统，只是把「界面上一个字的
   // 提示都没有」这件事补上（Alt 关吸附、Shift+方向键、双击分隔条、Esc 三段、F/Ctrl+0，
