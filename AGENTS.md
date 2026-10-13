@@ -82,7 +82,7 @@ Package 形态下 `code.host` 是**源码字符串**，wasm 塞不进去；真�
 2. **内存里的形状是旁路表的投影**：`note` / `noteDone` 是节点上扁平两个字段，加载时从表灌进节点、落盘时从节点收进表；空文本 = 没有留言。字段名**不能**叫 `notes` ——
    `doc.notes` 已被「AI 改图后的一句话说明」占用（内存态，`doc:get` 后清空）。
 3. **留言是一次性消耗的。** `promptText()` 读过那一段清单就算**送达**，随即在内存里把这一批标成已办，此后不再出现在任何上下文里。`done`
-   的就是历史：落盘时（`harvestNoteStore`）按 `at` 丢最旧的，只留 `NOTE_HISTORY_MAX` 条；`at` **不在模型上**，所以不用碰 `normalizeModel`
+   的就是历史：落盘时（`harvestNoteStore`）按 `at` 丢最旧的，只留 `NOTE_HISTORY_MAX` 条；**历史不是不可读** —— `arch_read` 带 `notes: true` 会附上当前图的全部留言（含已办，按 `at` 排序），这是提示词里那句「要回看」的兑现处；`at` **不在模型上**，所以不用碰 `normalizeModel`
    白名单 / `snapshotModel` / `restoreModel`。**这是读路径上的内存变更**：`promptText` 只改内存、落盘照旧由 `persist()`
    做；送达后一直没人写盘，重启 dsh 会让这批**再送一次** —— 宁可多送一次，也不丢用户写的东西。留言**正文**只由用户写，AI
    只能改状态（`mark_note`）；**要长期挂着的意图不要放留言**。守门人：`test/host.e2e.p2.mjs`【留言历史封顶 6 条】+【提示词注入】的「送达之后同一条不再出现」。
