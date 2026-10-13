@@ -459,8 +459,7 @@ function autoLayout(model) {
     // **整份复制，只改坐标。** 从前这里是逐字段重建 `{id,label,shape,group,x,y}` ——
     // 于是点一下「自动布局」（或加载一张没带坐标的图触发它），所有节点的 files / note /
     // noteDone / link 全被丢掉，而且紧接着经 doc:set 落盘，**永久损坏**。
-    // （2026-09-20 客户端逻辑审计抓到的头号问题；`refRowCount(nodes[i].files)` 上面还在用
-    //   files 算尺寸，就更说明这些字段本该跟着走。）
+    // （2026-09-20 客户端逻辑审计抓到的头号问题；节点上的这些字段本该跟着走。）
     out.push(Object.assign({}, nodes[q]))
   }
   for (var f = 0; f < out.length; f++) {

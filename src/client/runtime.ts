@@ -36,13 +36,8 @@ var STUDIO_CSS = [
   '.ac-svg.dragging .ac-node{cursor:grabbing}',
   '.ac-node .ac-shape{fill:var(--dsw-alias-bg-layer-2,#232830);stroke:var(--ac-line);stroke-width:1.5}',
   '.ac-node.sel .ac-shape{stroke:var(--dsw-alias-brand-primary,#4c8dff);stroke-width:2.5}',
-  // 节点卡片：第一段是标题（.ac-lbl —— 保持既有契约，它的 textContent 就是标题本身），
-  // 其余段是描述（.ac-desc）；「意图：」「原理：」是**惯例**不是框架硬约束，写了才分层着色。
+  // 节点卡片：标题（.ac-lbl —— 保持既有契约，它的 textContent 就是标题本身；描述与引用行仅在检查器中查看）。
   '.ac-node .ac-lbl{fill:var(--dsw-alias-label-primary,#e8eaed);font-size:13px;font-weight:600;text-anchor:middle;dominant-baseline:central;pointer-events:none;user-select:none}',
-  '.ac-node .ac-desc{fill:var(--dsw-alias-label-secondary,#9aa3af);font-size:11.5px;text-anchor:middle;dominant-baseline:central;pointer-events:none;user-select:none}',
-  '.ac-node .ac-desc .ac-intent{fill:#7cc4ff}',
-  '.ac-node .ac-desc .ac-rationale{fill:#b39ddb}',
-  '.ac-node .ac-ref{fill:var(--dsw-alias-label-secondary,#9aa3af);font-size:10px;text-anchor:middle;dominant-baseline:central;pointer-events:none;user-select:none;opacity:.8}',
   '.ac-edge{fill:none;stroke:var(--ac-line);stroke-width:1.6}',
   '.ac-edge.dashed{stroke-dasharray:6 5}',
   '.ac-edge.sel{stroke:var(--dsw-alias-brand-primary,#4c8dff);stroke-width:2.6}',
@@ -371,20 +366,6 @@ function nodeSize(label, extraRows) {
   nodeSizeCache[key] = res
   nodeSizeCacheCount++
   return res
-}
-
-// 节点上「引用」那一行的文案：取路径最后一段、去掉 `#符号`，多条锚点追加 +N。
-// 只给人看，不参与寻址 —— 完整路径在底部检查器与 AI 提示词里。
-function refRowText(files) {
-  if (!files || !files.length) return ''
-  var first = String(files[0] == null ? '' : files[0]).split('#')[0].replace(/\/+$/, '')
-  var base = first.split('/').pop() || first
-  return base ? ('▤ ' + base + (files.length > 1 ? ' +' + (files.length - 1) : '')) : ''
-}
-
-// 引用行占不占一行 —— nodeSize 与渲染必须用同一个判据，否则节点高度和文字对不上。
-function refRowCount(files) {
-  return refRowText(files) ? 1 : 0
 }
 
 // rAF 合帧：拖动时一帧最多做一次状态更新。Chrome 的鼠标 pointermove 本来就与帧对齐，

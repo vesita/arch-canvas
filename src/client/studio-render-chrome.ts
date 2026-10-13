@@ -537,30 +537,14 @@ function studioChromeFns(S) {
     )
   }
 
-  S.allGroups = allGroups
-  S.canSubmitNote = canSubmitNote
   S.dock = dock
-  S.dockBody = dockBody
-  S.dockTitle = dockTitle
   S.driftBox = driftBox
-  S.edgeSel = edgeSel
-  S.groupCounts = groupCounts
-  S.groupIdSet = groupIdSet
-  S.histByLabel = histByLabel
   S.histPanel = histPanel
-  S.histTime = histTime
-  S.hlLines = hlLines
-  S.nodeSel = nodeSel
-  S.noteBatch = noteBatch
-  S.noteListDone = noteListDone
   S.noteListOpen = noteListOpen
   S.notePanel = notePanel
-  S.noteRow = noteRow
   S.noteTotal = noteTotal
-  S.orphanGroup = orphanGroup
   S.previewPane = previewPane
   S.saveFailBox = saveFailBox
-  S.sendNotes = sendNotes
   S.textPane = textPane
   S.warnBox = warnBox
 }

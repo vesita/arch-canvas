@@ -141,31 +141,14 @@ function studioCanvasFns(S) {
       } else if (kind === 'cyl') {
         shapeEl = React.createElement('rect', { className: 'ac-shape', x: x0, y: y0, width: gm.w, height: gm.h, rx: gm.h / 2 })
       } else {
-        var rx2 = kind === 'rect' ? 9 : gm.h / 2
+        var rx2 = kind === 'rect' ? NODE_RECT_RX : gm.h / 2
         shapeEl = React.createElement('rect', { className: 'ac-shape', x: x0, y: y0, width: gm.w, height: gm.h, rx: rx2 })
       }
       // 节点**永远只画标题**：描述与引用行都不在画布上画，一律去检查器里看。
-      // 这里刻意保留 descLines / refText 两个空值，下面那段 JSX 就不用动
-      // （它们为空时 descEl / refEl 自然就是 null）。
       var lines = String(node.label == null ? '' : node.label).split('\n')
-      var descLines = []
-      var refText = ''
-      var rows = 1
-      var spanStart = -((rows - 1) * 19) / 2
       // 标题必须是 .ac-lbl 的**全部**文本：测试与用户都靠它认节点。
       var titleEl = React.createElement('text', { className: 'ac-lbl' },
-        React.createElement('tspan', { key: 't0', x: gm.x, y: gm.y + spanStart }, lines.length > 0 ? lines[0] : ''))
-      var descEl = descLines.length > 0 ? React.createElement('text', { className: 'ac-desc' },
-        descLines.map(function (ln, di) {
-          // 前缀是**惯例**：写了就分层着色，没写就是普通描述（老图因此可以渐进迁移）。
-          var cls = /^\s*意图\s*[：:]/.test(ln) ? 'ac-intent' : (/^\s*原理\s*[：:]/.test(ln) ? 'ac-rationale' : '')
-          return React.createElement('tspan', {
-            key: 'd' + di, x: gm.x, y: gm.y + spanStart + (di + 1) * 19,
-            className: cls || undefined,
-          }, ln)
-        })) : null
-      var refEl = refText ? React.createElement('text', { className: 'ac-ref' },
-        React.createElement('tspan', { key: 'r0', x: gm.x, y: gm.y + spanStart + lines.length * 19 }, refText)) : null
+        React.createElement('tspan', { key: 't0', x: gm.x, y: gm.y }, lines.length > 0 ? lines[0] : ''))
       var isHl = !!(highlight && highlight.nodes && highlight.nodes.indexOf(node.id) >= 0)
       inner.push(React.createElement('g', {
         key: 'n' + node.id,
@@ -180,8 +163,6 @@ function studioCanvasFns(S) {
         }) : null,
         shapeEl,
         titleEl,
-        descEl,
-        refEl,
         // 概念 Tag 胶囊徽章：当节点打有 tags 时，在节点上方以精致胶囊徽章呈现
         (node.tags && node.tags.length > 0) ? React.createElement('g', {
           key: 'tag', className: 'ac-tag-badge',
@@ -330,7 +311,5 @@ function studioCanvasFns(S) {
         )
       : null,
   )
-  S.canvasKids = canvasKids
-  S.inner = inner
   S.stage = stage
 }

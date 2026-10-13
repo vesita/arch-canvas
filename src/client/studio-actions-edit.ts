@@ -725,13 +725,11 @@ function studioEditFns(S) {
   S.closeLibrary = closeLibrary
   S.commitEdgeLabel = commitEdgeLabel
   S.commitFiles = commitFiles
-  S.commitGroup = commitGroup
   S.commitLabel = commitLabel
   S.commitNewGroup = commitNewGroup
   S.commitNote = commitNote
   S.commitTags = commitTags
   S.consolidateEdgesAction = consolidateEdgesAction
-  S.contentBox = contentBox
   S.copySource = copySource
   S.deleteDiagram = deleteDiagram
   S.deleteSel = deleteSel
@@ -739,7 +737,6 @@ function studioEditFns(S) {
   S.exportSvg = exportSvg
   S.flash = flash
   S.focusNode = focusNode
-  S.groupKeyOf = groupKeyOf
   S.loadHistory = loadHistory
   S.loadLibrary = loadLibrary
   S.markNote = markNote
@@ -756,9 +753,6 @@ function studioEditFns(S) {
   S.renameDiagram = renameDiagram
   S.restoreDiagram = restoreDiagram
   S.rollbackTo = rollbackTo
-  S.rollbackWhy = rollbackWhy
-  S.saveToFile = saveToFile
-  S.sendModel = sendModel
   S.setArrow = setArrow
   S.setLocal = setLocal
   S.setShape = setShape

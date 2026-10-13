@@ -16,7 +16,7 @@ const src = fs.readFileSync(FILE, 'utf8');
 const api = new Function(src + '\n;return {'
   + ' autoLayout: autoLayout, sccOf: sccOf, layerOfComps: layerOfComps, groupByLayer: groupByLayer,'
   + ' layoutPositions: layoutPositions, crossingsOf: crossingsOf, medianOrder: medianOrder,'
-  + ' nodeSize: nodeSize, splitLabel: splitLabel, refRowCount: refRowCount };')();
+  + ' nodeSize: nodeSize, splitLabel: splitLabel };')();
 const { autoLayout, crossingsOf } = api;
 
 let pass = 0;

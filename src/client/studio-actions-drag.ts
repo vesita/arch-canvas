@@ -669,17 +669,10 @@ function studioDragFns(S) {
   }
 
   S.abortDrag = abortDrag
-  S.applyMove = applyMove
-  S.capture = capture
-  S.commitDrag = commitDrag
   S.fitView = fitView
   S.flushDrafts = flushDrafts
-  S.flushMove = flushMove
-  S.gestureBusy = gestureBusy
   S.keepSelInView = keepSelInView
-  S.nodeAt = nodeAt
   S.nudgeFlush = nudgeFlush
-  S.nudgeSel = nudgeSel
   S.onBackgroundDown = onBackgroundDown
   S.onEdgeDown = onEdgeDown
   S.onGroupDown = onGroupDown
@@ -692,12 +685,5 @@ function studioDragFns(S) {
   S.onPointerMove = onPointerMove
   S.onPointerUp = onPointerUp
   S.onSashDown = onSashDown
-  S.release = release
-  S.restoreDrag = restoreDrag
-  S.sameSel = sameSel
-  S.scheduleMove = scheduleMove
   S.setDockHeight = setDockHeight
-  S.stageRect = stageRect
-  S.toModelPt = toModelPt
-  S.toggleDockFor = toggleDockFor
 }

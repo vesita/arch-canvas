@@ -61,8 +61,8 @@ function shapeInterior(px, py, g, kind) {
     var hexInset = Math.min(NODE_HEX_INSET, hw)
     return Math.abs(dx) < hw - hexInset * (Math.abs(dy) / hh)
   }
-  // rect / round / sub / cyl / stadium：圆角矩形（rect 的 rx=9）
-  var r = kind === 'rect' ? 9 : Math.min(a, b)
+  // rect / round / sub / cyl / stadium：圆角矩形（rect 的 rx=NODE_RECT_RX）
+  var r = kind === 'rect' ? NODE_RECT_RX : Math.min(a, b)
   var cx = Math.max(Math.abs(dx) - (a - r), 0)
   var cy = Math.max(Math.abs(dy) - (b - r), 0)
   return Math.hypot(cx, cy) < r
@@ -255,6 +255,7 @@ function edgePortOffset(span, p) {
 // React Flow 官方 floating edges）的共同做法是**先算落点、再定侧**。这里照这个思路做，
 // 只保留现有正交路由器能吃的形状（两端走同一条轴），把「选哪条轴、哪条边」交给代价函数。
 var NODE_HEX_INSET = 14  // 六边形左右两个斜角的水平内缩 —— 与 studio.ts 画形状时用的是同一个数
+var NODE_RECT_RX = 9     // 矩形圆角 —— shapeInterior 与 studio-render-canvas 画形状共用
 
 function sideNormal(s) {
   if (s === 't') return { x: 0, y: -1 }
@@ -316,6 +317,22 @@ function axisLooksClear(a, b, sa, sb, vertical, obs) {
   return false
 }
 
+/** 把其它方块膨胀 EDGE_PAD 成障碍盒（排除 a 和 b 两端节点） */
+function obstacleBoxes(obstacles, a, b) {
+  var obs = []
+  if (!obstacles) return obs
+  for (var i = 0; i < obstacles.length; i++) {
+    var o = obstacles[i]
+    if (!o || o === a || o === b) continue
+    if (typeof o.w !== 'number' || typeof o.h !== 'number') continue
+    obs.push({
+      x1: o.x - o.w / 2 - EDGE_PAD, y1: o.y - o.h / 2 - EDGE_PAD,
+      x2: o.x + o.w / 2 + EDGE_PAD, y2: o.y + o.h / 2 + EDGE_PAD,
+    })
+  }
+  return obs
+}
+
 /**
  * 两端的端口各落在哪条边上。
  * 支持两端同轴（竖轴 Z / 横轴 Z）及开阔无阻挡下的正交 L 形（混轴）选边。
@@ -329,18 +346,7 @@ function edgeSidesOf(a, b, obstacles = null) {
   if (!a || !b) return { a: 'b', b: 't', vertical: true }
   var gp = edgeGaps(a, b)
   var gpB = edgeGaps(b, a)
-  var obs = []
-  if (obstacles) {
-    for (var oi = 0; oi < obstacles.length; oi++) {
-      var o = obstacles[oi]
-      if (!o || o === a || o === b) continue
-      if (typeof o.w !== 'number' || typeof o.h !== 'number') continue
-      obs.push({
-        x1: o.x - o.w / 2 - EDGE_PAD, y1: o.y - o.h / 2 - EDGE_PAD,
-        x2: o.x + o.w / 2 + EDGE_PAD, y2: o.y + o.h / 2 + EDGE_PAD,
-      })
-    }
-  }
+  var obs = obstacleBoxes(obstacles, a, b)
 
   // 基础候选：两条同轴（竖轴 / 横轴）
   var best = null, bestCost = Infinity
@@ -441,15 +447,7 @@ function edgeGeometry(a, b, obstacles, offset, ports, usedLanes, preSides, preOb
       obs.push(po)
     }
   } else if (obstacles) {
-    for (var i = 0; i < obstacles.length; i++) {
-      var o = obstacles[i]
-      if (!o || o === a || o === b) continue
-      if (typeof o.w !== 'number' || typeof o.h !== 'number') continue
-      obs.push({
-        x1: o.x - o.w / 2 - EDGE_PAD, y1: o.y - o.h / 2 - EDGE_PAD,
-        x2: o.x + o.w / 2 + EDGE_PAD, y2: o.y + o.h / 2 + EDGE_PAD,
-      })
-    }
+    obs = obstacleBoxes(obstacles, a, b)
   }
   var pA = ports && ports.a
   var pB = ports && ports.b
@@ -626,10 +624,6 @@ var EXPORT_CSS = [
   '.ac-shape{fill:#ffffff;stroke:#4a5568;stroke-width:1.5}',
   '.ac-node.sel .ac-shape{stroke:#4a5568;stroke-width:1.5}',
   '.ac-lbl{fill:#1a202c;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;font-size:13px;font-weight:600;text-anchor:middle;dominant-baseline:central}',
-  '.ac-desc{fill:#718096;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;font-size:11.5px;text-anchor:middle;dominant-baseline:central}',
-  '.ac-desc .ac-intent{fill:#2b6cb0}',
-  '.ac-desc .ac-rationale{fill:#6b46c1}',
-  '.ac-ref{fill:#a0aec0;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;font-size:10px;text-anchor:middle;dominant-baseline:central}',
   '.ac-edge{fill:none;stroke:#718096;stroke-width:1.6}',
   '.ac-edge.dashed{stroke-dasharray:6 5}',
   '.ac-arrowhead{fill:#718096}',
@@ -782,6 +776,24 @@ function ctxInterval(fn: () => void, ms: number): () => void {
   return function () { globalThis.clearInterval(id) }
 }
 
+var JUNCTION_DIST = 28
+
+/** 汇流/共干锚点坐标计算：给定方块与侧边，返回边缘目标点与偏离 JUNCTION_DIST 的汇流点 */
+function junctionPoint(node, side, dist?: number) {
+  var d = dist !== undefined ? dist : JUNCTION_DIST
+  var targetX = node.x, targetY = node.y
+  if (side === 'l') targetX = node.x - node.w / 2
+  else if (side === 'r') targetX = node.x + node.w / 2
+  else if (side === 't') targetY = node.y - node.h / 2
+  else if (side === 'b') targetY = node.y + node.h / 2
+  var jx = targetX, jy = targetY
+  if (side === 'l') jx -= d
+  else if (side === 'r') jx += d
+  else if (side === 't') jy -= d
+  else if (side === 'b') jy += d
+  return { jx: jx, jy: jy, targetX: targetX, targetY: targetY }
+}
+
 /**
  * 连线几何管线计算：从模型、折叠映射、折叠几何与节点几何计算整图所有连线的几何。
  * 纯函数，按 [model, foldMap, foldGeom, gstate] 缓存，解耦选中有助于大幅提升点选交互响应速度。
@@ -866,21 +878,9 @@ function computeEdgeLayout(model, foldMap, foldGeom, gstate) {
     if (inEdges.length > 1) {
       var gmNode = visGeom(unit2)
       if (gmNode) {
-        var jx = gmNode.x, jy = gmNode.y
-        var dist = 28
-        if (side2 === 'l') jx = gmNode.x - gmNode.w / 2 - dist
-        else if (side2 === 'r') jx = gmNode.x + gmNode.w / 2 + dist
-        else if (side2 === 't') jy = gmNode.y - gmNode.h / 2 - dist
-        else if (side2 === 'b') jy = gmNode.y + gmNode.h / 2 + dist
-
-        var targetX = gmNode.x, targetY = gmNode.y
-        if (side2 === 'l') targetX = gmNode.x - gmNode.w / 2
-        else if (side2 === 'r') targetX = gmNode.x + gmNode.w / 2
-        else if (side2 === 't') targetY = gmNode.y - gmNode.h / 2
-        else if (side2 === 'b') targetY = gmNode.y + gmNode.h / 2
-
+        var pt = junctionPoint(gmNode, side2)
         var juncObj = {
-          key: sk2, side: side2, jx: jx, jy: jy, targetX: targetX, targetY: targetY,
+          key: sk2, side: side2, jx: pt.jx, jy: pt.jy, targetX: pt.targetX, targetY: pt.targetY,
           count: inEdges.length
         }
         junctionAnchors[sk2] = juncObj
@@ -905,13 +905,8 @@ function computeEdgeLayout(model, foldMap, foldGeom, gstate) {
     var oSide = oParts[1]
     var ogNode = visGeom(oUnit)
     if (!ogNode) continue
-    var ojx = ogNode.x
-    var ojy = ogNode.y
-    if (oSide === 'l') ojx = ogNode.x - ogNode.w / 2 - 28
-    else if (oSide === 'r') ojx = ogNode.x + ogNode.w / 2 + 28
-    else if (oSide === 't') ojy = ogNode.y - ogNode.h / 2 - 28
-    else if (oSide === 'b') ojy = ogNode.y + ogNode.h / 2 + 28
-    var oAnchor = { key: sk3, side: oSide, jx: ojx, jy: ojy, count: outEdges.length }
+    var opt = junctionPoint(ogNode, oSide)
+    var oAnchor = { key: sk3, side: oSide, jx: opt.jx, jy: opt.jy, targetX: opt.targetX, targetY: opt.targetY, count: outEdges.length }
     outJunctionAnchors[sk3] = oAnchor
     for (var oj2 = 0; oj2 < outEdges.length; oj2++) edgeToOutJunction[outEdges[oj2].ei] = oAnchor
   }
