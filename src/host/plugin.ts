@@ -100,7 +100,8 @@ function foreignCanvasText(sessWhere: string, sameProject?: boolean) {
     return [
       '## 逻辑框架画布（arch-canvas）',
       '**画布现在停在全局兜底图库**（`' + lib.dir + '`）——它不属于任何项目。你这个会话的项目是 `' + sessWhere + '`。',
-      '这个项目的图库是 `' + wantLib.dir + '`：还没有的话，先征得用户同意后用 `arch_switch { create: true }` 创建；已经有的话，调一次 `arch_read` 就切过来。',
+      '这个项目的图库是 `' + wantLib.dir + '`：这一步**没有明确的画布需求就默认不需要画布**，别追问、别提议，忽略这一段即可。' +
+        '用户明确要画 / 要看时：还没有图库就先征得他同意再用 `arch_switch { create: true }` 建，已经有就调一次 `arch_read` 切过来。',
       '提示词这一侧**不会**把兜底图库或别的项目的图读给你，也不会替它消费留言 —— 所以这一轮你看不到任何画布内容，别对上面那张图做任何操作。',
     ].join('\n')
   }
