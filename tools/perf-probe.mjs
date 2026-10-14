@@ -30,8 +30,6 @@ const dom = new JSDOM('<!doctype html><html><body><div id="app"></div></body></h
 globalThis.window = dom.window
 globalThis.document = dom.window.document
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
-globalThis.groupHueIndex = () => ({})
-globalThis.hueClassOf = () => ''
 
 const React = req('react')
 const act = React.act

@@ -351,11 +351,6 @@ function arrowMarkerUrl(shape) {
   return undefined
 }
 
-function arrowMarkerRef(arrow) {
-  var s = arrowStyleOf(arrow)
-  return arrowMarkerUrl(s.end) || ''
-}
-
 // ==================== 几何与布局 ====================
 function visualLen(s) {
   var n = 0

@@ -31,7 +31,7 @@ const eq = (name, got, want) => ok(name, got === want, { got, want });
 function mk(ids, edges, dir) {
   return {
     nodes: ids.map(function (id) {
-      return { id: id, label: id, shape: 'rect', group: null, files: ['a/' + id + '.ts'], note: 'x' + id, link: null };
+      return { id: id, label: id, shape: 'rect', files: ['a/' + id + '.ts'], note: 'x' + id, link: null };
     }),
     edges: edges.map(function (e, i) { return { id: 'e' + (i + 1), from: e[0], to: e[1] }; }),
     direction: dir || 'TD', extras: [],
@@ -342,6 +342,102 @@ console.log('\n[8] 病理输入：tools/perf-probe.mjs 的「大环」基准模�
   console.log('     大环 N=400 / E=480 自动布局耗时 = ' + ms + 'ms（改前实测 ~4200ms）');
   ok('400 节点大环的自动布局 < 300ms（局部搜索必须有工作量预算）', ms < 300, ms);
   ok('大环布局仍给出全部有限坐标', out.nodes.every((n) => isFinite(n.x) && isFinite(n.y)));
+}
+
+console.log('\n[9] 方块包围盒不许重叠：长短标签混排 + 四种方向 + 定种子随机图');
+{
+  // 层间距只按「当前层厚度」递增时，下一层在主轴上更厚（长标签）就会倒着插进这一层 ——
+  // 包围盒真的重叠。这条断言在修之前是红的（最小样本重叠 36×45 px），旧实现一直有这个洞。
+  const aabb = (api2, out) => {
+    const boxes = out.nodes.map((n) => {
+      const s = api2.nodeSize(api2.splitLabel(n.label).title, 0);
+      return { id: n.id, x: n.x, y: n.y, w: s.w, h: s.h };
+    });
+    const hits = [];
+    for (let i = 0; i < boxes.length; i++) {
+      for (let j = i + 1; j < boxes.length; j++) {
+        const A = boxes[i], B = boxes[j];
+        const ox = (A.w + B.w) / 2 - Math.abs(A.x - B.x);
+        const oy = (A.h + B.h) / 2 - Math.abs(A.y - B.y);
+        // 只判**真重叠**：恰好贴边（不超过 0.5px 取整误差）不算
+        if (ox > 0.5 && oy > 0.5) hits.push({ a: A.id, b: B.id, ox: Math.round(ox), oy: Math.round(oy) });
+      }
+    }
+    return hits;
+  };
+
+  const mixed = {
+    direction: 'LR',
+    nodes: [
+      { id: 'short', label: '短' },
+      { id: 'long', label: '这是一个非常非常非常非常非常长长长长长长长长长长长长长长的名称节点' },
+      { id: 'tiny', label: 'X' },
+      { id: 'mid', label: '中等长度的节点名字吧' },
+    ],
+    edges: [
+      { id: 'e1', from: 'short', to: 'long' },
+      { id: 'e2', from: 'long', to: 'tiny' },
+      { id: 'e3', from: 'tiny', to: 'mid' },
+      { id: 'e4', from: 'short', to: 'mid' },
+    ],
+  };
+  for (const dir of ['TD', 'BT', 'LR', 'RL']) {
+    const m = Object.assign({}, mixed, { direction: dir });
+    const hits = aabb(api, autoLayout(m));
+    ok('长短标签混排 · ' + dir + ' 一个方块都不重叠', hits.length === 0, hits.slice(0, 3));
+  }
+
+  // 定种子随机图：节点尺寸刻意随机（短标签 2 字 ~ 长标签 30 字），四种方向各跑一遍
+  let seed = 20261014;
+  const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+  const words = '很长的中文标签用来把节点撑宽这里继续加字'.split('');
+  const labelOf = (k) => {
+    const len = 1 + Math.floor(rnd() * 26);
+    let s = 'n' + k;
+    for (let i = 0; i < len; i++) s += words[Math.floor(rnd() * words.length)];
+    return s;
+  };
+  let tested = 0, bad = 0, firstBad = null;
+  for (let g = 0; g < 60; g++) {
+    const n = 5 + Math.floor(rnd() * 10);
+    const nodes = [];
+    for (let i = 0; i < n; i++) nodes.push({ id: 'v' + i, label: labelOf(i) });
+    const seen = {};
+    const edges = [];
+    const m = 4 + Math.floor(rnd() * (n * 1.6));
+    for (let i = 0; i < m; i++) {
+      const a = Math.floor(rnd() * n);
+      const b = Math.floor(rnd() * n);
+      if (a === b || seen[a + '>' + b]) continue;
+      seen[a + '>' + b] = 1;
+      edges.push(['v' + a, 'v' + b]);
+    }
+    if (edges.length < 2) continue;
+    tested++;
+    const dir = ['TD', 'BT', 'LR', 'RL'][g % 4];
+    const model = mk(nodes.map((x) => x.id), edges, dir);
+    for (let i = 0; i < nodes.length; i++) model.nodes[i].label = nodes[i].label;
+    const hits = aabb(api, autoLayout(model));
+    if (hits.length) { bad++; if (!firstBad) firstBad = { dir, edges, hits: hits.slice(0, 3), labels: nodes.map((x) => x.label) }; }
+  }
+  ok('随机尺寸图上零重叠（样本够多）', tested >= 40, tested);
+  eq('随机尺寸图上发生重叠的图数', bad, 0);
+  if (bad) console.log('     最差的一张：', JSON.stringify(firstBad));
+
+  // 负向对照：手工按老公式（只按当前层 deep 递增）复算同一条链的位置，必须重叠 ——
+  // 否则上面「零重叠」那几条可能是空转（根本没有能判出修复的输入）。
+  const chainLabels = ['短', '这一层特别特别特别特别特别特别特别特别长的名字'];
+  const chainModel = mk(['a', 'b'], [['a', 'b']], 'LR');
+  chainModel.nodes[0].label = chainLabels[0];
+  chainModel.nodes[1].label = chainLabels[1];
+  const sA = api.nodeSize(api.splitLabel(chainLabels[0]).title, 0);
+  const sB = api.nodeSize(api.splitLabel(chainLabels[1]).title, 0);
+  const naiveGap = Math.max(48, Math.round(sA.w * 0.6)); // 老公式：gap 只看当前层
+  const naiveOverlap = (sA.w + sB.w) / 2 - Math.abs(sA.w + naiveGap);
+  ok('负向对照：老公式在这条链上确实重叠（说明这条断言的判据没瞎）', naiveOverlap > 0.5, naiveOverlap);
+  const chainOut = byId(autoLayout(chainModel));
+  const fixedOverlap = (sA.w + sB.w) / 2 - Math.abs(chainOut.b.x - chainOut.a.x);
+  ok('同一条链在修后不再重叠', fixedOverlap <= 0.5, { fixedOverlap, a: chainOut.a.x, b: chainOut.b.x });
 }
 
 console.log('\n结果: ' + pass + ' 通过 / ' + fail + ' 失败\n');

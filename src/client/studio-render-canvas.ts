@@ -210,18 +210,26 @@ function studioCanvasFns(S) {
         }) : null,
         shapeEl,
         titleEl,
-        // 概念 Tag 胶囊徽章：当节点打有 tags 时，在节点上方以精致胶囊徽章呈现
-        (node.tags && node.tags.length > 0) ? React.createElement('g', {
-          key: 'tag', className: 'ac-tag-badge',
-          transform: 'translate(' + (x0 + 8) + ',' + (y0 - 9) + ')',
-        },
-          React.createElement('rect', {
-            rx: 4, width: Math.max(26, String(node.tags[0]).length * 10 + 12), height: 16,
-          }),
-          React.createElement('text', {
-            x: Math.max(13, (String(node.tags[0]).length * 10 + 12) / 2), y: 8,
-          }, '#' + node.tags[0] + (node.tags.length > 1 ? ' +' + (node.tags.length - 1) : ''))
-        ) : null,
+        // 概念 Tag 胶囊徽章：当节点打有 tags 时，在节点上方以精致胶囊徽章呈现。
+        // 挂**右侧**：竖向入线永远落在顶/底边的中线上，从前挂在左上角时胶囊横跨中线，
+        // 箭头（marker 7 × stroke 1.6 ≈ 11px 宽）整个钻进胶囊里 —— 看起来就是「连线把
+        // 胶囊穿了」。右边留 12px 保底：窄节点 + 长标签时右对齐会反过来压住中线，
+        // 取两者更靠外的那个，任意节点宽度、任意标签长度都保证胶囊不跨中线。
+        // 顺带让开了左上角的留言角标（它画在节点内侧，从前与胶囊叠了 10×7px）。
+        // 守门断言：test/ui.render.s4.mjs 第 [4u] f 节（中线到胶囊最近边缘 ≥ 12px）。
+        (node.tags && node.tags.length > 0) ? (function () {
+          var tagW = Math.max(26, String(node.tags[0]).length * 10 + 12)
+          var tagX = Math.max(x0 + gm.w - tagW, x0 + gm.w / 2 + 12)
+          return React.createElement('g', {
+            key: 'tag', className: 'ac-tag-badge',
+            transform: 'translate(' + tagX + ',' + (y0 - 9) + ')',
+          },
+            React.createElement('rect', { rx: 4, width: tagW, height: 16 }),
+            React.createElement('text', {
+              x: Math.max(13, tagW / 2), y: 8,
+            }, '#' + node.tags[0] + (node.tags.length > 1 ? ' +' + (node.tags.length - 1) : ''))
+          )
+        })() : null,
         // 下钻角标：带 @link 的节点点它跳到那张图
         node.link ? React.createElement('g', {
           key: 'jump', className: 'ac-jump',

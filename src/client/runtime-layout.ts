@@ -244,13 +244,23 @@ function layoutPositions(sizes, layers, horiz, rev, GAP, edges?: any) {
   var keys = sortedLayerKeys(layers)
   var pos = {}
   var along = 0
-  for (var i = 0; i < keys.length; i++) {
-    var bucket = layers[keys[i]] || []
+  function deepOf(bucket) {
     var deep = 0
     for (var d = 0; d < bucket.length; d++) {
       var sz = sizes[bucket[d]] || { w: 100, h: 45 }
       deep = Math.max(deep, horiz ? sz.w : sz.h)
     }
+    return deep
+  }
+  for (var i = 0; i < keys.length; i++) {
+    var bucket = layers[keys[i]] || []
+    var deep = deepOf(bucket)
+    // 层间距必须同时让出**两层各自的身位**（各半个），不能只按当前层的厚度递增：
+    // 下一层在主轴上比这一层厚得多时（长短标签混排），只按 deep 递增会让下一层
+    // 倒着插进这一层里 —— 方块包围盒真的重叠。两层一样厚时这个式子和旧写法
+    // `deep + gap` 逐位相等，所以只会「更厚的那一层被让开」，不会整体变松。
+    var nextDeep = i + 1 < keys.length ? deepOf(layers[keys[i + 1]] || []) : 0
+    var gapAlong = horiz ? Math.max(48, Math.round(deep * 0.6)) : Math.max(36, Math.round(deep * 0.8))
     var span = GAP * Math.max(0, bucket.length - 1)
     for (var s = 0; s < bucket.length; s++) {
       var sz = sizes[bucket[s]] || { w: 100, h: 45 }
@@ -264,7 +274,7 @@ function layoutPositions(sizes, layers, horiz, rev, GAP, edges?: any) {
       acc += (horiz ? sz.h : sz.w) + GAP
       pos[bucket[n]] = horiz ? { x: axis, y: cross } : { x: cross, y: axis }
     }
-    along += deep + (horiz ? Math.max(48, Math.round(deep * 0.6)) : Math.max(36, Math.round(deep * 0.8)))
+    along += deep / 2 + gapAlong + nextDeep / 2
   }
   return pos
 }

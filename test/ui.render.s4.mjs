@@ -778,6 +778,35 @@ console.log('\n[4u] 描边亮度与标签配色：描边不再用「边框」令
   // **负向对照**：没打标签的节点不许带档位（否则它就跟着别人的色走了）
   eq('无标签节点没有色相类（中性 --ac-line）', nodeHue(p1.host, '野的'), null)
   ok('无标签节点仍然渲染出来了（所以上一条不是「没找到元素」）', !!nodeEl(p1.host, '野的'))
+
+  // f. 概念标签胶囊不许被竖向入线穿过：箭头落在节点顶边**中线**上，所以胶囊必须整个
+  //    落在中线某一侧、并留出净空。从前挂在左上角（x0+8），胶囊横跨中线，约 11px 宽的
+  //    箭头整个钻进胶囊里 —— 看起来就是「连线把胶囊穿了」。
+  //    判据 = 中线到胶囊**最近边缘**的距离（正数才算不跨中线）。
+  const badgeGap = (host, title) => {
+    const el = nodeEl(host, title)
+    const shape = el && el.querySelector('rect.ac-shape')
+    const badge = el && el.querySelector('g.ac-tag-badge')
+    if (!shape || !badge) return null
+    const cx = Number(shape.getAttribute('x')) + Number(shape.getAttribute('width')) / 2
+    const mt = /translate\(\s*([-\d.]+)/.exec(badge.getAttribute('transform') || '')
+    const w = Number(badge.querySelector('rect').getAttribute('width'))
+    if (!mt) return null
+    const left = Number(mt[1])
+    return Math.max(left - cx, cx - (left + w))
+  }
+  const gapUpper = badgeGap(p1.host, '甲一')
+  ok('胶囊不跨节点中线、且留出 ≥12px 净空（箭头不会穿进胶囊）', gapUpper !== null && gapUpper >= 12, gapUpper)
+  // 负向对照：把摆法换回「左上角 x0+8」，同一条判据必须判不过 —— 否则这条断言没有牙。
+  const nodeA = nodeEl(p1.host, '甲一')
+  const shapeEl = nodeA.querySelector('rect.ac-shape')
+  const badgeEl = nodeA.querySelector('g.ac-tag-badge')
+  const sw = Number(shapeEl.getAttribute('width'))
+  const sx = Number(shapeEl.getAttribute('x'))
+  const bw = Number(badgeEl.querySelector('rect').getAttribute('width'))
+  const oldLeft = sx + 8
+  const oldGap = Math.max(oldLeft - (sx + sw / 2), (sx + sw / 2) - (oldLeft + bw))
+  ok('负向对照：旧摆法（x0+8 左对齐）在这条判据下不过', oldGap < 12, oldGap)
   await act(async () => { p1.root.unmount() })
   p1.host.remove()
 

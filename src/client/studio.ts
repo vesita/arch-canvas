@@ -394,7 +394,6 @@ function ArchStudio(props) {
       var hist = histRef.current.past.length > 0 ? histRef.current : null
       if (!view && !hist) return
       var memo = studioMemoFor(key, true)
-      memo.diagKey = diagKeyRef.current
       if (view) memo.view = view
       if (hist) memo.hist = hist
     }
