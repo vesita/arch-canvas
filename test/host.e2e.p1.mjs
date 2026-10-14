@@ -114,15 +114,13 @@ const e1 = await tool('arch_edit').execute({
     { op: 'add_edge', from: 'n2', to: 'cache', label: '命中查询' },
     { op: 'set_label', id: 'n5', label: '同步执行（改名后）' },
     { op: 'move_node', id: 'cache', x: 500, y: 300 },
-    { op: 'add_group', group: 'infra', label: '基础设施' },
-    { op: 'set_group', id: 'cache', group: 'infra' },
     { op: 'add_node', id: 'n5' },
     { op: 'add_edge', from: 'ghost', to: 'cache' },
     { op: 'remove_edge', from: 'n2', to: 'n4' },
     { op: 'set_direction', value: 'LR' },
   ],
 }, {})
-eq('生效操作数', e1.appliedCount, 8)
+eq('生效操作数', e1.appliedCount, 6)
 eq('问题数', e1.problems.length, 2)
 ok('重复 id 被拒且提示改用 set_label', e1.problems[0].indexOf('已存在') >= 0 && e1.problems[0].indexOf('set_label') >= 0, e1.problems[0])
 ok('不存在的 from 被拒', e1.problems[1].indexOf('from 节点不存在') >= 0, e1.problems[1])
@@ -132,10 +130,41 @@ ok('用户摆的 n2 坐标没被 arch_edit 冲掉', e1.mermaid.indexOf('%% @pos 
 ok('新节点带坐标', e1.mermaid.indexOf('%% @pos cache 500 300') >= 0)
 ok('改名生效', e1.mermaid.indexOf('同步执行（改名后）') >= 0)
 ok('删连线生效', e1.mermaid.indexOf('n2 --> n4') < 0)
-ok('分组写成了 subgraph', e1.mermaid.indexOf('subgraph infra') >= 0)
 const re1 = tool('arch_edit').output.render({}, e1)
 ok('arch_edit render 有内容', typeof re1[0].text === 'string' && re1[0].text.indexOf('未生效') >= 0)
 ok('arch_edit 回执说明已高亮', re1[0].text.indexOf('高亮') >= 0)
+
+console.log('【AI 增量改图：set_tags 正反两面】')
+const et1 = await tool('arch_edit').execute({
+  ops: [
+    {
+      op: 'set_tags', id: 'cache',
+      tags: ['  核心  ', '缓存', '核心', '', '标签1', '标签2', '标签3', '标签4', '标签5', '标签6', '标签7', '标签8', '标签9', '标签10', '标签11', '标签12', '标签13', '标签14', '标签15', '标签16', '标签17', '标签18', '标签19', '标签20', '标签21'],
+    },
+  ],
+}, {})
+eq('set_tags 成功应用', et1.appliedCount, 1)
+eq('set_tags 无错误', et1.problems.length, 0)
+const cacheNode = (await call('doc:get')).model.nodes.find((n) => n.id === 'cache')
+ok('set_tags trim 生效', cacheNode.tags.indexOf('核心') >= 0 && cacheNode.tags.indexOf('  核心  ') < 0)
+ok('set_tags 去空生效', cacheNode.tags.indexOf('') < 0)
+ok('set_tags 去重生效', cacheNode.tags.filter((t) => t === '核心').length === 1)
+ok('set_tags 上限 20 生效', cacheNode.tags.length === 20)
+ok('set_tags 写出 %% @tags 注释', et1.mermaid.indexOf('%% @tags cache') >= 0)
+
+const etBad1 = await tool('arch_edit').execute({ ops: [{ op: 'set_tags', id: 'cache', tags: 'not-array' }] }, {})
+eq('tags 非数组被拒', etBad1.appliedCount, 0)
+ok('错误信息提示 tags 必须是数组', etBad1.problems[0].indexOf('tags 必须是数组') >= 0)
+
+const etBad2 = await tool('arch_edit').execute({ ops: [{ op: 'set_tags', id: 'cache', tags: ['合法', 123] }] }, {})
+eq('tags 元素非字符串被拒', etBad2.appliedCount, 0)
+ok('错误信息提示元素必须是字符串', etBad2.problems[0].indexOf('字符串') >= 0)
+
+const etClear = await tool('arch_edit').execute({ ops: [{ op: 'set_tags', id: 'cache', tags: [] }] }, {})
+eq('tags 清空成功', etClear.appliedCount, 1)
+const cacheCleared = (await call('doc:get')).model.nodes.find((n) => n.id === 'cache')
+eq('tags 已被清空', cacheCleared.tags.length, 0)
+ok('mermaid 中无 tags 注释', etClear.mermaid.indexOf('%% @tags cache') < 0)
 
 console.log('【改动来源：界面靠它高亮 AI 刚动过的地方】')
 ok('arch_edit 后 lastChange.by = ai', e1.lastChange && e1.lastChange.by === 'ai', e1.lastChange)

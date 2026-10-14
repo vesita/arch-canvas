@@ -369,36 +369,6 @@ console.log('【P1 emoji id：宿主落盘后真 mermaid.parse 必须通过】')
   ok('负向对照：emoji 原样当 id 确实被真 Mermaid 拒收', !bad.ok, bad)
 }
 
-console.log('【P1 重复组 id：一次 move_node 后成员行与 %% @pos 各只出现一次】')
-{
-  // 事故形态：模型里有两个同 id 的组时一致（重解析还是会合并），roundTripDiff 判不出 →
-  // 零警告；加载路径（openPath → adopt(parseMermaid(text))）从前不做组去重，
-  // serializeDoc 每个组各写一遍成员行 / `%% @pos` / `%% @link` / `%% @file`。
-  const dupFile = TEST_DATA_DIR + '/dup-group-probe.mmd'
-  files.set(dupFile, [
-    'flowchart TD',
-    '  subgraph g1["A 组"]',
-    '    n1["一"]',
-    '  end',
-    '  subgraph g1["B 组"]',
-    '    n2["二"]',
-    '  end',
-  ].join('\n') + '\n')
-  const opened = await call('doc:openPath', { path: dupFile })
-  ok('打开时重复的组 id 只留一个（保留第一次的组名）',
-    opened.model.groups.length === 1 && opened.model.groups[0].label === 'A 组', opened.model.groups)
-  ok('两个成员都还在、都挂在这个组上',
-    opened.model.nodes.length === 2 && opened.model.nodes.every((n) => n.group === 'g1'), opened.model.nodes)
-  const mv = await tool('arch_edit').execute({ ops: [{ op: 'move_node', id: 'n1', x: 1, y: 2 }] }, {})
-  ok('重复组文件上 move_node 成功', mv && mv.ok !== false, mv && mv.problems)
-  const body = files.get(dupFile)
-  ok('落盘后 subgraph 只有一块', body.split('\n').filter((l) => l.indexOf('subgraph ') >= 0).length === 1, body)
-  ok('落盘后 n1 的成员行只有一次', body.split('\n').filter((l) => l.indexOf('n1[') >= 0).length === 1, body)
-  ok('落盘后 n2 的成员行只有一次', body.split('\n').filter((l) => l.indexOf('n2[') >= 0).length === 1, body)
-  ok('落盘后 @pos n1 只有一次', body.split('\n').filter((l) => l.indexOf('@pos n1') >= 0).length === 1, body)
-  ok('落盘后产物真 Mermaid 合法', (await realAccepts(body)).ok, { err: (await realAccepts(body)).err, body })
-}
-
 console.log('【P1 归一撞名：doc:set 送进来的两个写法也必须都活下来】')
 {
   // 界面/模型边界（normalizeModel）从前是 `if (seen[id]) continue` —— 静默丢掉一个用户写下的节点。

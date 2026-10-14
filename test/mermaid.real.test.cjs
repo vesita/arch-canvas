@@ -62,15 +62,6 @@ const {
         const r = await accepts(serializeDoc(doc));
         check('shape=' + shape + ' 空 label 合法（退化成 id）', r.ok, { err: r.err, text: serializeDoc(doc) });
       }
-      // 空组 label：`subgraph g1[""]` 是非法 Mermaid
-      const blankGroup = {
-        direction: 'TD', summary: '', edges: [], extras: [], groups: [{ id: 'g1', label: '' }], nodes: [],
-      };
-      check('空组 label 的产物合法', (await accepts(serializeDoc(blankGroup))).ok, serializeDoc(blankGroup));
-      const spaceGroup = {
-        direction: 'TD', summary: '', edges: [], extras: [], groups: [{ id: 'g1', label: ' ' }], nodes: [],
-      };
-      check('纯空白组 label 的产物合法（退化成组 id）', (await accepts(serializeDoc(spaceGroup))).ok, serializeDoc(spaceGroup));
 
       // 标签里带 | 的连线 + 各种箭头（含 Mermaid 11 的圆头 / 交叉端点）
       const ARROW_SAMPLES = [
@@ -288,7 +279,6 @@ const {
       const d = parseMermaid(text);
       check('组合语料：关键字 id 归一 + 子图内 direction 保留 + extras 只有那一条',
         d.nodes.some(n => n.id === 'n_link') && d.nodes.some(n => n.id === 'n_click') &&
-        d.groups.length === 1 && d.groups[0].id !== 'end' &&
         d.extras.length === 1 && d.extras[0] === 'direction LR', d);
       // 输入本身含关键字 id（`end` 当组 id），真 Mermaid 是拒收的 —— 这条验的是**产物**合法。
       const out = serializeDoc(d);
@@ -476,46 +466,6 @@ const {
       };
       check('模型里有 NaN 坐标时往返检查会喊（从前它是安静的）',
         roundTripDiff(nanDoc).indexOf('nodes') >= 0, roundTripDiff(nanDoc));
-    }
-
-    console.log('\n[33] 重复组 id：serializeDoc 只写一块（成员行与 %% @pos 各一次）');
-    {
-      // 加载路径（openPath → adopt(parseMermaid(text))）从前不做组去重，模型里留着两个同 id 的组；
-      // serializeDoc 每个组各写一遍成员行与 @pos/@link/@file，而往返检查因为「重解析还是两个组」
-      // 判不出异常 —— 零警告地写出重复内容。修法：解析与序列化两处都保留第一条（与 normalizeModel 同口径）。
-      const dupText = ['flowchart TD', '  subgraph g1["A 组"]', '    n1["一"]', '  end', '  subgraph g1["B 组"]', '    n2["二"]', '  end'].join('\n');
-      const dp = parseMermaid(dupText);
-      check('解析：重复的组 id 只留第一个组（label 取第一次的）',
-        dp.groups.length === 1 && dp.groups[0].id === 'g1' && dp.groups[0].label === 'A 组', dp.groups);
-      check('解析：重复组要出声', dp.warnings.some(w => w.indexOf('重复的组') >= 0), dp.warnings);
-      check('解析：两个成员都还在、都挂在这个组上',
-        dp.nodes.length === 2 && dp.nodes.every(n => n.group === 'g1'), dp.nodes);
-      check('解析：往返稳定 + 检查为空',
-        serializeDoc(parseMermaid(serializeDoc(dp))) === serializeDoc(dp) && roundTripDiff(dp).length === 0,
-        { out: serializeDoc(dp), diff: roundTripDiff(dp) });
-      const dupOut = serializeDoc(dp);
-      check('解析产物：subgraph / 成员行 / @pos 各只出现一次',
-        dupOut.split('\n').filter(l => l.indexOf('subgraph g1') >= 0).length === 1 &&
-        dupOut.split('\n').filter(l => l.indexOf('n1[') >= 0).length === 1 &&
-        dupOut.split('\n').filter(l => l.indexOf('n2[') >= 0).length === 1,
-        dupOut);
-      // 手搓一份「模型里真有两个同 id 的组」（界面/老模型可能这么发）：serializeDoc 也只写一块
-      const handDoc = {
-        direction: 'TD', summary: '', extras: [], edges: [],
-        groups: [{ id: 'g1', label: 'A 组' }, { id: 'g1', label: 'B 组' }],
-        nodes: [
-          { id: 'n1', label: '一', shape: 'rect', group: 'g1', x: 1, y: 2, link: null, files: ['src/a.ts'] },
-          { id: 'n2', label: '二', shape: 'rect', group: 'g1', x: 3, y: 4, link: null, files: [] },
-        ],
-      };
-      const handOut = serializeDoc(handDoc);
-      check('手搓重复组：subgraph 只写一块', handOut.split('\n').filter(l => l.indexOf('subgraph ') >= 0).length === 1, handOut);
-      check('手搓重复组：成员行各一次', handOut.split('\n').filter(l => l.indexOf('n1[') >= 0).length === 1 && handOut.split('\n').filter(l => l.indexOf('n2[') >= 0).length === 1, handOut);
-      check('手搓重复组：%% @pos / %% @file 各一次',
-        handOut.split('\n').filter(l => l.indexOf('@pos n1') >= 0).length === 1 &&
-        handOut.split('\n').filter(l => l.indexOf('@pos n2') >= 0).length === 1 &&
-        handOut.split('\n').filter(l => l.indexOf('@file n1') >= 0).length === 1, handOut);
-      check('手搓重复组：产物真 Mermaid 合法', (await accepts(handOut)).ok, handOut);
     }
 
     console.log('\n[34] 指令闸门与文件定点：`link中` 不许每一轮多出一行');

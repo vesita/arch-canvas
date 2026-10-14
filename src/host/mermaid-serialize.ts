@@ -1,42 +1,7 @@
 function serializeDoc(doc) {
   var nodes = doc.nodes || [];
-  var groups = doc.groups || [];
   var edges = doc.edges || [];
-
-  // 节点输出顺序：分组块优先、组内保持原序，剩下的按原序。
-  // @pos / @link 注释与图体共用这个顺序 —— 两处不一致的话，同一份文件每往返一次就重排一次。
-  var blocks = [];
-  var grouped = {};
-  // 同一个组 id 只写一块。模型里有两个同 id 的组时（老文件 / 界面传来的模型），
-  // 从前每个组各写一遍成员行与 `%% @pos` / `%% @link` / `%% @file`，而往返检查因为
-  // 「重解析还是两个组」判不出异常 —— 零警告地写出重复内容。保留第一条，与
-  // normalizeModel / parseMermaid 同口径。节点归属不受影响：两个组的成员都进第一块。
-  var seenGroup = {};
-  for (var g = 0; g < groups.length; g++) {
-    var grp = groups[g];
-    var gkey = cleanId(grp.id);
-    if (seenGroup[gkey]) continue;
-    seenGroup[gkey] = true;
-    var members = [];
-    for (var m = 0; m < nodes.length; m++) {
-      if (nodes[m].group === grp.id) { members.push(nodes[m]); grouped[nodes[m].id] = true; }
-    }
-    // 空组也要写出去。从前这里是 `if (members.length > 0)`，于是「删掉一个组的最后一个成员」
-    // 或「把最后一个成员移出组」之后，doc.groups 里留着的那个组**写不进文件** ——
-    // 下次读回来它就静默消失了（组名、标签全没）。解析器本来就认空组（它从 subgraph 行建组），
-    // 是序列化器单方面不写：两边不对称，就是一条静默丢数据的路。
-    // 这一条不是我读出来的，是写盘前的往返检查 roundTripDetail() 当场报出来的。
-    blocks.push({ group: grp, members: members });
-  }
-  var loose = [];
-  for (var k = 0; k < nodes.length; k++) {
-    if (!grouped[nodes[k].id]) loose.push(nodes[k]);
-  }
-  var seq = [];
-  for (var b = 0; b < blocks.length; b++) {
-    for (var bi = 0; bi < blocks[b].members.length; bi++) seq.push(blocks[b].members[bi]);
-  }
-  for (var l = 0; l < loose.length; l++) seq.push(loose[l]);
+  var seq = nodes;
 
   var out = [];
   // 头部这几行是**写给人的格式说明**，不是数据：一律用 `%%!` 前缀，解析器见到就整行跳过。
@@ -77,17 +42,7 @@ function serializeDoc(doc) {
     }
   }
   out.push('flowchart ' + (doc.direction || 'TD'));
-  for (var bb = 0; bb < blocks.length; bb++) {
-    var gid = cleanId(blocks[bb].group.id);
-    var glabel = blocks[bb].group.label;
-    if (glabel == null || String(glabel).trim() === '') glabel = gid;
-    out.push('  subgraph ' + gid + '[' + q(glabel) + ']');
-    for (var bm = 0; bm < blocks[bb].members.length; bm++) {
-      out.push('    ' + nodeText(blocks[bb].members[bm]));
-    }
-    out.push('  end');
-  }
-  for (var lo = 0; lo < loose.length; lo++) out.push('  ' + nodeText(loose[lo]));
+  for (var no = 0; no < nodes.length; no++) out.push('  ' + nodeText(nodes[no]));
   for (var e = 0; e < edges.length; e++) {
     var edge = edges[e];
     // 连接符与两端 id 同样过闸：拿了模型里没有的箭头（比如半截的 `o--`，真 Mermaid 判它非法）
@@ -116,12 +71,12 @@ var RUNTIME_ONLY_FIELDS = [
   // 锚点保鲜报告（见 drift.ts）：同样是派生数据，一次落盘都不进文件。
   // 漏一个的后果不是「多写一行」——是**每次保存都误报** serialize.not-idempotent。
   'drift',
+  'groups',
 ]
 
-// 节点上这两个字段**不由这份文本承载**：留言存在旁路表 notes.json 里（见 notes.ts），
-// 按节点 id 关联。往返检查必须把它们排除，否则每一张有留言的图都会误报 ——
-// 这正是「会被持久化」和「会写进这份文本」的区别，也是这条检查最容易踩空的地方。
-var OUT_OF_BAND_NODE_FIELDS = ['note', 'noteDone']
+// 节点上这些字段**不由这份文本承载**：留言存在旁路表 notes.json 里（见 notes.ts），
+// group 概念已彻底移除不落盘。往返检查必须把它们排除，否则会误报。
+var OUT_OF_BAND_NODE_FIELDS = ['note', 'noteDone', 'group']
 
 // 边的 id 也是派生的：`'e' + (edges.length + 1)`，每次解析都会重新编号，而且**不进文件**
 // （文件里只写 `from --> to`），代码里寻址一律按 from/to。所以它不是状态，别拿去比。
@@ -219,19 +174,6 @@ function roundTripNorm(m) {
     })
     out.edges.sort(function (a: any, b: any) { return edgeSortKey(a) < edgeSortKey(b) ? -1 : edgeSortKey(a) > edgeSortKey(b) ? 1 : 0 })
   }
-  if (Array.isArray(out.groups)) {
-    out.groups = out.groups.map(function (g: any) {
-      var c: any = {}
-      for (var k4 in g) {
-        if (g[k4] === undefined) continue
-        c[k4] = g[k4]
-      }
-      // 与 serializeDoc / parseMermaid 同一个口径：空 / 纯空白的组 label 落盘就是组 id。
-      if (c.label == null || String(c.label).trim() === '') c.label = c.id
-      return c
-    })
-    out.groups.sort(function (a: any, b: any) { return String(a && a.id) < String(b && b.id) ? -1 : String(a && a.id) > String(b && b.id) ? 1 : 0 })
-  }
   // 走一遍深拷贝，抹掉原型/引用带来的差异（值本身不变）。**不能用 JSON 往返** ——
   // 它把 NaN / ±Infinity 写成 null，stableJson 那条非有限哨兵就永远没机会说话。
   return plainClone(out)
@@ -250,7 +192,7 @@ function roundTripFieldDiff(a, b) {
 
 /**
  * 两个数组里「哪些元素对不上、差在哪个字段」。
- * 报出来的是 `id:字段/字段`，例如 `cache:group` —— 日志里一眼能看出是哪一条数据丢了什么。
+ * 报出来的是 `id:字段/字段`，例如 `cache:shape` —— 日志里一眼能看出是哪一条数据丢了什么。
  */
 function roundTripBadIds(mine, theirs, keyOf) {
   var a = Array.isArray(mine) ? mine : []
@@ -305,9 +247,6 @@ function roundTripDetail(doc) {
   }
   if (diff.indexOf('edges') >= 0) {
     detail.edges = roundTripBadIds(mine.edges, theirs.edges, function (e, i) { return e && e.from != null ? e.from + '->' + e.to : '#' + i })
-  }
-  if (diff.indexOf('groups') >= 0) {
-    detail.groups = roundTripBadIds(mine.groups, theirs.groups, function (g, i) { return g && g.id != null ? g.id : '#' + i })
   }
   return { fields: diff, detail: detail }
 }

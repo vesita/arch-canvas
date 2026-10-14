@@ -76,9 +76,7 @@ console.log('【F. op 传错类型不再静默清空字段】')
   const opsFile = dirOps + '/.arch-canvas/architecture.mmd'
   files.set(opsFile, [
     'flowchart TD',
-    '  subgraph g1["分组一"]',
-    '    f1["甲"]',
-    '  end',
+    '  f1["甲"]',
     '  f2["乙"]',
     '  f1 --> f2',
     '%% @pos f1 10 20',
@@ -88,8 +86,8 @@ console.log('【F. op 传错类型不再静默清空字段】')
   ].join('\n'))
   const docOps0 = await call('doc:get', { where: dirOps })
   const opsF1 = docOps0.model.nodes.find((n) => n.id === 'f1')
-  ok('F：夹具就位（f1 带分组 / 坐标 / 下钻 / 锚点）',
-    !!opsF1 && opsF1.group === 'g1' && opsF1.x === 10 && opsF1.y === 20 && opsF1.link === '别的图' &&
+  ok('F：夹具就位（f1 带坐标 / 下钻 / 锚点）',
+    !!opsF1 && opsF1.x === 10 && opsF1.y === 20 && opsF1.link === '别的图' &&
     JSON.stringify(opsF1.files) === JSON.stringify(['src/a.ts']),
     opsF1)
 
@@ -112,12 +110,8 @@ console.log('【F. op 传错类型不再静默清空字段】')
   ok('F：原有 %% @file 仍在文件里（没有静默清空锚点）',
     files.get(opsFile).indexOf('%% @file f1 "src/a.ts"') >= 0, files.get(opsFile))
 
-  await batch('set_group group:99', { op: 'set_group', id: 'f1', group: 99 }, 'group')
-  {
-    const afterG = await call('doc:get', { where: dirOps })
-    eq('F：group 未变（没有被「移出分组」）', afterG.model.nodes.find((n) => n.id === 'f1').group, 'g1')
-    ok('F：文件里 f1 仍在 subgraph g1 里', files.get(opsFile).indexOf('subgraph g1') >= 0, files.get(opsFile))
-  }
+  await batch('set_tags tags:42', { op: 'set_tags', id: 'f1', tags: 42 }, 'tags')
+  await batch('set_tags tags:[42]', { op: 'set_tags', id: 'f1', tags: [42] }, '字符串')
 
   await batch('move_node x:"abc"', { op: 'move_node', id: 'f1', x: 'abc' }, '有限数字')
   ok('F：坐标没被改掉（%% @pos 仍在文件里）',
@@ -141,9 +135,6 @@ console.log('【F. op 传错类型不再静默清空字段】')
     eq('F：原来的那条边还在', afterE.model.edges.length, 1)
     eq('F：方向没被反转', afterE.model.edges[0].from + '->' + afterE.model.edges[0].to, 'f1->f2')
   }
-
-  await batch('remove_group 不存在', { op: 'remove_group', group: 'nope' }, '找不到分组')
-  ok('F：分组 g1 还在', (await call('doc:get', { where: dirOps })).model.groups.some((g) => g.id === 'g1'))
 
   await batch('set_edge_label 没有这条边', { op: 'set_edge_label', from: 'f2', to: 'f1' }, '没有连线')
   {
@@ -169,10 +160,6 @@ console.log('【F. op 传错类型不再静默清空字段】')
   eq('F：负向对照 set_files 传数组 → 无 problems', fOkFiles.problems.length, 0)
   ok('F：锚点真的换了', files.get(opsFile).indexOf('%% @file f1 "src/b.ts"') >= 0, files.get(opsFile))
 
-  const fOkGroup = await tool('arch_edit').execute({ ops: [{ op: 'set_group', id: 'f1', group: 'g2' }] }, {})
-  eq('F：负向对照 set_group 传字符串 → 无 problems', fOkGroup.problems.length, 0)
-  eq('F：分组真的换了', (await call('doc:get', { where: dirOps })).model.nodes.find((n) => n.id === 'f1').group, 'g2')
-
   const fOkMove = await tool('arch_edit').execute({ ops: [{ op: 'move_node', id: 'f1', x: 111, y: 222 }] }, {})
   eq('F：负向对照 move_node 传有限数字 → 无 problems', fOkMove.problems.length, 0)
   ok('F：坐标真的改了', files.get(opsFile).indexOf('%% @pos f1 111 222') >= 0, files.get(opsFile))
@@ -184,10 +171,6 @@ console.log('【F. op 传错类型不再静默清空字段】')
   const fOkDel = await tool('arch_edit').execute({ ops: [{ op: 'remove_edge', from: 'f1', to: 'f2' }] }, {})
   eq('F：负向对照 remove_edge 对已有的边 → 无 problems', fOkDel.problems.length, 0)
   eq('F：连线真的删了', (await call('doc:get', { where: dirOps })).model.edges.length, 0)
-
-  const fOkRg = await tool('arch_edit').execute({ ops: [{ op: 'remove_group', group: 'g1' }] }, {})
-  eq('F：负向对照 remove_group 对已有的组 → 无 problems', fOkRg.problems.length, 0)
-  ok('F：分组真的删了', !(await call('doc:get', { where: dirOps })).model.groups.some((g) => g.id === 'g1'))
 
   const fOkAdd = await tool('arch_edit').execute({ ops: [{ op: 'add_node', id: 'zzz', shape: 'hex' }] }, {})
   eq('F：负向对照 add_node 传合法形状 → 无 problems', fOkAdd.problems.length, 0)
@@ -342,28 +325,19 @@ console.log('【K. 落盘失败那条警告在成功之后要消失】')
 // Mermaid 的 hexagon 形状是 `id{{"标签"}}`，而 DSH 的 systemPrompt.context 会把 `{{...}}` 当变量引用，
 // 名字不匹配 `/^[a-z][a-z0-9_]*$/` 就直接抛错 —— 整条提示词注入失败、插件当场崩
 // （2026-09-20 实测：图上加了一个 hex 节点，会话就起不来了）。promptText 的最后一行的拆解就是那次事故的修复。
-console.log('【宿主审计 A：add_node 带组必须把组也建出来，否则往返丢组】')
-// normalizeModel / set_group / add_group 三处都会补建缺失的组，唯独 add_node 漏了：
-// serializeDoc 只为 doc.groups 里的组写 subgraph，落到 loose 的节点下次解析回来 group 就是 null。
+console.log('【宿主审计 A：add_node】')
 const dirAud = '/tmp/test-arch-audit'
 agentMap.set('sess-aud', { session: { id: 'sess-aud', cwd: dirAud } })
 const audOpen = await call('doc:open', { key: 'ag', create: true, where: dirAud, session: 'sess-aud' })
 ok('审计用例：新建一张图', audOpen && audOpen.ok !== false, audOpen && audOpen.error)
 const agAdd = await tool('arch_edit').execute({
   ops: [
-    { op: 'add_node', id: 'gn1', label: '带组节点', group: '新组 名' },
+    { op: 'add_node', id: 'gn1', label: '节点一' },
     { op: 'add_node', id: 'gn2', label: '散节点' },
   ],
 }, {})
 ok('add_node 生效', agAdd && agAdd.appliedCount === 2, agAdd && agAdd.appliedCount)
-ok('带组的节点立刻写成了 subgraph（组被建出来了）',
-  String(agAdd.mermaid).indexOf('subgraph') >= 0, agAdd.mermaid)
 const audBack = await call('doc:open', { key: 'ag', where: dirAud, session: 'sess-aud' })
-const gn1 = audBack && audBack.model && audBack.model.nodes.find((n) => n.id === 'gn1')
-// 这一条是**往返**断言：从磁盘重新读回来，组名必须还在（从前这里是 null —— 静默丢）
-eq('从磁盘读回来组名还在（往返不丢）', gn1 && gn1.group, '新组_名')
-ok('组也回到了 groups 里', !!(audBack.model.groups || []).find((g) => g.id === '新组_名'),
-  audBack.model.groups)
 
 console.log('【宿主审计 B：改名必须把留言表里的那一格一起搬过去】')
 // 留言表以**图文件名**为键；doc:rename 只搬了 .mmd 正文和墓碑，于是新名字那张图一条留言都没有

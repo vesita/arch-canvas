@@ -70,7 +70,7 @@ var libraryRev = 0            // 图库清单修订号：界面靠它发现「�
 function newDocState() {
   return {
     name: DEFAULT_DIAGRAM,
-    nodes: [], edges: [], groups: [], extras: [],
+    nodes: [], edges: [], extras: [],
     direction: 'TD', revision: 0, updatedBy: 'init', updatedAt: Date.now(),
     file: '', warnings: [], notes: [], tombstoned: false,
     // 整张图的一句话总结（`%% @summary`）：图级字段，不挂节点。进提示词的头部，
@@ -115,7 +115,6 @@ function bump(by) {
 function adopt(parsed) {
   doc.nodes = parsed.nodes
   doc.edges = parsed.edges
-  doc.groups = parsed.groups
   doc.extras = parsed.extras || []
   doc.direction = parsed.direction || 'TD'
   // 一句话总结是图级的，解析器直接给出来；解析结果里没有就归零（删掉那一行 = 真的删掉）。
@@ -132,12 +131,12 @@ function adopt(parsed) {
 /**
  * 空文档的解析骨架（供 adopt 消费）。
  * 它表达「换内容不换身份」：保留当前全局 doc 对象的身份标识与元信息（file/name/revision/external 等），
- * 仅将其图内容结构（nodes/edges/groups/extras/direction/warnings）重置为空白状态。
+ * 仅将其图内容结构（nodes/edges/extras/direction/warnings）重置为空白状态。
  * 为避免字段默认值漂移，基础结构从 newDocState() 派生。
  */
 function emptyDoc() {
   var s = newDocState()
-  return { nodes: s.nodes, edges: s.edges, groups: s.groups, extras: s.extras, direction: s.direction, warnings: s.warnings }
+  return { nodes: s.nodes, edges: s.edges, extras: s.extras, direction: s.direction, warnings: s.warnings }
 }
 
 function seedDoc() {

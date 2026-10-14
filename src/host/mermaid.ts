@@ -428,20 +428,19 @@ function readRefAnnotations(line, ref, warn) {
   return k;
 }
 
-function ensureNode(doc, byId, id, label, shape, group, fallbackLabel) {
+function ensureNode(doc, byId, id, label, shape, fallbackLabel) {
   var node = byId[id];
   if (!node) {
     // 裸声明（`id --> B`，没有形状也没有标签）：标题取**用户写的原始写法**，不是归一后的 id。
     // `call --> B` 里 Mermaid 画的就是 `call`，我们不该把它改名成 `n_call` 摆到画布上 ——
     // id 必须归一（否则写出的是真 Mermaid 拒收的文件），标题不必跟着变。
     var title = (fallbackLabel === undefined || fallbackLabel === null || fallbackLabel === '') ? id : fallbackLabel;
-    node = { id: id, label: title, shape: 'rect', group: null, x: null, y: null, link: null, note: '', noteDone: false, files: [] };
+    node = { id: id, label: title, shape: 'rect', x: null, y: null, link: null, note: '', noteDone: false, files: [] };
     byId[id] = node;
     doc.nodes.push(node);
   }
   if (label !== null && label !== undefined && label !== '') node.label = label;
   if (shape) node.shape = shape;
-  if (group && !node.group) node.group = group;
   return node;
 }
 
@@ -460,19 +459,19 @@ function addEdge(doc, from, to, arrow, label) {
   return edge;
 }
 
-function scanStatements(line, doc, byId, group, warn, idOwners) {
+function scanStatements(line, doc, byId, warn, idOwners) {
   // 这一行中途解析失败时，已经塞进 doc 的节点/边要回滚 ——
   // 否则「原样保留到 extras」的那份文本会和半截模型同时存在，序列化出去就是重复内容。
   var nodesBefore = doc.nodes.length;
   var edgesBefore = doc.edges.length;
-  // 光按长度截断只回滚**本行新增**的节点：ensureNode 对**已存在**节点的 label / shape / group
+  // 光按长度截断只回滚**本行新增**的节点：ensureNode 对**已存在**节点的 label / shape
   // 是原地改的，坏行（`A["新标签"] ?!`）会把新标签留在干净节点行上 —— 于是文件里
   // 同时有 `A["新标签"]` 和 `A["新标签"] ?!`，而往返检查因为定点而完全安静。
   // 所以先把这些字段记一份，失败时逐个恢复。
   var snapshot = {};
   for (var si = 0; si < doc.nodes.length; si++) {
     var sn = doc.nodes[si];
-    snapshot[sn.id] = { label: sn.label, shape: sn.shape, group: sn.group };
+    snapshot[sn.id] = { label: sn.label, shape: sn.shape };
   }
 
   function fail() {
@@ -484,7 +483,6 @@ function scanStatements(line, doc, byId, group, warn, idOwners) {
       if (!ex) continue;
       ex.label = snapshot[sk].label;
       ex.shape = snapshot[sk].shape;
-      ex.group = snapshot[sk].group;
     }
     return false;
   }
@@ -569,7 +567,7 @@ function scanStatements(line, doc, byId, group, warn, idOwners) {
     if (ref.id !== ref.raw && (MERMAID_KEYWORDS.test(ref.raw) || SURROGATE_RE.test(ref.raw))) {
       warn('节点 id ' + ref.raw + ' 是 Mermaid 保留字或含 emoji（真 Mermaid 会拒收），已归一成 ' + ref.id);
     }
-    var node = ensureNode(doc, byId, ref.id, ref.label, ref.shape, group, ref.raw);
+    var node = ensureNode(doc, byId, ref.id, ref.label, ref.shape, ref.raw);
     if (pending) {
       if (groupIds.length > 0 && !joined) {
         // `A --> B C` 这种写法 Mermaid 自己也不认：不凭空造一条 A --> C，
@@ -593,9 +591,8 @@ function scanStatements(line, doc, byId, group, warn, idOwners) {
 }
 
 function parseMermaid(text) {
-  var doc = { nodes: [], edges: [], groups: [], extras: [], direction: 'TD', warnings: [], summary: '', legacyNotes: {} };
+  var doc = { nodes: [], edges: [], extras: [], direction: 'TD', warnings: [], summary: '', legacyNotes: {} };
   var byId = {};
-  var stack = [];
   // 坐标与下钻先存着，等图体读完再挂到真有的节点上。
   // 读到注释就 ensureNode 的后果是：节点删了、注释忘了删，节点会凭注释复活写回图里。
   // 这几个表的 key 是**用户原文里的 id**（`\S+`），可能是 `__proto__` 这种名字 ——
@@ -611,10 +608,6 @@ function parseMermaid(text) {
   // `归一 id → 原始写法`：归一撞名时（`a-b` / `a.b` / `a/b` 都到 `a_b`）靠它给后来者
   // 加稳定后缀，两条都活下来（详见 claimNodeId）。
   var idOwners = Object.create(null);
-  // 组 id 去重（保留第一条，与 normalizeModel 同口径）：同一个 id 的第二个 subgraph
-  // 从前会整块写第二遍 —— 成员行、`%% @pos` / `%% @link` / `%% @file` 全写两遍，
-  // 而往返检查因为「重解析还是两个组」判不出异常（零警告）。
-  var groupSeen = {};
   function warn(message) {
     if (doc.warnings.length < 50) doc.warnings.push(message);
   }
@@ -755,28 +748,10 @@ function parseMermaid(text) {
       // 放它走节点解析，`subgraph` 才会经 cleanId 归一成 `n_subgraph`、B 与这条边才留得住。
       var badDecl = !gref ? (rest !== '' && /^[\[\(\{>]/.test(rest)) : matchArrowAt(rest, 0) !== null;
       if (!badDecl) {
-        var gid;
-        var glabel;
-        if (gref && gref.label !== null) { gid = gref.id; glabel = gref.label; }
-        else if (gref) { gid = gref.id; glabel = rest; }
-        else { gid = 'g' + (doc.groups.length + 1); glabel = rest; }
-        // 空 / 纯空白的组 label 归一到组 id：`subgraph g1[""]` 是非法 Mermaid，
-        // 而 `subgraph g1[" "]` 回读会被 normalizeModel / 序列化两侧来回拉扯（每次保存都报 roundTripDiff）。
-        // 「没有名字的组」在这一处定义 = 组 id，读写共用。
-        if (glabel == null || String(glabel).trim() === '') glabel = gid;
-        // 重复的组 id 保留第一条（与 normalizeModel 同口径）。`stack` 照样 push —— 不 push 的话
-        // `end` 的配对会错位，后面所有节点都会被挂到错误的组上。
-        if (!groupSeen[gid]) {
-          groupSeen[gid] = true;
-          doc.groups.push({ id: gid, label: glabel });
-        } else {
-          warn('重复的组 id ' + gid + '：第二处 subgraph 已并入第一处（保留第一次的组名）');
-        }
-        stack.push(gid);
         continue;
       }
     }
-    if (line === 'end') { stack.pop(); continue; }
+    if (line === 'end') { continue; }
     // 指令行（样式 / 类 / 点击跳转）。这几个关键字里 `style` / `class` / `classDef` / `linkStyle`
     // 真 Mermaid 根本不允许当 id；`link` / `click` / `direction` 允许 —— 但只在
     // `link["L"]` / `link --> B` / `direction LR` 这种形状下（前者是节点，后者是指令）。
@@ -790,8 +765,7 @@ function parseMermaid(text) {
     if (DIRECTION_RE.test(line)) {
       if (!keywordIsNode(line)) { doc.extras.push(line); continue; }
     }
-    var group = stack.length > 0 ? stack[stack.length - 1] : null;
-    if (!scanStatements(line, doc, byId, group, warn, idOwners)) {
+    if (!scanStatements(line, doc, byId, warn, idOwners)) {
       doc.extras.push(line);
       warn('这行没能解析成节点或连线，已按原文原样保留：' + line);
     }
@@ -825,7 +799,7 @@ function parseMermaid(text) {
   for (var i = 0; i < doc.nodes.length; i++) {
     var nd = doc.nodes[i];
     var nodeObj: any = {
-      id: nd.id, label: nd.label, shape: nd.shape, group: nd.group || null, x: nd.x, y: nd.y,
+      id: nd.id, label: nd.label, shape: nd.shape, x: nd.x, y: nd.y,
       link: nd.link || null, note: nd.note || '', noteDone: nd.noteDone === true,
       files: (nd.files || []).slice(),
     };

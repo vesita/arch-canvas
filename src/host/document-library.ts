@@ -304,7 +304,7 @@ async function loadInto(name, create, target, policy?) {
     lastDocLoadKey = loadKey
     logEvent('info', 'doc.load', {
       file: doc.file, diagram: doc.name, scope: target.scope,
-      nodes: doc.nodes.length, edges: doc.edges.length, groups: doc.groups.length,
+      nodes: doc.nodes.length, edges: doc.edges.length,
       tombstoned: doc.tombstoned, warnings: doc.warnings.slice(0, 10),
     })
   }

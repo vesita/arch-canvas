@@ -416,7 +416,6 @@ function summaryOf(): Record<string, any> {
     tombstoned: doc.tombstoned,
     nodeCount: doc.nodes.length,
     edgeCount: doc.edges.length,
-    groupCount: doc.groups.length,
     // 整张图的一句话总结：界面拿它作图库清单的副标题，提示词拿它当「这张图讲的是什么」那一行。
     summary: doc.summary,
     libraryRev: libraryRev,

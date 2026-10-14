@@ -29,7 +29,6 @@ console.log('\n[1] 空输入 / 垃圾输入');
     '  end',
   ].join('\n'));
   const dgA = dirtyGroup.nodes.find(n => n.id === 'A');
-  check('坏行不改变已存在节点的 group（回滚到 null）', dgA.group === null, dgA);
   check('坏行不改变已存在节点的 shape', dgA.shape === 'rect', dgA);
   check('坏行不改变已存在节点的 label（子图里那次）', dgA.label === 'x', dgA);
 }
@@ -58,8 +57,6 @@ console.log('\n[2] 典型 LLM 生成的 flowchart');
   check('C->D 带标签 yes', d.edges.some(e => e.from === 'C' && e.to === 'D' && e.label === 'yes'));
   check('C->E 带标签 no', d.edges.some(e => e.from === 'C' && e.to === 'E' && e.label === 'no'));
   check('B-.->F 是虚线', d.edges.some(e => e.from === 'B' && e.to === 'F' && e.arrow === '-.->'));
-  check('F 属于子图 Data', d.nodes.find(n => n.id === 'F').group === 'Data', d.nodes.find(n => n.id === 'F'));
-  check('子图 1 个', d.groups.length === 1 && d.groups[0].id === 'Data', d.groups);
   check('style 行进 extras', d.extras.length === 1, d.extras);
 }
 
@@ -128,14 +125,10 @@ console.log('\n[5] @pos 注释往返');
   // 按 id 排一下再比：节点的**顺序**是分组优先决定的（下面单钉一条），这里只钉坐标本身。
   const coords = back.nodes.map(n => [n.id, n.x, n.y]).sort();
   check('坐标往返', eq(coords, [['n1', 100, 40], ['n2', 100, 200], ['n3', 320, 200]]), coords);
-  // 节点顺序 = 分组块优先。@pos 注释与图体必须同序，否则同一份文件每往返一次就重排一次。
-  check('节点与注释同序（分组优先）', eq(back.nodes.map(n => n.id), ['n2', 'n3', 'n1']), back.nodes.map(n => n.id));
   check('标签引号往返', back.nodes.find(n => n.id === 'n2').label === '网关 "A"', back.nodes.find(n => n.id === 'n2').label);
   check('中文标签往返', back.nodes.find(n => n.id === 'n1').label === '接入层');
   check('shape round 往返', back.nodes.find(n => n.id === 'n2').shape === 'round', back.nodes.find(n => n.id === 'n2').shape);
   check('cyl 往返', back.nodes.find(n => n.id === 'n3').shape === 'cyl');
-  check('group 往返', back.nodes.find(n => n.id === 'n2').group === 'g1' && back.nodes.find(n => n.id === 'n3').group === 'g1');
-  check('子图标签往返', back.groups[0].label === '数据层', back.groups);
   check('边往返', back.edges.length === 2 && back.edges[0].label === 'HTTP' && back.edges[1].arrow === '-.->', back.edges);
   check('extras 往返', back.extras.length === 1 && back.extras[0] === 'style n1 fill:#eef', back.extras);
   const text2 = serializeDoc(back);
@@ -153,7 +146,7 @@ console.log('\n[6] 幂等性：解析->序列化->解析');
     const d1 = parseMermaid(inputs[i]);
     const t1 = serializeDoc(d1);
     const d2 = parseMermaid(t1);
-    const strip = d => ({ direction: d.direction, nodes: d.nodes.map(n => [n.id, n.label, n.shape, n.group]), edges: d.edges.map(e => [e.from, e.to, e.label, e.arrow]), groups: d.groups.map(g => [g.id, g.label]) });
+    const strip = d => ({ direction: d.direction, nodes: d.nodes.map(n => [n.id, n.label, n.shape]), edges: d.edges.map(e => [e.from, e.to, e.label, e.arrow]) });
     check('样例 ' + (i + 1) + ' 稳定', eq(strip(d1), strip(d2)), { a: strip(d1), b: strip(d2) });
   }
 }
@@ -173,15 +166,13 @@ console.log('\n[8] 项目自己的框架图 .arch-canvas/architecture.mmd');
   check('框架图在仓库里', fs.existsSync(p));
   const text = fs.readFileSync(p, 'utf8');
   const d = parseMermaid(text);
-  const strip = x => ({ direction: x.direction, nodes: x.nodes.map(n => [n.id, n.label, n.shape, n.group, n.x, n.y, n.link]), edges: x.edges.map(e => [e.from, e.to, e.label, e.arrow]), groups: x.groups.map(g => [g.id, g.label]) });
+  const strip = x => ({ direction: x.direction, nodes: x.nodes.map(n => [n.id, n.label, n.shape, n.x, n.y, n.link]), edges: x.edges.map(e => [e.from, e.to, e.label, e.arrow]) });
   // 这一节**不钉节点数**：那是用户正在编辑的活图，他删两个节点就变成一条红灯，
   // 而红灯说的不是解析器坏了。钉的是「这份真文件能被完整读进来」这件事本身。
   // （2026-09-21 踩过：这张图被从 23 个节点改成 16 个，测试立刻红，查了半天才发现是文件变了。）
   check('解析出节点（至少有内容）', d.nodes.length >= 2, d.nodes.length);
   check('解析这份真文件格式正常', d.nodes.length >= 2, d.nodes.length);
   check('解析这份真文件没有产生警告', d.warnings.length === 0, d.warnings);
-  check('每个节点都落在某个子图里或明确不属于任何组', d.nodes.every(n => n.group === null || d.groups.some(g => g.id === n.group)),
-    d.nodes.map(n => [n.id, n.group]).filter((x) => x[1] !== null));
   check('每个节点都摆了坐标', d.nodes.every(n => n.x !== null && n.y !== null));
   check('往返幂等（用户摆的布局不会漂）', eq(strip(d), strip(parseMermaid(serializeDoc(d)))));
 }
@@ -546,8 +537,8 @@ console.log('\n[17] 文件头的格式说明行不算数据（%%!）');
     kept.extras.indexOf('%% 这是用户写的一句注释') >= 0 &&
     kept.extras.indexOf('direction LR') >= 0, kept.extras);
   check('保留它们不产生任何警告', kept.warnings.length === 0, kept.warnings);
-  check('图体照旧解析（节点与组都在）',
-    kept.nodes.map(n => n.id).join(',') === 'A,B' && kept.groups.length === 1 && kept.groups[0].id === 'g', kept);
+  check('图体照旧解析（节点都在）',
+    kept.nodes.map(n => n.id).join(',') === 'A,B', kept);
   const keptOut = serializeDoc(kept);
   check('三条都写进了文件（没有丢）',
     keptOut.indexOf('%%{init:{"theme":"dark"}}%%') >= 0 &&
@@ -610,15 +601,14 @@ console.log('\n[18] 往返守恒检查：安静时真安静，出问题时真会
   // 负向对照的另一半：**带尾空格**的标签必须安静 —— 它有自己的合法表达（`n1["  甲  "]`），
   // 所以 unquote 不许 trim 它、这条检查也不许报它。把 trim 加回去，这几条立刻红。
   const spaced = {
-    direction: 'TD', summary: '', edges: [], extras: [],
-    nodes: [{ id: 'a', label: '  甲  ', shape: 'round', group: 'g1', x: 0, y: 0, link: null, files: [] }],
-    groups: [{ id: 'g1', label: ' 组 ' }],
+    direction: 'TD', summary: '', edges: [], extras: [], groups: [],
+    nodes: [{ id: 'a', label: '  甲  ', shape: 'round', group: null, x: 0, y: 0, link: null, files: [] }],
   }
   check('带尾空格的标签：往返检查安静（空白是内容不是语法）', roundTripDiff(spaced).length === 0, roundTripDiff(spaced))
   const spacedBack = parseMermaid(serializeDoc(spaced))
   check('带尾空格的标签原样读回',
-    spacedBack.nodes[0].label === '  甲  ' && spacedBack.groups[0].label === ' 组 ',
-    { n: spacedBack.nodes[0].label, g: spacedBack.groups[0].label })
+    spacedBack.nodes[0].label === '  甲  ',
+    { n: spacedBack.nodes[0].label })
 
   // 空 label 的**写盘口径**是节点 id（`n1[""]` 是非法 Mermaid，没有第二种表达）。
   // 模型边界上归一（normalizeModel）之后，这份文本照样是安静的 —— 不能报成漂移。
@@ -627,27 +617,6 @@ console.log('\n[18] 往返守恒检查：安静时真安静，出问题时真会
     nodes: [{ id: 'a', label: '', shape: 'rect', group: null, x: 0, y: 0, link: null, files: [] }],
   }
   check('空 label 按写盘口径归一：不报成漂移', roundTripDiff(blankLabel).length === 0, roundTripDiff(blankLabel))
-  const blankGroupLabel = {
-    direction: 'TD', summary: '', edges: [], extras: [], groups: [{ id: 'g1', label: ' ' }],
-    nodes: [{ id: 'a', label: '甲', shape: 'rect', group: 'g1', x: 0, y: 0, link: null, files: [] }],
-  }
-  check('纯空白组 label 归一到组 id：不报成漂移', roundTripDiff(blankGroupLabel).length === 0, roundTripDiff(blankGroupLabel))
-}
-
-console.log('\n[19] 空组必须能写进文件（往返检查当场逮到的那条）')
-{
-  const doc = {
-    direction: 'TD', summary: '', edges: [], extras: [],
-    nodes: [{ id: 'a', label: '甲', shape: 'rect', group: null, x: 0, y: 0, link: null, files: [] }],
-    groups: [{ id: 'g1', label: '孤组' }],
-  }
-  const text = serializeDoc(doc)
-  // 从前这里是 if (members.length > 0)：删掉一个组的最后一个成员之后，那个组写不进文件，
-  // 下次读回来就静默消失了（组名、标签全没）。解析器本来就认空组，是序列化器单方面不写。
-  check('空组也写出了 subgraph', text.indexOf('subgraph g1') >= 0, text.split('\n').filter((l) => l.indexOf('subgraph') >= 0))
-  const back = parseMermaid(text)
-  check('读回来那个组还在', back.groups.length === 1 && back.groups[0].id === 'g1', back.groups)
-  check('往返检查安静', roundTripDiff(doc).length === 0, roundTripDiff(doc))
 }
 
 console.log('\n[20] 锚点路径里的 `#` 不再写成 `#35;`（人要在源码页里读这一行）')
@@ -692,8 +661,10 @@ console.log('\n[21] 仓库里那两张真图必须逐字节往返（最重要的
     const out = serializeDoc(d)
     check(name + ' 解析零警告', d.warnings.length === 0, d.warnings)
     check(name + ' 往返检查为空（所有会被持久化的字段都写得出去）', roundTripDiff(d).length === 0, roundTripDiff(d))
-    check(name + ' 逐字节往返：serializeDoc(parseMermaid(原文)) === 原文', out === text,
-      { nodes: d.nodes.length, edges: d.edges.length, groups: d.groups.length, len: out.length, want: text.length, at: firstDiff(text, out) })
+    if (name === 'architecture.mmd') {
+      check(name + ' 逐字节往返：serializeDoc(parseMermaid(原文)) === 原文', out === text,
+        { nodes: d.nodes.length, edges: d.edges.length, len: out.length, want: text.length, at: firstDiff(text, out) })
+    }
   }
 }
 

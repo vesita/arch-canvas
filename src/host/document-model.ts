@@ -1,5 +1,16 @@
 var MAX_LIST_ITEMS = 20
 
+function cleanTags(rawTags: any) {
+  var tagList = []
+  if (!Array.isArray(rawTags)) return tagList
+  for (var ti = 0; ti < rawTags.length && tagList.length < MAX_LIST_ITEMS; ti++) {
+    if (typeof rawTags[ti] !== 'string') continue
+    var tv = rawTags[ti].trim()
+    if (tv && tagList.indexOf(tv) < 0) tagList.push(tv)
+  }
+  return tagList
+}
+
 function normalizeModel(model) {
   var nodes = []
   var seen = {}
@@ -37,19 +48,12 @@ function normalizeModel(model) {
       if (!fv || fv.length > 300) continue
       if (fileList.indexOf(fv) < 0) fileList.push(fv)
     }
-    var tagList = []
-    var rawTags = Array.isArray(n.tags) ? n.tags : []
-    for (var ti = 0; ti < rawTags.length && tagList.length < MAX_LIST_ITEMS; ti++) {
-      if (typeof rawTags[ti] !== 'string') continue
-      var tv = rawTags[ti].trim()
-      if (tv && tagList.indexOf(tv) < 0) tagList.push(tv)
-    }
+    var tagList = cleanTags(n.tags)
     nodes.push({
       id: id,
       label: typeof n.label === 'string' && n.label ? normalizeBreaks(n.label) : id,
       shape: SHAPE_WRAP[n.shape] ? n.shape : 'rect',
       tags: tagList,
-      group: typeof n.group === 'string' && n.group ? cleanId(n.group) : null,
       x: typeof n.x === 'number' && isFinite(n.x) ? n.x : null,
       y: typeof n.y === 'number' && isFinite(n.y) ? n.y : null,
       link: normLink(n.link),
@@ -77,29 +81,6 @@ function normalizeModel(model) {
       arrow: ARROW_SET[e.arrow] ? e.arrow : '-->',
     })
   }
-  var groups = []
-  var known = {}
-  for (var a = 0; a < nodes.length; a++) if (nodes[a].group) known[nodes[a].group] = true
-  var rawGroups = Array.isArray(model.groups) ? model.groups : []
-  var seenGroupIds = {}
-  for (var k = 0; k < rawGroups.length; k++) {
-    var g = rawGroups[k]
-    if (!g || typeof g !== 'object') continue
-    var gid = cleanId(g.id)
-    // 组 id 要去重：重复的组会让同一个节点在文件里出现两遍、`groupCount` 虚高，而往返检查
-    // 因为「parse 回来的也是两个组」判不出异常（2026-09-24 宿主审计第 11 条）。保留第一条。
-    // 注意用**单独的** seen 集合：`known` 里还装着「节点引用了、但还没登记标签的组」，
-    // 拿它去重会把那一组的 label 丢掉、退化成组 id。
-    if (seenGroupIds[gid]) continue
-    seenGroupIds[gid] = true
-    groups.push({ id: gid, label: typeof g.label === 'string' && g.label ? normalizeBreaks(g.label) : gid })
-    known[gid] = true
-  }
-  for (var key in known) {
-    var found = false
-    for (var m = 0; m < groups.length; m++) if (groups[m].id === key) { found = true; break }
-    if (!found) groups.push({ id: key, label: key })
-  }
   var dir = DIR_SET[model.direction] ? model.direction : 'TD'
   if (dir === 'TB') dir = 'TD'
   var extras = []
@@ -108,7 +89,7 @@ function normalizeModel(model) {
     if (typeof rawExtras[x] === 'string') extras.push(rawExtras[x])
   }
   return {
-    nodes: nodes, edges: edges, groups: groups, direction: dir, extras: extras,
+    nodes: nodes, edges: edges, direction: dir, extras: extras,
     // 图级的一句话总结：白名单里必须带上它 —— normalizeModel 是逐字段重建，
     // 漏了就是「用户每保存一次，总结被静默清空一次」（与元素注释同一个坑）。
     // 唯一的例外是**字段整个缺席**：那是旧界面（换宿主前就打开的页面）发来的模型，
@@ -122,7 +103,6 @@ function adoptModel(model) {
   var norm = normalizeModel(model)
   doc.nodes = norm.nodes
   doc.edges = norm.edges
-  doc.groups = norm.groups
   doc.direction = norm.direction
   doc.extras = norm.extras
   doc.summary = norm.summary
@@ -130,7 +110,7 @@ function adoptModel(model) {
 
 function modelOf() {
   return {
-    nodes: doc.nodes, edges: doc.edges, groups: doc.groups,
+    nodes: doc.nodes, edges: doc.edges,
     direction: doc.direction, extras: doc.extras,
     summary: doc.summary,
   }
@@ -151,9 +131,10 @@ function noteCounts() {
 // 用「改完求差」而不是「在 applyOps 里逐个记录」：这样 arch_edit / arch_write /
 // 用户回写 三条路都自动覆盖，也不会漏掉某个 op 分支。
 function nodeKey(n) {
-  return n.label + '\u0000' + n.shape + '\u0000' + n.group + '\u0000' + n.x + '\u0000' + n.y +
+  return n.label + '\u0000' + n.shape + '\u0000' + n.x + '\u0000' + n.y +
     '\u0000' + n.link + '\u0000' + (n.note || '') + '\u0000' + (n.noteDone === true ? '1' : '0') +
-    '\u0000' + (n.files || []).join('\u0001')
+    '\u0000' + (n.files || []).join('\u0001') +
+    '\u0000' + (n.tags || []).join('\u0001')
 }
 
 function snapshotNodes() {
@@ -276,7 +257,7 @@ function snapshotModel() {
   // （2026-09-20 宿主审计第 14 条。）
   return JSON.stringify({
     name: doc.name, file: doc.file, tombstoned: doc.tombstoned, absent: doc.absent === true,
-    nodes: doc.nodes, edges: doc.edges, groups: doc.groups,
+    nodes: doc.nodes, edges: doc.edges,
     direction: doc.direction, extras: doc.extras, notes: doc.notes, fileStatus: doc.fileStatus,
     summary: doc.summary,
     revision: doc.revision, updatedBy: doc.updatedBy, updatedAt: doc.updatedAt,
@@ -291,7 +272,6 @@ function restoreModel(saved) {
   doc.absent = m.absent === true
   doc.nodes = m.nodes
   doc.edges = m.edges
-  doc.groups = m.groups
   doc.direction = m.direction
   doc.extras = m.extras
   doc.notes = m.notes
