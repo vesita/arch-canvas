@@ -57,7 +57,7 @@ console.log('【留言历史封顶 6 条】')
   const capNotes = dirNote + '/.arch-canvas/notes.json'
   const capModel = JSON.parse(JSON.stringify((await call('doc:get', { where: dirNote })).model))
   for (let i = 0; i < 9; i++) {
-    capModel.nodes.push({ id: 'cap' + i, label: 'C' + i, shape: 'rect', group: null, x: i * 10, y: 0, note: '历史' + i, noteDone: false })
+    capModel.nodes.push({ id: 'cap' + i, label: 'C' + i, shape: 'rect', x: i * 10, y: 0, note: '历史' + i, noteDone: false })
   }
   await call('doc:set', { model: capModel, where: dirNote })
   // 第一批 3 条标已办（存一次 → 它们拿到较早的 at）
@@ -753,7 +753,7 @@ console.log('【A. notes.json 不被空表整库覆盖（数据丢失）】')
   const docNS0 = await call('doc:get', { where: dirNS })
   eq('A：当前图不存在（走的正是 absent 那条分支）', docNS0.nodeCount, 0, docNS0.nodeCount)
   const mNS = JSON.parse(JSON.stringify(docNS0.model))
-  mNS.nodes.push({ id: 'a1', label: '架构图新节点', shape: 'rect', group: null, x: 0, y: 0, note: '架构图这条必须写进去', noteDone: false })
+  mNS.nodes.push({ id: 'a1', label: '架构图新节点', shape: 'rect', x: 0, y: 0, note: '架构图这条必须写进去', noteDone: false })
   const setNS = await call('doc:set', { model: mNS, where: dirNS })
   ok('A：doc:set 成功', setNS && setNS.ok !== false, setNS && setNS.error)
   const storeNS = JSON.parse(files.get(nsNotes) || '{}')
@@ -793,7 +793,7 @@ console.log('【B. {{ 守卫必须走完所有出口】')
   // B2. 连续四个 {{{{：单次 replace 拆不干净（替换文本自己又挨在一起）
   const mTpl1 = JSON.parse(JSON.stringify(mTpl0))
   mTpl1.summary = '模板探针'
-  mTpl1.nodes.push({ id: 'tpl1', label: '{{{{a}}}}', shape: 'rect', group: null, x: 0, y: 0 })
+  mTpl1.nodes.push({ id: 'tpl1', label: '{{{{a}}}}', shape: 'rect', x: 0, y: 0 })
   const setTpl1 = await call('doc:set', { model: mTpl1, where: dirTpl })
   ok('B2：带 {{{{ 标签的节点落盘成功', setTpl1 && setTpl1.ok !== false, setTpl1 && setTpl1.error)
   eq('B2：前提 —— 节点确实在（否则走的是空画布那条 return，测不到标签这条路）', setTpl1.nodeCount, 1)

@@ -44,8 +44,8 @@ const {
       for (const shape of shapes) {
         for (const label of labels) {
           const doc = {
-            direction: 'TD', summary: '', edges: [], extras: [], groups: [],
-            nodes: [{ id: 'n1', label: label, shape: shape, group: null, x: 0, y: 0, link: null, files: [] }],
+            direction: 'TD', summary: '', edges: [], extras: [],
+            nodes: [{ id: 'n1', label: label, shape: shape, x: 0, y: 0, link: null, files: [] }],
           };
           const text = serializeDoc(doc);
           const r = await accepts(text);
@@ -56,8 +56,8 @@ const {
       // 空 label：`n1[""]` 是非法 Mermaid（finding 10），退化成 id 就合法
       for (const shape of shapes) {
         const doc = {
-          direction: 'TD', summary: '', edges: [], extras: [], groups: [],
-          nodes: [{ id: 'n1', label: '', shape: shape, group: null, x: 0, y: 0, link: null, files: [] }],
+          direction: 'TD', summary: '', edges: [], extras: [],
+          nodes: [{ id: 'n1', label: '', shape: shape, x: 0, y: 0, link: null, files: [] }],
         };
         const r = await accepts(serializeDoc(doc));
         check('shape=' + shape + ' 空 label 合法（退化成 id）', r.ok, { err: r.err, text: serializeDoc(doc) });
@@ -71,10 +71,10 @@ const {
       ];
       for (const arrow of ARROW_SAMPLES) {
         const doc = {
-          direction: 'TD', summary: '', extras: [], groups: [],
+          direction: 'TD', summary: '', extras: [],
           nodes: [
-            { id: 'A', label: 'A', shape: 'rect', group: null, x: 0, y: 0, link: null, files: [] },
-            { id: 'B', label: 'B', shape: 'rect', group: null, x: 0, y: 0, link: null, files: [] },
+            { id: 'A', label: 'A', shape: 'rect', x: 0, y: 0, link: null, files: [] },
+            { id: 'B', label: 'B', shape: 'rect', x: 0, y: 0, link: null, files: [] },
           ],
           edges: [{ id: 'e1', from: 'A', to: 'B', label: '读 | 写', arrow: arrow }],
         };
@@ -361,7 +361,7 @@ const {
           { stable: serializeDoc(parseMermaid(out)) === out, diff: roundTripDiff(d) });
       }
       // label 里的 emoji 是内容，必须继续合法（第 [23] 节也钉着，这里留一条独立对照）
-      const lbl = { direction: 'TD', summary: '', extras: [], groups: [], edges: [], nodes: [{ id: 'n1', label: '😀 发布 🚀', shape: 'rect', group: null, x: 0, y: 0, link: null, files: [] }] };
+      const lbl = { direction: 'TD', summary: '', extras: [], edges: [], nodes: [{ id: 'n1', label: '😀 发布 🚀', shape: 'rect', x: 0, y: 0, link: null, files: [] }] };
       check('label 里的 emoji 照旧合法', (await accepts(serializeDoc(lbl))).ok, serializeDoc(lbl));
       check('label 里的 emoji 往返不变', parseMermaid(serializeDoc(lbl)).nodes[0].label === '😀 发布 🚀');
       // 负向对照：原样写出去确实是真 Mermaid 拒收的（否则上面那些断言没牙）
@@ -461,8 +461,8 @@ const {
         stableJson({ x: Infinity }) !== stableJson({ x: null }), { inf: stableJson({ x: Infinity }) });
       // 真的把 NaN 模型喂给往返检查：必须报出来（第 11 条「静默丢数据」的守门）
       const nanDoc = {
-        direction: 'TD', summary: '', extras: [], groups: [], edges: [],
-        nodes: [{ id: 'A', label: 'A', shape: 'rect', group: null, x: NaN, y: 0, link: null, files: [] }],
+        direction: 'TD', summary: '', extras: [], edges: [],
+        nodes: [{ id: 'A', label: 'A', shape: 'rect', x: NaN, y: 0, link: null, files: [] }],
       };
       check('模型里有 NaN 坐标时往返检查会喊（从前它是安静的）',
         roundTripDiff(nanDoc).indexOf('nodes') >= 0, roundTripDiff(nanDoc));
@@ -510,10 +510,10 @@ const {
       check('ARROWS 至少 28 种', ARROWS.length >= 28, ARROWS.length);
       for (const arrow of ARROWS) {
         const doc = {
-          direction: 'TD', summary: '', extras: [], groups: [],
+          direction: 'TD', summary: '', extras: [],
           nodes: [
-            { id: 'A', label: 'A', shape: 'rect', group: null, x: 0, y: 0, link: null, files: [] },
-            { id: 'B', label: 'B', shape: 'rect', group: null, x: 0, y: 0, link: null, files: [] },
+            { id: 'A', label: 'A', shape: 'rect', x: 0, y: 0, link: null, files: [] },
+            { id: 'B', label: 'B', shape: 'rect', x: 0, y: 0, link: null, files: [] },
           ],
           edges: [{ id: 'e1', from: 'A', to: 'B', label: '', arrow: arrow }],
         };

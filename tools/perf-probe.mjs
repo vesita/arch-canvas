@@ -30,6 +30,8 @@ const dom = new JSDOM('<!doctype html><html><body><div id="app"></div></body></h
 globalThis.window = dom.window
 globalThis.document = dom.window.document
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
+globalThis.groupHueIndex = () => ({})
+globalThis.hueClassOf = () => ''
 
 const React = req('react')
 const act = React.act
@@ -37,7 +39,7 @@ const { createRoot } = req('react-dom/client')
 
 const runtimeSrc = fs.readFileSync(path.join(ROOT, 'dist', 'client-runtime.js'), 'utf8')
 const api = new Function(runtimeSrc + '\n;return {'
-  + ' autoLayout, consolidateEdgesModel, nodeSize, splitLabel, edgeGeometry, edgeSidesOf, crossingsOf, sccOf, groupHueIndex };')()
+  + ' autoLayout, consolidateEdgesModel, nodeSize, splitLabel, edgeGeometry, edgeSidesOf, crossingsOf, sccOf };')()
 
 // 2. 加载 UI 组件
 const captured = {}
@@ -282,7 +284,7 @@ async function runBenchmarks() {
       file: '/tmp/test.mmd', diagram: 'test', key: 'test',
       external: null, dir: '/tmp', scope: 'project', workspace: '/tmp',
       nodeCount: laidModel.nodes.length, edgeCount: laidModel.edges.length,
-      groupCount: laidModel.groups.length, libraryRev: 1, historyCount: 1,
+      groupCount: (laidModel.groups && laidModel.groups.length) || 0, libraryRev: 1, historyCount: 1,
       warnings: [], notes: [], lastChange: null
     }
 

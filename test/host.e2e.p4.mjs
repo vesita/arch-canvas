@@ -252,10 +252,10 @@ console.log('【P0 连接符唯一真相：ARROWS 里每一个都要经 doc:set 
   await call('doc:openPath', { path: arrowFile })
   for (const arrow of ARROW_LIST) {
     const model = {
-      direction: 'TD', summary: '', extras: [], groups: [],
+      direction: 'TD', summary: '', extras: [],
       nodes: [
-        { id: 'A', label: 'A', shape: 'rect', group: null, x: 0, y: 0, link: null, files: [] },
-        { id: 'B', label: 'B', shape: 'rect', group: null, x: 0, y: 0, link: null, files: [] },
+        { id: 'A', label: 'A', shape: 'rect', x: 0, y: 0, link: null, files: [] },
+        { id: 'B', label: 'B', shape: 'rect', x: 0, y: 0, link: null, files: [] },
       ],
       edges: [{ id: 'e1', from: 'A', to: 'B', label: '', arrow: arrow }],
     }
@@ -274,10 +274,10 @@ console.log('【P0 连接符唯一真相：ARROWS 里每一个都要经 doc:set 
   // 负向对照：这份表驱动的断言不是空转 —— 手工把某个箭头改成 `-->` 必须让上面的形状对不上
   await call('doc:set', {
     model: {
-      direction: 'TD', summary: '', extras: [], groups: [],
+      direction: 'TD', summary: '', extras: [],
       nodes: [
-        { id: 'A', label: 'A', shape: 'rect', group: null, x: 0, y: 0, link: null, files: [] },
-        { id: 'B', label: 'B', shape: 'rect', group: null, x: 0, y: 0, link: null, files: [] },
+        { id: 'A', label: 'A', shape: 'rect', x: 0, y: 0, link: null, files: [] },
+        { id: 'B', label: 'B', shape: 'rect', x: 0, y: 0, link: null, files: [] },
       ],
       edges: [{ id: 'e1', from: 'A', to: 'B', label: '', arrow: 'o--' }],
     },
@@ -378,10 +378,10 @@ console.log('【P1 归一撞名：doc:set 送进来的两个写法也必须都�
   await call('doc:openPath', { path: collideFile })
   const r = await call('doc:set', {
     model: {
-      direction: 'TD', summary: '', extras: [], groups: [],
+      direction: 'TD', summary: '', extras: [],
       nodes: [
-        { id: 'a-b', label: '甲', shape: 'rect', group: null, x: 1, y: 2, link: null, files: [] },
-        { id: 'a.b', label: '乙', shape: 'rect', group: null, x: 3, y: 4, link: null, files: [] },
+        { id: 'a-b', label: '甲', shape: 'rect', x: 1, y: 2, link: null, files: [] },
+        { id: 'a.b', label: '乙', shape: 'rect', x: 3, y: 4, link: null, files: [] },
       ],
       edges: [{ id: 'e1', from: 'a.b', to: 'a-b', label: '', arrow: '-->' }],
     },
@@ -398,10 +398,10 @@ console.log('【P1 归一撞名：doc:set 送进来的两个写法也必须都�
   // 而且**不算撞名** —— 它不是「两个不同写法归一到一个」那种情况。
   const dupRaw = await call('doc:set', {
     model: {
-      direction: 'TD', summary: '', extras: [], groups: [],
+      direction: 'TD', summary: '', extras: [],
       nodes: [
-        { id: 'z1', label: '先', shape: 'rect', group: null, x: 0, y: 0, link: null, files: [] },
-        { id: 'z1', label: '后', shape: 'rect', group: null, x: 0, y: 0, link: null, files: [] },
+        { id: 'z1', label: '先', shape: 'rect', x: 0, y: 0, link: null, files: [] },
+        { id: 'z1', label: '后', shape: 'rect', x: 0, y: 0, link: null, files: [] },
       ],
       edges: [],
     },

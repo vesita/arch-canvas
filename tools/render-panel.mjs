@@ -232,7 +232,6 @@ function respond(method, _args) {
       tombstoned: false,
       nodeCount: model.nodes ? model.nodes.length : 0,
       edgeCount: model.edges ? model.edges.length : 0,
-      groupCount: model.groups ? model.groups.length : 0,
       libraryRev: 1,
       historyCount: 1,
       warnings: model.warnings || [],

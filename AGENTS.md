@@ -13,9 +13,9 @@
 
 1. **不进文件的运行期字段** —— 权威名单是代码里的 `RUNTIME_ONLY_FIELDS`（含 `drift`）。
 2. **旁路表承载的字段**：`note` / `noteDone` 存在 `notes.json` 里，不由这份文本承载。
-3. **派生字段与集合顺序**：边的 `id` 每次解析重新编号、不进文件；节点/边/组的**顺序**（`serializeDoc` 会重排），所以按 key 排序后**按集合比**。
+3. **派生字段与集合顺序**：边的 `id` 每次解析重新编号、不进文件；节点/边的**顺序**（`serializeDoc` 会重排），所以按 key 排序后**按集合比**。
 
-守门人：`test/mermaid.parser.test.cjs`【往返守恒检查：安静时真安静，出问题时真会喊】、【空组必须写进文件】；`test/host.e2e.p4.mjs`【写盘前的往返守恒检查：整套测试跑下来一次都不该报】。
+守门人：`test/mermaid.parser.test.cjs`【往返守恒检查：安静时真安静，出问题时真会喊】；`test/host.e2e.p4.mjs`【写盘前的往返守恒检查：整套测试跑下来一次都不该报】。
 
 ## TypeScript
 
@@ -43,9 +43,7 @@ Package 形态下 `code.host` 是**源码字符串**，wasm 塞不进去；真�
 ## 四个不能破的约定
 
 1. **分片不能 import**：`src/host/*` 和 `src/client/*` 各是一段被沙箱求值的函数体，没有模块系统；复用靠拼接顺序 + 函数声明提升。
-2. **`%% @pos` 是坐标的唯一载体**：坐标只写在注释里，图体里没有第二个地方存布局；注释指向图里不存在的节点时**直接丢弃**（不许凭注释把节点复活）。**组 id 和节点 id
-   一样不能含空格**：`scanNodeRef` 的 `ID_RE` 遇到空格就停，`subgraph AI 端["AI 端"]` 会被解析成 id=`AI` + 标签=`端["AI 端"]`；走
-   `set_group` 不会踩（它过 `cleanId`）。**`set_label` 里的换行传真实换行符**（写成 `<br/>` 也等价）：输入侧的 `normalizeBreaks()`（模型入口：`normalizeModel` 与各 op）把 `<br>` / `<\br>` / `</br>` / `<BR/>` 这类手写变体、以及老版本转义着写进文件的 `&lt;br&gt;` 一并收成真实换行，`q()` 再统一写成 `<br/>` —— 不这么做的话 AI 照抄来的 `<br>` 会被转义成 `#60;br/&gt;`，用户方块里就是那串字面垃圾。**只认 br 这一族，不碰 `\n` 这种反斜杠转义**（标签里的代码片段不能替用户猜）。守门人：`test/mermaid.parser.test.cjs` 第 [10] 节、`test/host.e2e.p4.mjs`【AI 编辑工具的格式容错】。
+2. **`%% @pos` 是坐标的唯一载体**：坐标只写在注释里，图体里没有第二个地方存布局；注释指向图里不存在的节点时**直接丢弃**（不许凭注释把节点复活）。**`set_label` 里的换行传真实换行符**（写成 `<br/>` 也等价）：输入侧的 `normalizeBreaks()`（模型入口：`normalizeModel` 与各 op）把 `<br>` / `<\br>` / `</br>` / `<BR/>` 这类手写变体、以及老版本转义着写进文件的 `&lt;br&gt;` 一并收成真实换行，`q()` 再统一写成 `<br/>` —— 不这么做的话 AI 照抄来的 `<br>` 会被转义成 `#60;br/&gt;`，用户方块里就是那串字面垃圾。**只认 br 这一族，不碰 `\n` 这种反斜杠转义**（标签里的代码片段不能替用户猜）。守门人：`test/mermaid.parser.test.cjs` 第 [10] 节、`test/host.e2e.p4.mjs`【AI 编辑工具的格式容错】。
 3. **分片里不能有顶层 `return`**：`src/host/*` 是 `apply(ctx)` 的函数体，`src/client/*` 被拼进一个 IIFE（`UI_PARTS`），两者都不自带
    `return`；`return {...}` 只由 `src/bootstrap/*` 写。分片清单与顺序由 `tools/build.mjs` 的 `HOST_PARTS` / `UI_PARTS`
    声明（`expectPartsCover` 要求清单与目录下的 `.ts` **集合相等**：新文件不进清单就不参与构建、产物里根本没有它）。
@@ -69,9 +67,8 @@ Package 形态下 `code.host` 是**源码字符串**，wasm 塞不进去；真�
      且 `call` / `href` 这类 Mermaid 认的关键字也要在表里。
    - **`%% @pos` 的数值闸门**：必须要求**解析后有限**，否则走「没能解析」那条**出声**分支，不许把那行注释静默丢掉
      （`parseFloat('.')` 是 NaN，而 NaN 会让往返检查也瞎）。
-   - **重复的组 id**：解析与序列化两侧都按「保留第一条」去重，否则那个组的成员行与 `%% @pos` 会被写两遍（模型一致，往返检查判不出）。
 
-守门人：`test/host.e2e.p4.mjs` 的 P0 / P1 各节（连接符唯一真相 / 指令闸门 / emoji id / 重复组 id / 归一撞名），判据都是真 `mermaid.parse()`。
+守门人：`test/host.e2e.p4.mjs` 的 P0 / P1 各节（连接符唯一真相 / 指令闸门 / emoji id / 归一撞名），判据都是真 `mermaid.parse()`。
 
 ## 元素上的东西：留言旁路表、`@file`、`@summary`
 
@@ -357,7 +354,7 @@ ArchStudio**。这条契约牵出四件事：
   flush**（`flushMove`）—— 最后一段位移决定「点空白还是平移」，不 flush 会把平移误判成点空白、连选中一起清掉。平移也走同一条路。
 - **拖动期用浮点坐标，提交时才取整**（`commitDrag`）；宿主落盘本来就会取整（`normalizeModel`）。
 - **吸附阈值按屏幕像素折算**（`snapRadius(k, SNAP_PX)`）：`SNAP_PX` 吸上 / `SNAP_EXIT_PX` 脱开（`snapAxis`），**Alt
-  临时关掉**；分组拖动走同一条吸附。
+  临时关掉**。
 - **pointercancel = 回滚**（`restoreDrag`，不写盘不进历史）；**lostpointercapture = 提交**。
 - `DRAG_SLOP` 是「点选 vs 拖动」的门槛，和面板展开挂钩，**不要**为了手感去动它。
 
@@ -378,8 +375,7 @@ ArchStudio**。这条契约牵出四件事：
   的偏移**，少了它横着出去的锚点会缩进方块里；六边形的内缩是 `NODE_HEX_INSET`，**画形状与算锚点共用同一个常量**；**「有没有穿进自己」不能用包围盒判** ——
   轮廓上的锚点也在包围盒内部，走 `edgePathHitsSelf` → `edgeSegHitsNode`，包围盒只当快速预筛，再用 `shapeInterior` 按形状采样判「真的进去了」。
 - **兜底绕行的车道要铺开**：`兜底一`（两段绕行）把每块障碍的外侧也当候选（按离中位线远近排），否则方块挤成一片时那两条整片外侧的车道一条都走不通，落入**不看障碍的硬穿**。
-- **端口分组（studio）与布线器（runtime）必须问同一个 `edgeSidesOf`**：两份拷贝必然分叉；`gstate` 要把 `shape` 一起给连线用，折叠块没有 shape
-  就按矩形处理。
+- **端口分组（studio）与布线器（runtime）必须问同一个 `edgeSidesOf`**：两份拷贝必然分叉；`gstate` 要把 `shape` 一起给连线用。
 - 锚点的守门断言用**有符号**距离（0 = 在轮廓上，负 = 埋在形状里）：只测「离轮廓多远」的话，锚点缩到方块正中间也会算 0 —— 那条断言就没牙了。
 
 守门人：`test/edges.test.cjs`（轮廓有符号距离 × 两种摆放 × 8 种形状 × 1~4 端口、选边、420 点网格的「白绕/回头线/从背后出线」不变量 +
@@ -469,9 +465,8 @@ lostpointercapture 提交）。
 3. **缺凭据不许退化成默认值。** `splitKey('')` 的 name 会兜成默认图名 —— 一句不带 key 的 `doc:delete` 就把默认图软删了。`doc:delete` /
    `doc:restore` 要 `key` 是非空字符串；`doc:rename` 的 `from` / `to` 都要非空字符串；`doc:applyText` 要 `text` 是字符串，**「清空」只认显式空串**
    （纯空白串必须拒绝）。`doc:set` 的 `model` 要是 `{nodes:[],edges:[]}` 的形状 —— **数组也是 `object`**，只判 `typeof` 就是漏网。**要清空就显式传空串/空数组** —— op 同理。
-4. **op 传错类型 = 拒绝，不许静默清空。** `set_link {link:42}` / `set_files {files:'x'}` / `set_group {group:99}`
-   不能等于清空那个字段；`move_node` 非数值不许报「移动了」却没动，`1e999`（JSON 合法 → Infinity）不许让坐标消失；`remove_edge` / `remove_group`
-   / `set_edge_label` 对不存在的东西也进 `problems`；`mark_note.done` 出现就必须是布尔（缺省 = 标已办）。工具与 RPC 的入参同族同口径：
+4. **op 传错类型 = 拒绝，不许静默清空。** `set_link {link:42}` / `set_files {files:'x'}` / `set_tags {tags:'x'}`
+   不能等于清空那个字段；`move_node` 非数值不许报「移动了」却没动，`1e999`（JSON 合法 → Infinity）不许让坐标消失；`remove_edge` / `set_edge_label` 对不存在的东西也进 `problems`；`mark_note.done` 出现就必须是布尔（缺省 = 标已办）。工具与 RPC 的入参同族同口径：
    `doc:file.save` 必须布尔、`doc:rollback.seq` 必须是有限整数、`doc:get.where` 出现就必须是非空字符串（**`where: ''` 仍表示全局图库**，别误拒）、
    `arch_read.diagram` 出现必须是字符串、`arch_switch.create` 出现必须是布尔。**一个 op 都没生效时不写盘、不推修订号**。
 5. **`{{` 守卫收口到 `promptSafe()`，三个 return 都要过**（含空画布的提前 return 与 `foreignCanvasText`，后者带着别人的图名）；循环拆到没有 `{{`

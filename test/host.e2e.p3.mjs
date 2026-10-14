@@ -25,7 +25,7 @@ console.log('【D. doc:restore 要把内存里的墓碑也摘掉】')
   const restR = await call('doc:restore', { key: 'architecture', where: dirTombR })
   ok('D：恢复成功', restR && restR.ok === true, restR && restR.error)
   const mRestR = JSON.parse(JSON.stringify((await call('doc:get', { where: dirTombR })).model))
-  mRestR.nodes.push({ id: 'tb2', label: '恢复后新增', shape: 'rect', group: null, x: 10, y: 10 })
+  mRestR.nodes.push({ id: 'tb2', label: '恢复后新增', shape: 'rect', x: 10, y: 10 })
   const setRestR = await call('doc:set', { model: mRestR, where: dirTombR })
   ok('D：恢复后的保存成功', setRestR && setRestR.ok !== false, setRestR && setRestR.error)
   eq('D：恢复之后的下一次保存不再写回墓碑（用户的「恢复」不许无声作废）',
@@ -41,7 +41,7 @@ console.log('【E. 未办留言超过 20 条时只送列出来的那些】')
   const docE250 = await call('doc:get', { where: dirE25 })
   const mE25 = JSON.parse(JSON.stringify(docE250.model))
   for (let i = 0; i < 25; i++) {
-    mE25.nodes.push({ id: 'e' + i, label: 'E' + i, shape: 'rect', group: null, x: i * 10, y: 0, note: '待办条目 ' + i, noteDone: false })
+    mE25.nodes.push({ id: 'e' + i, label: 'E' + i, shape: 'rect', x: i * 10, y: 0, note: '待办条目 ' + i, noteDone: false })
   }
   const setE25 = await call('doc:set', { model: mE25, where: dirE25 })
   ok('E：造出 25 条未办留言', setE25 && setE25.ok !== false, setE25 && setE25.error)
@@ -401,7 +401,7 @@ console.log('【L. persist：认下的文件 + 快照的正文，await 之后被
   writeHooks.push(stealToB)
   const l1Set = await call('doc:set', {
     where: dirLA, session: 'sess-steal',
-    model: { nodes: [{ id: 'mine', label: 'A 用户刚画的节点' }], edges: [], groups: [], direction: 'TD' },
+    model: { nodes: [{ id: 'mine', label: 'A 用户刚画的节点' }], edges: [], direction: 'TD' },
   })
   readHooks.length = 0
   writeHooks.length = 0
@@ -435,7 +435,7 @@ console.log('【L. persist：认下的文件 + 快照的正文，await 之后被
   writeHooks.push(stealOnNotes)
   const l2Set = await call('doc:set', {
     where: dirLC, session: 'sess-steal2',
-    model: { nodes: [{ id: 'c1', label: 'C 改过的标签' }], edges: [], groups: [], direction: 'TD' },
+    model: { nodes: [{ id: 'c1', label: 'C 改过的标签' }], edges: [], direction: 'TD' },
   })
   readHooks.length = 0
   writeHooks.length = 0
@@ -469,7 +469,7 @@ console.log('【L. persist：认下的文件 + 快照的正文，await 之后被
   await call('doc:get', { where: dirLE, session: 'sess-steal3' })
   await call('doc:set', {
     where: dirLE, session: 'sess-steal3',
-    model: { nodes: [{ id: 'e1', label: 'E 改过一版' }], edges: [], groups: [], direction: 'TD' },
+    model: { nodes: [{ id: 'e1', label: 'E 改过一版' }], edges: [], direction: 'TD' },
   })
   const histE = await call('doc:history', { where: dirLE, session: 'sess-steal3' })
   const openSeqE = histE.entries[histE.entries.length - 1].seq
@@ -497,7 +497,7 @@ console.log('【L. persist：认下的文件 + 快照的正文，await 之后被
   ok('L3：★ F 的文件完好', String(files.get(fileLF)).indexOf('F 的图') >= 0)
   const fEdit = await call('doc:set', {
     where: dirLF, session: 'sess-steal3',
-    model: { nodes: [{ id: 'f2', label: 'F 再编辑' }], edges: [], groups: [], direction: 'TD' },
+    model: { nodes: [{ id: 'f2', label: 'F 再编辑' }], edges: [], direction: 'TD' },
   })
   ok('L3：F 再编辑一次照常落盘到自己的文件',
     fEdit && fEdit.saved === true && String(files.get(fileLF)).indexOf('F 再编辑') >= 0, fEdit && fEdit.error)
@@ -573,7 +573,7 @@ console.log('【N. doc:delete 当前图之后，画布不许停在墓碑内容�
   const nBack = await call('doc:get', { where: dirN })
   ok('N：恢复之后画布上又是那张图的内容（不是空画布）', nBack.nodeCount === 1, nBack.nodeCount)
   const n2Model = JSON.parse(JSON.stringify(nBack.model))
-  n2Model.nodes.push({ id: 'n2', label: '恢复后新增', shape: 'rect', group: null, x: 0, y: 0 })
+  n2Model.nodes.push({ id: 'n2', label: '恢复后新增', shape: 'rect', x: 0, y: 0 })
   const nSet2 = await call('doc:set', { where: dirN, model: n2Model })
   ok('N：恢复之后编辑照常落盘', nSet2 && nSet2.saved === true, nSet2 && nSet2.error)
   ok('N：恢复之后文件里不再有墓碑、且新节点在里面',
@@ -646,7 +646,7 @@ console.log('【Q. doc:set / doc:applyText 的形状闸门：错类型不许清�
   eq('Q：★ 画布也还是原来那两个节点', qNow.nodeCount, 2)
   const qClear = await call('doc:set', {
     where: dirQ,
-    model: { nodes: [], edges: [], groups: [], direction: 'TD', summary: '' },
+    model: { nodes: [], edges: [], direction: 'TD', summary: '' },
   })
   ok('Q：负向对照 —— 显式空数组照旧能清空（闸门不误伤「用户把节点全删了」）',
     qClear && qClear.saved === true, qClear && qClear.error)
@@ -669,7 +669,7 @@ console.log('【R. 入参类型闸门：同一族口径统一（错类型一律�
   await call('doc:get', { where: dirR2 })
   const rBase = await call('doc:set', {
     where: dirR2,
-    model: { nodes: [{ id: 'z', label: 'Z', note: '要保留的留言', noteDone: false }], edges: [], groups: [], direction: 'TD' },
+    model: { nodes: [{ id: 'z', label: 'Z', note: '要保留的留言', noteDone: false }], edges: [], direction: 'TD' },
   })
   ok('R：前提 —— 留言写进去了', rBase && rBase.saved === true, rBase && rBase.error)
   for (const bad of [0, 'no', 'false', 1, null]) {
@@ -733,7 +733,7 @@ console.log('【S. anchors.json：没读过的表不许整表覆盖（同图库�
   // 从前 saveDriftStampsFor 用 `driftStoreCache[storePath] || {}` 起手，整表被覆盖成只剩当前这一格。
   const setS9 = await call('doc:set', {
     where: dirS9,
-    model: { nodes: [{ id: 'a1', label: '主图改过' }], edges: [], groups: [], direction: 'TD' },
+    model: { nodes: [{ id: 'a1', label: '主图改过' }], edges: [], direction: 'TD' },
   })
   ok('S：冷启动第一次写盘成功', setS9 && setS9.saved === true, setS9 && setS9.error)
   const afterS9 = files.get(anchorsS9) || ''

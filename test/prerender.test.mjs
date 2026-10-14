@@ -1,5 +1,5 @@
 // 预渲染测试与 SVG 预览生成
-// 验证同向箭头合并、自动分层排序与 Subgraph 聚类效果
+// 验证同向箭头合并与按边方向的自动分层排序
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -19,17 +19,17 @@ const api = new Function(runtimeSrc + '\n;return {'
 
 console.log('--- 架构画布 (arch-canvas) 预渲染与自动排序效果检验 ---')
 
-// 构造包含 Subgraph 分组与多条同向平行边的测试架构模型
+// 构造带多条同向平行边的测试架构模型（夹具不带 groups / group：生产模型里没有这些字段）
 const testModel = {
   direction: 'TD',
   nodes: [
-    { id: 'gw', label: 'API网关\n统一流量入口', shape: 'hex', group: 'ingress' },
-    { id: 'auth', label: '鉴权守卫\nToken与白名单', shape: 'diamond', group: 'ingress' },
-    { id: 'svc1', label: '订单服务\n核心业务调度', shape: 'rect', group: 'core' },
-    { id: 'svc2', label: '库存服务\n库存扣减锁', shape: 'rect', group: 'core' },
-    { id: 'db', label: 'MySQL主库\n订单与流水', shape: 'cyl', group: 'storage' },
-    { id: 'cache', label: 'Redis集群\n热点缓存', shape: 'cyl', group: 'storage' },
-    { id: 'mq', label: 'Kafka总线\n异步解耦', shape: 'asym', group: 'storage' },
+    { id: 'gw', label: 'API网关\n统一流量入口', shape: 'hex' },
+    { id: 'auth', label: '鉴权守卫\nToken与白名单', shape: 'diamond' },
+    { id: 'svc1', label: '订单服务\n核心业务调度', shape: 'rect' },
+    { id: 'svc2', label: '库存服务\n库存扣减锁', shape: 'rect' },
+    { id: 'db', label: 'MySQL主库\n订单与流水', shape: 'cyl' },
+    { id: 'cache', label: 'Redis集群\n热点缓存', shape: 'cyl' },
+    { id: 'mq', label: 'Kafka总线\n异步解耦', shape: 'asym' },
   ],
   edges: [
     { id: 'e1', from: 'gw', to: 'auth', label: '请求鉴权', arrow: '-->' },
@@ -42,11 +42,6 @@ const testModel = {
     { id: 'e7', from: 'svc1', to: 'db', label: '记录流水', arrow: '-->' },
     { id: 'e8', from: 'svc1', to: 'cache', label: '写入缓存', arrow: '-->' },
     { id: 'e9', from: 'svc1', to: 'mq', label: '发送事件', arrow: '-.->' },
-  ],
-  groups: [
-    { id: 'ingress', label: '接入与安全层' },
-    { id: 'core', label: '核心业务层' },
-    { id: 'storage', label: '数据与存储层' },
   ],
   extras: []
 }
@@ -67,27 +62,31 @@ if (!svc1ToSvc2 || svc1ToSvc2.label !== '检查库存 / 锁定库存 / 核销配
   process.exit(1)
 }
 
-// 2. 测试自动拓扑分层排序效果
+// 2. 测试自动拓扑分层排序效果：判据只看**边方向**，与布局实现（含是否分组感知）无关
 const laid = api.autoLayout(consolidated)
 console.log('\n自动排序与布局坐标分布：')
-const groupY = {}
+const yById = {}
 for (const n of laid.nodes) {
-  console.log(`  节点 [${n.id.padEnd(5)}] (所属组: ${(n.group || '无').padEnd(7)}) -> 坐标 (x: ${String(n.x).padStart(5)}, y: ${String(n.y).padStart(5)})`)
-  if (n.group) {
-    if (!groupY[n.group]) groupY[n.group] = []
-    groupY[n.group].push(n.y)
-  }
+  console.log(`  节点 [${n.id.padEnd(5)}] -> 坐标 (x: ${String(n.x).padStart(5)}, y: ${String(n.y).padStart(5)})`)
+  yById[n.id] = n.y
 }
 
-// 验证组分层流向：ingress 应在顶层，core 在中层，storage 在底层
-const avgY = (arr) => arr.reduce((a, b) => a + b, 0) / arr.length
-console.log(`\n层次重心流向验证：`)
-console.log(`  接入层 (ingress) 平均 Y = ${avgY(groupY.ingress)}`)
-console.log(`  核心层 (core)    平均 Y = ${avgY(groupY.core)}`)
-console.log(`  存储层 (storage) 平均 Y = ${avgY(groupY.storage)}`)
+// 无环链 gw -> auth -> svc1（方向完全由边定义）：TD 下源头在上（y 严格递增），
+// BT 下源头在下（y 严格递减）。任何按边方向分层的布局都必须满足，不依赖组或具体算法。
+const chain = ['gw', 'auth', 'svc1']
+console.log(`\n边方向流向验证（链 gw -> auth -> svc1）：`)
+console.log(`  TD: ${chain.join(' -> ')} 的 y = ${chain.map(id => yById[id]).join(', ')}`)
+if (!(yById.gw < yById.auth && yById.auth < yById.svc1)) {
+  console.error('FAIL: TD 下沿边方向 y 未严格递增（拓扑层次流向倒置）！')
+  process.exit(1)
+}
 
-if (avgY(groupY.ingress) >= avgY(groupY.core) || avgY(groupY.core) >= avgY(groupY.storage)) {
-  console.error('FAIL: 拓扑层次流向倒置！')
+const laidBt = api.autoLayout(Object.assign({}, consolidated, { direction: 'BT' }))
+const btY = {}
+for (const n of laidBt.nodes) btY[n.id] = n.y
+console.log(`  BT: ${chain.join(' -> ')} 的 y = ${chain.map(id => btY[id]).join(', ')}`)
+if (!(btY.gw > btY.auth && btY.auth > btY.svc1)) {
+  console.error('FAIL: BT 下沿边方向 y 未严格递减（方向翻转失效）！')
   process.exit(1)
 }
 

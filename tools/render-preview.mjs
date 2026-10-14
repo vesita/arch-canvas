@@ -118,7 +118,7 @@ function respond(method, args) {
       model: model, mermaid: mmdText,
       file: inMmd, diagram: path.basename(inMmd, path.extname(inMmd)), key: inMmd,
       external: null, project: '', dir: '', scope: 'project', workspace: '',
-      tombstoned: false, nodeCount: model.nodes.length, edgeCount: (model.edges || []).length, groupCount: (model.groups || []).length,
+      tombstoned: false, nodeCount: model.nodes.length, edgeCount: (model.edges || []).length,
       libraryRev: 1, historyCount: 1, warnings: [], notes: [], lastChange: null,
     }
   }

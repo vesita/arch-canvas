@@ -13,7 +13,7 @@ console.log('\n[1] 空输入 / 垃圾输入');
   const d2 = parseMermaid('@@@ ###\n=== ???');
   check('垃圾行进 extras 不崩', d2.extras.length === 2 && d2.nodes.length === 0, { extras: d2.extras, nodes: d2.nodes.map(n => n.id) });
 
-  // 坏行不许改变**已存在**节点上的字段。ensureNode 对 label/shape/group 是原地改的，
+  // 坏行不许改变**已存在**节点上的字段。ensureNode 对 label/shape 是原地改的，
   // 光按 doc.nodes.length 截断只回滚得了本行新增的节点 —— 于是坏行的标签会留在干净节点行上，
   // 文件里同时有 `A["新标签"]` 和 `A["新标签"] ?!`，而往返检查因为定点而完全安静。
   const dirty = parseMermaid('flowchart TD\n  A["旧标签"]\n  A["新标签"] ?!');
@@ -107,22 +107,21 @@ console.log('\n[5] @pos 注释往返');
   const doc = {
     direction: 'TD',
     nodes: [
-      { id: 'n1', label: '接入层', shape: 'rect', group: null, x: 100, y: 40 },
-      { id: 'n2', label: '网关 "A"', shape: 'round', group: 'g1', x: 100, y: 200 },
-      { id: 'n3', label: '数据库', shape: 'cyl', group: 'g1', x: 320, y: 200 },
+      { id: 'n1', label: '接入层', shape: 'rect', x: 100, y: 40 },
+      { id: 'n2', label: '网关 "A"', shape: 'round', x: 100, y: 200 },
+      { id: 'n3', label: '数据库', shape: 'cyl', x: 320, y: 200 },
     ],
     edges: [
       { id: 'e1', from: 'n1', to: 'n2', label: 'HTTP', arrow: '-->' },
       { id: 'e2', from: 'n2', to: 'n3', label: '', arrow: '-.->' },
     ],
-    groups: [{ id: 'g1', label: '数据层' }],
     extras: ['style n1 fill:#eef'],
   };
   const text = serializeDoc(doc);
   console.log('--- 序列化结果 ---\n' + text + '------------------');
   const back = parseMermaid(text);
   check('节点数一致', back.nodes.length === 3, back.nodes.map(n => n.id));
-  // 按 id 排一下再比：节点的**顺序**是分组优先决定的（下面单钉一条），这里只钉坐标本身。
+  // 按 id 排一下再比：这里只钉坐标本身，不钉节点顺序。
   const coords = back.nodes.map(n => [n.id, n.x, n.y]).sort();
   check('坐标往返', eq(coords, [['n1', 100, 40], ['n2', 100, 200], ['n3', 320, 200]]), coords);
   check('标签引号往返', back.nodes.find(n => n.id === 'n2').label === '网关 "A"', back.nodes.find(n => n.id === 'n2').label);
@@ -214,7 +213,7 @@ console.log('\n[10] 标签实体转义是对称的（& # < " ` 与换行）');
     '字面 #60; 不是 <', '#96; 的字面写法',
   ];
   for (const label of labels) {
-    const doc = { nodes: [{ id: 'n1', label: label, shape: 'rect', group: null, x: 0, y: 0, link: null, files: [] }], edges: [], groups: [], direction: 'TD', extras: [], summary: '' };
+    const doc = { nodes: [{ id: 'n1', label: label, shape: 'rect', x: 0, y: 0, link: null, files: [] }], edges: [], direction: 'TD', extras: [], summary: '' };
     const back = parseMermaid(serializeDoc(doc));
     check('标签往返：' + JSON.stringify(label), back.nodes[0].label === label, back.nodes[0].label);
     check('标签二次往返稳定：' + JSON.stringify(label), serializeDoc(back) === serializeDoc(parseMermaid(serializeDoc(back))));
@@ -231,7 +230,7 @@ console.log('\n[10] 标签实体转义是对称的（& # < " ` 与换行）');
     check('换行变体读成真实换行：' + JSON.stringify(v), unquote('"' + v + '"') === 'a\nb', unquote('"' + v + '"'));
   }
   check('q() 仍然只写规范的 <br/>', q('a\nb') === '"a<br/>b"', q('a\nb'));
-  const brDoc = { nodes: [{ id: 'n1', label: '一\n二', shape: 'rect', group: null, x: 0, y: 0, link: null, files: [] }], edges: [], groups: [], direction: 'TD', extras: [], summary: '' };
+  const brDoc = { nodes: [{ id: 'n1', label: '一\n二', shape: 'rect', x: 0, y: 0, link: null, files: [] }], edges: [], direction: 'TD', extras: [], summary: '' };
   check('带换行的标签逐字节往返', parseMermaid(serializeDoc(brDoc)).nodes[0].label === '一\n二');
   check('带换行的标签往返检查安静', roundTripDiff(brDoc).length === 0, roundTripDiff(brDoc));
 }
@@ -403,7 +402,7 @@ console.log('\n[15] 代码锚点 %% @file（节点 → 源码文件，可多条�
 
   // 锚点和标签共用一套转义：引号、中文、实体都要能原样回来
   const tricky = '带 "引号" 与 & 的#路径/文件.ts#sym';
-  const d2 = { nodes: [{ id: 'n1', label: 'N', shape: 'rect', group: null, x: 0, y: 0, link: null, note: '', noteDone: false, files: [tricky] }], edges: [], groups: [], direction: 'TD', extras: [] };
+  const d2 = { nodes: [{ id: 'n1', label: 'N', shape: 'rect', x: 0, y: 0, link: null, note: '', noteDone: false, files: [tricky] }], edges: [], direction: 'TD', extras: [] };
   const back2 = parseMermaid(serializeDoc(d2));
   check('锚点里的引号 / 实体 / #符号 往返', back2.nodes[0].files[0] === tricky, { got: back2.nodes[0].files[0], want: tricky });
 
@@ -461,16 +460,16 @@ console.log('\n[16] 整张图的一句话总结 %% @summary（图级，不挂节
   // summary 不挂节点，所以**没有幽灵问题**：不指向任何节点的 summary 照样有效
   const only = parseMermaid('flowchart TD\n  a["A"]\n%% @summary 只有一句话');
   check('@summary 不依赖任何节点', only.summary === '只有一句话' && only.warnings.length === 0, only.warnings);
-  check('没有节点也照样写出 summary', serializeDoc({ nodes: [], edges: [], groups: [], direction: 'TD', extras: [], summary: '空图也要有说明' })
+  check('没有节点也照样写出 summary', serializeDoc({ nodes: [], edges: [], direction: 'TD', extras: [], summary: '空图也要有说明' })
     .indexOf('%% @summary "空图也要有说明"') >= 0);
 
   // 与元素注释同一套转义；换行会被压成一行（它必须占一行）
   const tricky = '带 "引号" & 和 <尖括号> 的一句话';
-  const back = parseMermaid(serializeDoc({ nodes: [], edges: [], groups: [], direction: 'TD', extras: [], summary: tricky }));
+  const back = parseMermaid(serializeDoc({ nodes: [], edges: [], direction: 'TD', extras: [], summary: tricky }));
   check('summary 里的引号 / 实体往返', back.summary === tricky, { got: back.summary, want: tricky });
   check('summary 里的换行被压成一行', parseMermaid('%% @summary 第一行\n%% 这是注释').summary === '第一行');
   check('多行 summary 落盘后仍是单行',
-    serializeDoc({ nodes: [], edges: [], groups: [], direction: 'TD', extras: [], summary: 'a\nb\tc' }).indexOf('%% @summary "a b c"') >= 0);
+    serializeDoc({ nodes: [], edges: [], direction: 'TD', extras: [], summary: 'a\nb\tc' }).indexOf('%% @summary "a b c"') >= 0);
   check('超长 summary 被截断到 500',
     parseMermaid('%% @summary ' + 'x'.repeat(900)).summary.length === 500);
 
@@ -576,15 +575,14 @@ console.log('\n[18] 往返守恒检查：安静时真安静，出问题时真会
 {
   const good = {
     direction: 'TD', summary: '', edges: [], extras: [],
-    nodes: [{ id: 'a', label: '甲', shape: 'rect', group: null, x: 10.4, y: -3.6, link: null, files: ['src/a.ts'] }],
-    groups: [],
+    nodes: [{ id: 'a', label: '甲', shape: 'rect', x: 10.4, y: -3.6, link: null, files: ['src/a.ts'] }],
   }
   check('正常文档：检查安静（坐标写盘时取整，不算差异）', roundTripDiff(good).length === 0, roundTripDiff(good))
 
   // 负向对照：手工做一个"解析器会把这一行吃进模型里"的 extras —— 它确实不是定点。
   // 有它才能证明上面那条"安静"不是空转（撤掉检查也一样通过的那种假绿）。
   const broken = {
-    direction: 'TD', summary: '', nodes: [], edges: [], groups: [],
+    direction: 'TD', summary: '', nodes: [], edges: [],
     extras: ['  x["原样"] --> y'],
   }
   const bad = roundTripDiff(broken)
@@ -593,16 +591,16 @@ console.log('\n[18] 往返守恒检查：安静时真安静，出问题时真会
 
   // 留言**不由这份文本承载**（在旁路表 notes.json 里），必须排除 —— 否则每张有留言的图都误报
   const withNote = {
-    direction: 'TD', summary: '', edges: [], extras: [], groups: [],
-    nodes: [{ id: 'a', label: '甲', shape: 'rect', group: null, x: 0, y: 0, link: null, files: [], note: '这里是留言', noteDone: true }],
+    direction: 'TD', summary: '', edges: [], extras: [],
+    nodes: [{ id: 'a', label: '甲', shape: 'rect', x: 0, y: 0, link: null, files: [], note: '这里是留言', noteDone: true }],
   }
   check('留言在旁路表里：不算这份文本的差异', roundTripDiff(withNote).length === 0, roundTripDiff(withNote))
 
   // 负向对照的另一半：**带尾空格**的标签必须安静 —— 它有自己的合法表达（`n1["  甲  "]`），
   // 所以 unquote 不许 trim 它、这条检查也不许报它。把 trim 加回去，这几条立刻红。
   const spaced = {
-    direction: 'TD', summary: '', edges: [], extras: [], groups: [],
-    nodes: [{ id: 'a', label: '  甲  ', shape: 'round', group: null, x: 0, y: 0, link: null, files: [] }],
+    direction: 'TD', summary: '', edges: [], extras: [],
+    nodes: [{ id: 'a', label: '  甲  ', shape: 'round', x: 0, y: 0, link: null, files: [] }],
   }
   check('带尾空格的标签：往返检查安静（空白是内容不是语法）', roundTripDiff(spaced).length === 0, roundTripDiff(spaced))
   const spacedBack = parseMermaid(serializeDoc(spaced))
@@ -613,8 +611,8 @@ console.log('\n[18] 往返守恒检查：安静时真安静，出问题时真会
   // 空 label 的**写盘口径**是节点 id（`n1[""]` 是非法 Mermaid，没有第二种表达）。
   // 模型边界上归一（normalizeModel）之后，这份文本照样是安静的 —— 不能报成漂移。
   const blankLabel = {
-    direction: 'TD', summary: '', edges: [], extras: [], groups: [],
-    nodes: [{ id: 'a', label: '', shape: 'rect', group: null, x: 0, y: 0, link: null, files: [] }],
+    direction: 'TD', summary: '', edges: [], extras: [],
+    nodes: [{ id: 'a', label: '', shape: 'rect', x: 0, y: 0, link: null, files: [] }],
   }
   check('空 label 按写盘口径归一：不报成漂移', roundTripDiff(blankLabel).length === 0, roundTripDiff(blankLabel))
 }
@@ -622,8 +620,8 @@ console.log('\n[18] 往返守恒检查：安静时真安静，出问题时真会
 console.log('\n[20] 锚点路径里的 `#` 不再写成 `#35;`（人要在源码页里读这一行）')
 {
   const doc = {
-    direction: 'TD', summary: '', edges: [], extras: [], groups: [],
-    nodes: [{ id: 'a', label: '甲', shape: 'rect', group: null, x: 0, y: 0, link: null, files: ['src/host/document.ts#applyOps'] }],
+    direction: 'TD', summary: '', edges: [], extras: [],
+    nodes: [{ id: 'a', label: '甲', shape: 'rect', x: 0, y: 0, link: null, files: ['src/host/document.ts#applyOps'] }],
   }
   const text = serializeDoc(doc)
   check('写出的是原样的 #applyOps',
