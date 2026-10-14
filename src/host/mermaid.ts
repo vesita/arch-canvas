@@ -9,7 +9,7 @@
 // Mermaid flowchart <-> 图模型 双向转换（host 侧使用；此处独立测试）
 // 连接符表。**必须按长度降序**：`o---o` 排在 `o---` 前面，否则后者会先把字符抢走。
 // 这里列的每一个，都是在真 Mermaid 11.16 上验过「`A <连接符> B` 合法、`A <连接符>|标签| B` 也合法」的
-// （见 test/mermaid.test.cjs 的真 Mermaid 校验一节）：
+// （见 test/mermaid.real.test.cjs 的真 Mermaid 校验一节）：
 //   - 圆头 / 交叉端点：`--o` `--x` `o--o` `x--x` `o--x` `x--o`，以及三横的代用形 `o---` `x---`
 //     `o---o` `x---x` `o---x` `x---o` `o-->` `x-->`；
 //   - 粗线端点：`o==o` `x==x` `o==>` `x==>` `==o` `==x`。
@@ -141,7 +141,7 @@ var RESERVED_ID = /^(__proto__|constructor|prototype|toString|valueOf|hasOwnProp
 var WORD_TAIL = '(?![A-Za-z0-9_])';
 // 代理对码元（emoji 等 astral 平面字符）：cleanId 会把它们整对剔掉，真 Mermaid 也拒收。
 var SURROGATE_RE = /[\uD800-\uDFFF]/;
-// **唯一一张关键字表**（`test/mermaid.test.cjs` 逐个拿真 mermaid.parse 过一遍）。
+// **唯一一张关键字表**（`test/mermaid.real.test.cjs` 逐个拿真 mermaid.parse 过一遍）。
 // 长的排前面，别让 `class` 抢走 `classDef`（尾判据会兜住，显式排开更清楚）。
 var MERMAID_KEYWORD_LIST = [
   'end', 'graph', 'flowchart', 'subgraph', 'classDef', 'class', 'linkStyle', 'style',
@@ -313,7 +313,7 @@ function qRef(value) {
  * 所以这里只解 `qRef()` 真正会写出的那几种：`#quot;` / `&quot;` / `<br/>` 各变体
  * （`#quot;` 对应真引号、`<br/>` 对应换行），**加上老文件的 `#35;`** ——
  * 0.6.x 及以前写的是它，AGENTS.md 写明老文件要能读、落盘时规整。
- * 守门人：test/mermaid.test.cjs 第 [20] 节 + 第 [21] 节。
+ * 守门人：test/mermaid.parser.test.cjs 第 [20] 节 + 第 [21] 节。
  */
 function unquoteRef(text) {
   var s = String(text == null ? '' : text);

@@ -15,7 +15,7 @@
 var LOG_KEEP_DAYS = 3
 var LOG_MAX_BYTES = 8 * 1024 * 1024
 var logBackend = (typeof hostEnv === 'object' && hostEnv && hostEnv.logBackend) || null
-var logState = { day: '', bytes: 0, capped: false, cappedDropped: 0 }
+var logState = { day: '', bytes: 0, capped: false }
 var logQueue: Promise<any> = Promise.resolve()
 
 // 落盘门槛。**为什么需要它**：日志纪律里有两类事件 —— 故障/动作（error/warn/info）与高频成功的
@@ -85,12 +85,11 @@ async function writeLog(text) {
     // 清理挂在这里而不是定时器上 —— 不会泄漏，也不需要额外的生命周期管理。
     logState.day = day
     logState.capped = false
-    logState.cappedDropped = 0
     await logBackend.ensureDir(logDir())
     try { logState.bytes = await logBackend.size(logDir(), logFileName(day)) } catch (e) { logState.bytes = 0 }
     await pruneLogs(now)
   }
-  if (logState.capped) { logState.cappedDropped += 1; return }
+  if (logState.capped) return
   if (logState.bytes + text.length > LOG_MAX_BYTES) {
     // 出故障时最怕日志自己变成故障：写满上限就只留一条说明，之后不再写。
     logState.capped = true

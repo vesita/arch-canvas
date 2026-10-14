@@ -35,7 +35,7 @@ function tokenizeMermaidLine(line) {
   // 先切掉行首缩进（真实文件里节点行是缩进的，注入给 AI 的视图也带空白），再认行首关键字。
   // 关键字必须在这里单独认：进了下面的字符循环，`flowchart` 会被当普通 id 一路累积进 buf，
   // 等遇见空白时 buf 已非空，就再也认不出它是关键字了 ——
-  // 这个 bug（顶格版与缩进版）是被 test/ui.render.mjs 的 [4g] 断言连着抓出来两次的。
+  // 这个 bug（顶格版与缩进版）是被 test/ui.render.s2.mjs 的 [4g] 断言连着抓出来两次的。
   var lead = /^\s*/.exec(t)[0]
   if (lead) { out.push({ k: '', s: lead }); i = lead.length }
   var km = /^([A-Za-z][A-Za-z0-9_]*)/.exec(t.slice(i))
@@ -88,12 +88,29 @@ function needsLayout(model) {
 //    a. 基线守卫：最终 cost 永远不比「只分层不排序」的基线差；
 //    b. 虚拟节点 + 重心法扫描（>= 8 轮），结合 tag 相似度与 id 确定性定序；
 //    c. 2-opt 邻位交换局部搜索，边数受控时贪心优化综合 cost；
-//    d. 正交吸附：尝试将 cross 坐标精确吸附到唯一/主导邻居，无行内重叠且不增 cost 时采纳。
+//    d. 正交吸附：尝试将 cross 坐标精确吸附到唯一/主导邻居，无行内重叠且不增 cost 时采纳；
+//    e. 工作量预算：c 与 d 每评一个候选都是一次 O(E²) 的 layoutCost，共用一份「评估次数」额度，
+//       额度用完就收手（预算只可能让优化做得更少，基线守卫在它之前，cost 不会因此变差）。
 
 var W_CROSS = 10000              // 交叉数权重（主导项）
 var W_BEND = 1                   // 弯折量权重（正交引导项）
 var LAYOUT_ORDER_ROUNDS = 8      // 重心法上下来回扫描轮数
 var LAYOUT_ORDER_MAX_EDGES = 600 // 超过此边数跳过 O(E²) 局部搜索
+// 局部搜索的评估预算口径：一次候选评估 ≈ E×E 次两两相交判断（crossingsOf 全图两两扫），
+// 外加 2-opt 的一次 layoutPositions（O(V)）。所以额度按 E² 反比发：边多的图贵、少评几次，
+// 边少的图便宜、多评；MIN 保底（再大的图也至少真搜过），MAX 封顶（再小的图也只准这么多次）。
+// 实测（N=400 / E=480 的大环）：不限额时局部搜索吃掉 ~4.4s，其中 2-opt ~1240 次评估、正交吸附 ~132 次。
+var LAYOUT_ORDER_EVAL_WORK = 10000000 // 额度总量（单位：一次评估里的 E² 对判断数）
+var LAYOUT_ORDER_EVAL_MIN = 24        // 至少允许的候选评估次数
+var LAYOUT_ORDER_EVAL_MAX = 480       // 最多允许的候选评估次数
+
+/** 本次局部搜索允许评估多少个候选（按边数平方反比发，两头封住）。 */
+function orderEvalBudget(edgeCount) {
+  var e = edgeCount < 1 ? 1 : edgeCount
+  var k = Math.floor(LAYOUT_ORDER_EVAL_WORK / (e * e))
+  if (k < LAYOUT_ORDER_EVAL_MIN) return LAYOUT_ORDER_EVAL_MIN
+  return k > LAYOUT_ORDER_EVAL_MAX ? LAYOUT_ORDER_EVAL_MAX : k
+}
 
 /** Kosaraju 求强连通分量。迭代版避免长链递归爆栈。 */
 function sccOf(ids, edges) {
@@ -296,7 +313,10 @@ function layoutCost(pos, edges, horiz) {
  * 每个节点尝试将 cross 坐标对齐到「唯一 / 主导邻居」，
  * 仅在不发生行内重叠且综合 cost 不增加时采纳。
  */
-function snapOrthogonal(pos, layers, sizes, pairs, horiz, GAP) {
+function snapOrthogonal(pos, layers, sizes, pairs, horiz, GAP, budget) {
+  // 额度用完就整个跳过：这里每试一个吸附点都是一次 O(E²) 的 layoutCost，
+  // 而它只做「不增 cost」的微调，跳过的结果仍然是基线守卫允许的那档。
+  if (budget && budget.left <= 0) return pos
   var kList = sortedLayerKeys(layers)
   var realPred = {}, realSucc = {}
   for (var ki = 0; ki < kList.length; ki++) {
@@ -316,12 +336,13 @@ function snapOrthogonal(pos, layers, sizes, pairs, horiz, GAP) {
 
   var currentPos = Object.assign({}, pos)
   var currentCost = layoutCost(currentPos, pairs, horiz)
+  if (budget) budget.left--
   var minGap = 16
 
   var passes = [kList, kList.slice().reverse()]
-  for (var p = 0; p < passes.length; p++) {
+  for (var p = 0; p < passes.length && (!budget || budget.left > 0); p++) {
     var seq = passes[p]
-    for (var si = 0; si < seq.length; si++) {
+    for (var si = 0; si < seq.length && (!budget || budget.left > 0); si++) {
       var row = layers[seq[si]]
       for (var idx = 0; idx < row.length; idx++) {
         var nid = row[idx]
@@ -348,6 +369,7 @@ function snapOrthogonal(pos, layers, sizes, pairs, horiz, GAP) {
         var halfNid = nidSpan / 2
 
         for (var ti = 0; ti < targets.length; ti++) {
+          if (budget && budget.left <= 0) break
           var targetCross = targets[ti]
           var canSnap = true
           if (idx > 0) {
@@ -370,6 +392,7 @@ function snapOrthogonal(pos, layers, sizes, pairs, horiz, GAP) {
           var testPt = horiz ? { x: oldPt.x, y: targetCross } : { x: targetCross, y: oldPt.y }
           currentPos[nid] = testPt
           var testCost = layoutCost(currentPos, pairs, horiz)
+          if (budget) budget.left--
 
           if (testCost <= currentCost) {
             currentCost = testCost
@@ -758,22 +781,28 @@ function autoLayout(model, options?: any) {
         bestCost = candCost
       }
 
+      // 工作量预算：2-opt 与正交吸附共用这一份「候选评估次数」额度（按 E² 反比发，见 orderEvalBudget）。
+      // 额度只可能让局部搜索**少搜几手**，而 bestCost 起点是上面那道基线守卫算出来的 baseCost /
+      // candCost —— 两手都不在预算里，所以收手时的 result cost 仍然不会比基线差。
+      var evalBudget = { left: orderEvalBudget(compPairs.length) }
+
       // 2-opt 邻位交换局部搜索
       if (compPairs.length > 1 && compPairs.length <= LAYOUT_ORDER_MAX_EDGES) {
         var kList = sortedLayerKeys(bestLayers)
         var improved = true, pass = 0
-        while (improved && pass < 3) {
+        while (improved && pass < 3 && evalBudget.left > 0) {
           improved = false
           pass++
-          for (var ki = 0; ki < kList.length; ki++) {
+          for (var ki = 0; ki < kList.length && evalBudget.left > 0; ki++) {
             var row = bestLayers[kList[ki]]
             if (row.length < 2) continue
-            for (var i = 0; i < row.length - 1; i++) {
+            for (var i = 0; i < row.length - 1 && evalBudget.left > 0; i++) {
               var a = row[i], b = row[i + 1]
               row[i] = b
               row[i + 1] = a
               var testPos = layoutPositions(sizes, bestLayers, horiz, rev, GAP)
               var testCost = layoutCost(testPos, compPairs, horiz)
+              evalBudget.left--
               if (testCost < bestCost) {
                 bestCost = testCost
                 bestPos = testPos
@@ -788,7 +817,7 @@ function autoLayout(model, options?: any) {
       }
 
       // 正交吸附微调
-      bestPos = snapOrthogonal(bestPos, bestLayers, sizes, compPairs, horiz, GAP)
+      bestPos = snapOrthogonal(bestPos, bestLayers, sizes, compPairs, horiz, GAP, evalBudget)
     }
 
     // 平移使锚点落在 (0, 0)

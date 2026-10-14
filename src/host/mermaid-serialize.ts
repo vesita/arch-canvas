@@ -150,7 +150,7 @@ function roundTripNorm(m) {
       // 空 label 的**写盘口径**就是节点 id（serializeDoc 写 id、解析器读回来也是 id）——
       // `n1[""]` 是非法 Mermaid，这一条没有别的表达方式。所以按口径归一，而不是判成漂移。
       // 注意只归 `''`/null/undefined：**纯空白标签 `' '` 是内容**，它有自己的合法表达（`n1[" "]`），
-      // 往返必须原样（见 test/mermaid.test.cjs 第 [10] 节）。
+      // 往返必须原样（见 test/mermaid.parser.test.cjs 第 [10] 节）。
       if (c.label === null || c.label === undefined || c.label === '') c.label = c.id
       if (!Array.isArray(c.tags) || c.tags.length === 0) delete c.tags
       return c

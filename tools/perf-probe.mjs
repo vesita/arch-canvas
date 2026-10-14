@@ -99,8 +99,7 @@ function generateBenchmarkModel(N) {
     nodes.push({
       id: `n${i}`,
       label: `Node ${i}\nDesc ${i}`,
-      shape: shapes[i % shapes.length],
-      group: `grp_${i % 5}`
+      shape: shapes[i % shapes.length]
     })
   }
   const edges = []
@@ -123,18 +122,10 @@ function generateBenchmarkModel(N) {
       arrow: '-->'
     })
   }
-  const groups = [
-    { id: 'grp_0', label: '接入层' },
-    { id: 'grp_1', label: '核心层' },
-    { id: 'grp_2', label: '服务层' },
-    { id: 'grp_3', label: '存储层' },
-    { id: 'grp_4', label: '消息层' },
-  ]
   return {
     direction: 'TD',
     nodes,
     edges,
-    groups,
     extras: []
   }
 }
@@ -284,7 +275,7 @@ async function runBenchmarks() {
       file: '/tmp/test.mmd', diagram: 'test', key: 'test',
       external: null, dir: '/tmp', scope: 'project', workspace: '/tmp',
       nodeCount: laidModel.nodes.length, edgeCount: laidModel.edges.length,
-      groupCount: (laidModel.groups && laidModel.groups.length) || 0, libraryRev: 1, historyCount: 1,
+      libraryRev: 1, historyCount: 1,
       warnings: [], notes: [], lastChange: null
     }
 
@@ -432,7 +423,7 @@ async function runSpecific(hotspot) {
       currentDoc = {
         ok: true, revision: 1, updatedBy: 'switch', model: laidModel, mermaid: 'flowchart TD\n',
         file: '/tmp/test.mmd', diagram: 'test', key: 'test', external: null, dir: '/tmp', scope: 'project', workspace: '/tmp',
-        nodeCount: N, edgeCount: rawModel.edges.length, groupCount: 5, libraryRev: 1, historyCount: 1, warnings: [], notes: [], lastChange: null
+        nodeCount: N, edgeCount: rawModel.edges.length, libraryRev: 1, historyCount: 1, warnings: [], notes: [], lastChange: null
       }
       await act(async () => {
         root.render(React.createElement(captured['conversation.view'], { cwd: '/tmp', sessionId: `s_int_${N}`, useSessions: () => '/tmp' }))

@@ -105,12 +105,18 @@ function applyOps(ops) {
       if (dupIdx >= 0) {
         var newLbl = typeof op.label === 'string' ? normalizeBreaks(op.label) : ''
         if (newLbl) {
-          var existingLbl = doc.edges[dupIdx].label || ''
-          if (existingLbl && existingLbl !== newLbl) {
-            if (existingLbl.indexOf(newLbl) < 0) doc.edges[dupIdx].label = existingLbl + ' / ' + newLbl
-          } else {
-            doc.edges[dupIdx].label = newLbl
+          // 合并判重的唯一真相是 consolidateParallelEdges（**整条相等**才去重，用 " / " 连接）。
+          // 这里把「既有边 + 新边」摆成一份只装这两条的文档喂给它，再把合并结果写回原位 ——
+          // 别在这儿留第二份判重逻辑：旧的那份是子串判重（existingLbl.indexOf(newLbl) < 0），
+          // 既有标签「库存检查」时新并进来的「检查」会被当成「已经有了」静默吞掉。
+          var pairDoc = {
+            edges: [
+              doc.edges[dupIdx],
+              { id: 'e_merge', from: f.id, to: t.id, label: newLbl, arrow: doc.edges[dupIdx].arrow || '-->' },
+            ],
           }
+          consolidateParallelEdges(pairDoc)
+          doc.edges[dupIdx] = pairDoc.edges[0]
         }
         done.push('合并连线 ' + f.id + ' -> ' + t.id)
         continue

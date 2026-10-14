@@ -805,4 +805,74 @@ console.log('【T. 图库清单：同字节数的内容变化要看得见；写�
     listT5.items.map((i) => i.name + (i.deleted ? '(已删)' : '')))
 }
 
+console.log('【U. 合并同向平行边：add_edge 与 consolidate_edges 必须是同一份判重逻辑】')
+{
+  // 判重的唯一真相是 src/host/document-model.ts 的 consolidateParallelEdges —— **整条相等**才去重、
+  // 用 " / " 连接。add_edge 的合并分支从前自带第二份判重（子串：existingLbl.indexOf(newLbl) < 0），
+  // 两份已经漂移：已有的边是「库存检查」、再并入「检查」时，子串判重认为「已经有了」，新标签被静默吞掉。
+  const dirU = '/tmp/proj-merge-edges'
+  const uFile = dirU + '/.arch-canvas/architecture.mmd'
+  files.set(uFile, [
+    'flowchart TD',
+    '  s1["发起方"]',
+    '  s2["库存服务"]',
+    '  s1 -->|库存检查| s2',
+    '  m1["部署入口"]',
+    '  m2["发布服务"]',
+    '  m1 -->|部署流水线| m2',
+    '',
+  ].join('\n'))
+  const u0 = await call('doc:get', { where: dirU })
+  eq('U：前提 —— 两条边各自带着自己的标签（否则下面全是空断言）',
+    u0.model.edges.map((e) => e.label).sort().join('|'), '库存检查|部署流水线')
+
+  // 路径一：add_edge {label, merge:true}
+  const uEdit = await tool('arch_edit').execute({
+    ops: [
+      { op: 'add_edge', from: 's1', to: 's2', label: '检查', merge: true },
+      { op: 'add_edge', from: 'm1', to: 'm2', label: '流水线', merge: true },
+    ],
+  }, {})
+  eq('U：add_edge 合并两条边都生效', uEdit.appliedCount, 2, uEdit.problems)
+  const uAfter = await call('doc:get', { where: dirU })
+  const labelOf = (model, a, b) => {
+    const e = model.edges.find((x) => x.from === a && x.to === b)
+    return e ? e.label : null
+  }
+  // ★ 守门断言：改之前 op 版这里给的是 '库存检查'（子串判重把新标签吞了）
+  eq('U：★ 新标签没被吞（改之前 add_edge 版给「库存检查」）',
+    labelOf(uAfter.model, 's1', 's2'), '库存检查 / 检查')
+  // ★ 子串判重会吞标签的最小样本：'部署流水线'.indexOf('流水线') >= 0 ⇒ 旧实现原样不动
+  eq('U：★ 子串关系的最小样本同样不许被吞',
+    labelOf(uAfter.model, 'm1', 'm2'), '部署流水线 / 流水线')
+  const uMerged = labelOf(uAfter.model, 's1', 's2')
+
+  // 路径二：模型那份真相 —— 源文件里写两条同向平行边，再走 consolidate_edges op
+  const dirV = '/tmp/proj-merge-edges-model'
+  const vFile = dirV + '/.arch-canvas/architecture.mmd'
+  files.set(vFile, [
+    'flowchart TD',
+    '  s1["发起方"]',
+    '  s2["库存服务"]',
+    '  s1 -->|库存检查| s2',
+    '  s1 -->|检查| s2',
+    '',
+  ].join('\n'))
+  const v0 = await call('doc:get', { where: dirV })
+  eq('U：前提 —— 源文件里确实是两条同向平行边', v0.model.edges.length, 2, v0.model.edges)
+  const vEdit = await tool('arch_edit').execute({ ops: [{ op: 'consolidate_edges' }] }, {})
+  eq('U：consolidate_edges 生效', vEdit.appliedCount, 1, vEdit.problems)
+  const vAfter = await call('doc:get', { where: dirV })
+  const vMerged = labelOf(vAfter.model, 's1', 's2')
+  eq('U：★ 两条路径结果一致（这就是「不再漂移」的判据）', vMerged, uMerged)
+  eq('U：★ consolidate_edges 给出的正是「库存检查 / 检查」', vMerged, '库存检查 / 检查')
+
+  // 幂等：已经是合并结果的边再走一遍 consolidate_edges 不许再变形（" / " 不许越并越多）
+  await call('doc:get', { where: dirU })
+  await tool('arch_edit').execute({ ops: [{ op: 'consolidate_edges' }] }, {})
+  const uAgain = await call('doc:get', { where: dirU })
+  eq('U：合并结果再走一遍 consolidate_edges 是幂等的',
+    labelOf(uAgain.model, 's1', 's2'), '库存检查 / 检查')
+}
+
 endPhase()

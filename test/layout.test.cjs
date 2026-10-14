@@ -303,5 +303,46 @@ console.log('\n[7] 断开分量：各自独立分层并沿交叉轴并排排布�
   eq('三个断开分量之间完全不重叠', overlap, false);
 }
 
+console.log('\n[8] 病理输入：tools/perf-probe.mjs 的「大环」基准模型（N=400 / E=480）不许跑成秒级卡顿');
+{
+  // 逐字复刻 tools/perf-probe.mjs 的 generateBenchmarkModel(N=400)：fromIdx = k % N，
+  // toIdx = fromIdx + 1..4 (mod N)（另加它自己的 k%10 回边与 k%7 +1），M = round(1.2*N) = 480。
+  // 这张图的主强连通分量 137 个节点落在**同一层** ⇒ 单层 2-opt 的候选交换数 ≈ 一层的节点数，
+  // 而每个候选都要跑一次 O(E²) 的 crossingsOf：改之前实测 ~4200ms。
+  // E=480 < LAYOUT_ORDER_MAX_EDGES(600)，那道现有的边数闸门根本挡不住它。
+  const N = 400;
+  const M = Math.round(N * 1.2);
+  const ids = [];
+  for (let i = 0; i < N; i++) ids.push('n' + i);
+  const edges = [];
+  for (let k = 0; k < M; k++) {
+    const fromIdx = k % N;
+    let toIdx;
+    if (k % 10 === 0) toIdx = (fromIdx - 2 + N) % N;
+    else if (k % 7 === 0) toIdx = (fromIdx + 1) % N;
+    else toIdx = (fromIdx + 1 + (k % 4)) % N;
+    if (toIdx === fromIdx) toIdx = (toIdx + 1) % N;
+    edges.push(['n' + fromIdx, 'n' + toIdx]);
+  }
+  const ringModel = mk(ids, edges);
+  eq('E = 480（< 600：现有的边数闸门挡不住这个输入）', edges.length, M);
+
+  // 前提：主分量确实摊成一个上百节点的大层（否则下面那条耗时断言是空转）
+  const ringOut = autoLayout(ringModel);
+  const layerCount = {};
+  ringOut.nodes.forEach((n) => { layerCount[n.y] = (layerCount[n.y] || 0) + 1; });
+  const maxLayer = Math.max.apply(null, Object.keys(layerCount).map((y) => layerCount[y]));
+  ok('前提：最大一层 ≥ 100 个节点（单层 2-opt 候选交换数才会爆炸）', maxLayer >= 100, maxLayer);
+  ok('前提：坐标全部有限', ringOut.nodes.every((n) => isFinite(n.x) && isFinite(n.y)));
+  ok('前提：确实分了多层（这是 perf-probe 大环的真实形状）', Object.keys(layerCount).length > 1, Object.keys(layerCount).length);
+
+  const t0 = Date.now();
+  const out = autoLayout(ringModel);
+  const ms = Date.now() - t0;
+  console.log('     大环 N=400 / E=480 自动布局耗时 = ' + ms + 'ms（改前实测 ~4200ms）');
+  ok('400 节点大环的自动布局 < 300ms（局部搜索必须有工作量预算）', ms < 300, ms);
+  ok('大环布局仍给出全部有限坐标', out.nodes.every((n) => isFinite(n.x) && isFinite(n.y)));
+}
+
 console.log('\n结果: ' + pass + ' 通过 / ' + fail + ' 失败\n');
 process.exit(fail === 0 ? 0 : 1);

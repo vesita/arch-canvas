@@ -322,7 +322,7 @@ var editTool = harness.defineTool({
             link: { type: 'string', description: 'set_link / add_node 用：把这个节点下钻到另一张图（图名，不含 .mmd）；传空串取消' },
             from: { type: 'string', description: '连线的起点节点 id' },
             to: { type: 'string', description: '连线的终点节点 id' },
-            merge: { type: 'boolean', description: 'add_edge 用：若同向连线已存在，是否将其合并追加到既有边（避免平行边泛滥，默认 false）' },
+            merge: { type: 'boolean', description: 'add_edge 用：这两点之间已经有同向连线时，新标签会被**追加合并**到那条既有边上（与 consolidate_edges 共用同一份判重，不会产生平行叠线）；这个开关只是把意图写明，行为不受它影响' },
             arrow: { type: 'string', description: '连线样式：--> 实线箭头 / --- 无箭头 / -.-> 虚线 / ==> 粗线' },
             x: { type: 'number', description: '画布横坐标（move_node / add_node 用）' },
             y: { type: 'number', description: '画布纵坐标（move_node / add_node 用）' },
