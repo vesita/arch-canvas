@@ -305,7 +305,7 @@ function studioChromeFns(S) {
         React.createElement('div', { className: 'ac-field full' },
           React.createElement('label', null, '描述（回车生效，Shift+回车换行）'),
           React.createElement('textarea', {
-            className: 'ac-input', style: { height: 54, resize: 'vertical', fontFamily: 'inherit' },
+            className: 'ac-input', style: { height: 38, resize: 'vertical', fontFamily: 'inherit' },
             placeholder: '意图：想达成什么　/　原理：为什么这么设计',
             value: descDraft,
             onChange: function (e) { setDescDraft(e.target.value) },
@@ -313,9 +313,8 @@ function studioChromeFns(S) {
             onKeyDown: function (e) { if (e.key === 'Enter' && !e.shiftKey && !isComposingEv(e)) { e.preventDefault(); commitLabel() } },
           }),
         ),
-        // 「形状」原本与「分组」并排占 .ac-grid 的两列；分组删掉后改成整行，
-        // 免得右半边永远空着一格（.ac-grid 是 1fr 1fr，只有 .full 才跨满）。
-        React.createElement('div', { className: 'ac-field full' },
+        // 「形状」与「概念标签」并排各占 1fr，压缩纵向首屏占用并优化宽屏双列阅读
+        React.createElement('div', { className: 'ac-field' },
           React.createElement('label', null, '形状'),
           React.createElement('select', { className: 'ac-select', value: nodeSel.shape, onChange: function (e) { setShape(e.target.value) } },
             choiceList(SHAPE_CHOICES, nodeSel.shape).map(function (k) {
@@ -323,7 +322,7 @@ function studioChromeFns(S) {
             }),
           ),
         ),
-        React.createElement('div', { className: 'ac-field full' },
+        React.createElement('div', { className: 'ac-field' },
           React.createElement('label', null, '概念标签（以空格分隔，如：AI端 接入层）'),
           React.createElement('input', {
             className: 'ac-input', value: tagsDraft, placeholder: '贴上概念标签，支持多维聚类与相似性排布',
@@ -337,7 +336,7 @@ function studioChromeFns(S) {
             ? (noteDoneDraft ? '留言（已投递，在历史里 —— 不会再进上下文）' : '留言（AI 读一次就消失）')
             : '留言（写给 AI：这里的疑问 / 要求 / 背景）'),
           React.createElement('textarea', {
-            className: 'ac-input', style: { height: 54, resize: 'vertical', fontFamily: 'inherit' },
+            className: 'ac-input', style: { height: 38, resize: 'vertical', fontFamily: 'inherit' },
             placeholder: '例如：这里为什么不用队列？　/　这条链路还没定，先别改',
             value: noteDraft,
             onChange: function (e) { setNoteDraft(e.target.value) },
@@ -390,7 +389,7 @@ function studioChromeFns(S) {
         React.createElement('div', { className: 'ac-field full' },
           React.createElement('label', null, '代码锚点（每行一个：路径 或 路径#符号）'),
           React.createElement('textarea', {
-            className: 'ac-input', style: { height: 54, resize: 'vertical', fontFamily: 'inherit' },
+            className: 'ac-input', style: { height: 38, resize: 'vertical', fontFamily: 'inherit' },
             placeholder: '例如：src/host/mermaid.ts　/　src/client/runtime.ts#cloneModel',
             value: filesDraft,
             onChange: function (e) { setFilesDraft(e.target.value) },

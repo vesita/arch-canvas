@@ -38,7 +38,7 @@ function studioCanvasFns(S) {
     if (elayout && elayout.routed) {
       // 记录已经为分支锚点画过箭头的集合（同汇流点只画一次箭头）
       var junctionArrowDrawn = {}
-      var edgeLabels = []
+      var rawLabels = []
       for (var ri = 0; ri < elayout.routed.length; ri++) {
         var rt = elayout.routed[ri]
         var red2 = rt.ed
@@ -67,17 +67,16 @@ function studioCanvasFns(S) {
           React.createElement('path', { className: cls, d: rt.d, markerStart: mkStart || undefined, markerEnd: mkEnd || undefined }),
         ))
         if (red2.label) {
-          edgeLabels.push(React.createElement('g', { key: 'el-' + red2.from + '-' + red2.to + '-' + rt.ei },
-            React.createElement('rect', {
-              className: 'ac-elbl-bg',
-              x: rt.mid.x - Math.max(14, visualLen(red2.label) * 3.6 + 6),
-              y: rt.mid.y - 10,
-              width: Math.max(28, visualLen(red2.label) * 7.2 + 12),
-              height: 20,
-              rx: 5,
-            }),
-            React.createElement('text', { className: 'ac-elbl', x: rt.mid.x, y: rt.mid.y }, red2.label),
-          ))
+          rawLabels.push({
+            from: red2.from,
+            to: red2.to,
+            ei: rt.ei,
+            label: red2.label,
+            x: rt.mid.x,
+            y: rt.mid.y,
+            w: Math.max(28, visualLen(red2.label) * 7.2 + 12),
+            h: 20,
+          })
         }
       }
       // 渲染分支锚点小圆点标记（输入侧汇流点与输出侧共干点各画一次）
@@ -96,6 +95,51 @@ function studioCanvasFns(S) {
           className: 'ac-junc-dot',
           cx: ojunc.jx, cy: ojunc.jy, r: 3
         }))
+      }
+      // 多条汇到同一目标或中点接近的连线标签错位排布，避免重叠压字
+      var placedLabels = []
+      for (var rli = 0; rli < rawLabels.length; rli++) {
+        var rItem = rawLabels[rli]
+        var rx = rItem.x
+        var ry = rItem.y
+        var rw = rItem.w
+        var rh = rItem.h
+        var shiftIdx = 0
+        while (shiftIdx < 8) {
+          var hit = false
+          for (var pi = 0; pi < placedLabels.length; pi++) {
+            var pl = placedLabels[pi]
+            var sameTo = (pl.to === rItem.to)
+            var overlapX = (rx - rw / 2 < pl.x + pl.w / 2) && (rx + rw / 2 > pl.x - pl.w / 2)
+            var overlapY = (ry - rh / 2 < pl.y + pl.h / 2) && (ry + rh / 2 > pl.y - pl.h / 2)
+            var closeMid = Math.abs(rx - pl.x) < 36 && Math.abs(ry - pl.y) < 22
+            if ((sameTo && closeMid) || (overlapX && overlapY)) {
+              hit = true
+              break
+            }
+          }
+          if (!hit) break
+          shiftIdx++
+          var sign = (shiftIdx % 2 === 1 ? 1 : -1)
+          var mag = Math.ceil(shiftIdx / 2)
+          ry = rItem.y + sign * mag * 22
+        }
+        placedLabels.push({ from: rItem.from, to: rItem.to, ei: rItem.ei, label: rItem.label, x: rx, y: ry, w: rw, h: rh })
+      }
+      var edgeLabels = []
+      for (var pli = 0; pli < placedLabels.length; pli++) {
+        var plItem = placedLabels[pli]
+        edgeLabels.push(React.createElement('g', { key: 'el-' + plItem.from + '-' + plItem.to + '-' + plItem.ei },
+          React.createElement('rect', {
+            className: 'ac-elbl-bg',
+            x: plItem.x - plItem.w / 2,
+            y: plItem.y - 10,
+            width: plItem.w,
+            height: 20,
+            rx: 5,
+          }),
+          React.createElement('text', { className: 'ac-elbl', x: plItem.x, y: plItem.y }, plItem.label),
+        ))
       }
       // 标签统一画在所有连线与分支点之上，保证不会被后画的线条切穿
       for (var eli = 0; eli < edgeLabels.length; eli++) {

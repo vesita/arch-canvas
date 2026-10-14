@@ -2,7 +2,7 @@
 // 这一半的沙箱里 React / host / styles / ctx 都是闭包参数，不是全局。
 // ==================== 样式（为窄侧栏设计） ====================
 var STUDIO_CSS = [
-  '.ac-root{height:100%;min-height:200px;display:flex;flex-direction:column;background:var(--dsw-alias-bg-base,#14161a);color:var(--dsw-alias-label-primary,#e8eaed);font:13px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;overflow:hidden;position:relative;z-index:1}',
+  '.ac-root{height:100%;min-height:200px;display:flex;flex-direction:column;background:var(--dsw-alias-bg-base,#14161a);color:var(--dsw-alias-label-primary,#e8eaed);font:13px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;overflow:hidden;position:relative;z-index:1;color-scheme:dark}',
   '.ac-bar{display:flex;align-items:center;gap:6px;padding:7px 8px 6px;flex:0 0 auto;flex-wrap:wrap}',
   '.ac-title{font-weight:600;font-size:12.5px;white-space:nowrap;color:var(--dsw-alias-label-primary,#e8eaed)}',
   '.ac-tabs{display:flex;gap:2px;background:var(--dsw-alias-bg-layer-1,#1b1e23);border:1px solid var(--dsw-alias-border-l1,#2a2e35);border-radius:8px;padding:2px}',
@@ -18,7 +18,8 @@ var STUDIO_CSS = [
   // 两个东西一个管 SVG 描边、一个管 DOM 盒子，别再共用一个类名。
   '.ac-pulse{fill:none;stroke:#f0b429;stroke-width:3;animation:acPulse 2.6s ease-out forwards}',
   '@keyframes acPulse{0%{opacity:.9}60%{opacity:.45}100%{opacity:0}}',
-  '.ac-tools{display:flex;gap:4px;flex-wrap:wrap;padding:0 8px 7px;flex:0 0 auto}',
+  '.ac-tools{display:flex;gap:4px;flex-wrap:wrap;padding:0 12px 7px;flex:0 0 auto}',
+  '@media (max-width:960px){.ac-tools{padding:0 12px 7px;gap:3px}.ac-btn{padding:3px 6.5px;font-size:11.5px}}',
   '.ac-btn{appearance:none;border:1px solid var(--dsw-alias-border-l2,#3a4048);background:var(--dsw-alias-bg-layer-1,#1b1e23);color:inherit;border-radius:7px;padding:3px 8px;font:inherit;font-size:12px;cursor:pointer;white-space:nowrap}',
   '.ac-btn:hover{border-color:var(--dsw-alias-brand-primary,#4c8dff)}',
   '.ac-btn.primary{background:var(--dsw-alias-brand-primary,#4c8dff);border-color:var(--dsw-alias-brand-primary,#4c8dff);color:#fff}',
@@ -93,22 +94,25 @@ var STUDIO_CSS = [
   // 标题栏一直够得着；高度可以由用户拖出来（`height` 内联样式），没拖过就按内容自适应、
   // 上限 46%（小屏不至于把画布挤没）。
   '.ac-dock{flex:0 0 auto;display:flex;flex-direction:column;max-height:70%;border-top:1px solid var(--dsw-alias-border-l1,#2a2e35);background:var(--dsw-alias-bg-layer-1,#1b1e23)}',
-  '.ac-dock:not([style*="height"]){max-height:46%}',
+  '.ac-dock:not([style*="height"]){max-height:52%}',
   '.ac-sash{flex:0 0 auto;height:6px;margin:0;cursor:row-resize;background:transparent;position:relative;touch-action:none}',
   '.ac-sash:hover{background:var(--dsw-alias-brand-primary,#4c8dff);opacity:.35}',
   '.ac-dock-bar{flex:0 0 auto;display:flex;align-items:center;gap:6px;padding:4px 8px 5px;border-bottom:1px solid var(--dsw-alias-border-l1,#2a2e35)}',
   '.ac-dock-title{flex:1 1 auto;min-width:0;font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--dsw-alias-label-secondary,#9aa3af);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
   '.ac-dock-btn{flex:0 0 auto;background:transparent;color:var(--dsw-alias-label-secondary,#9aa3af);border:1px solid transparent;border-radius:6px;padding:2px 7px;font:inherit;font-size:11.5px;cursor:pointer}',
   '.ac-dock-btn:hover{color:var(--dsw-alias-label-primary,#e8eaed);border-color:var(--dsw-alias-border-l2,#3a4048);background:var(--dsw-alias-bg-base,#14161a)}',
-  '.ac-dock-body{flex:1 1 auto;min-height:0;overflow:auto;padding:9px 10px}',
+  '.ac-dock-body{flex:1 1 auto;min-height:0;overflow:auto;padding:6px 12px;scrollbar-color:var(--dsw-alias-border-l2,#3a4048) transparent;scrollbar-width:thin;color-scheme:dark}',
+  '.ac-dock-body::-webkit-scrollbar,.ac-textwrap::-webkit-scrollbar,.ac-preview::-webkit-scrollbar,.ac-lib::-webkit-scrollbar{width:6px;height:6px}',
+  '.ac-dock-body::-webkit-scrollbar-thumb,.ac-textwrap::-webkit-scrollbar-thumb,.ac-preview::-webkit-scrollbar-thumb,.ac-lib::-webkit-scrollbar-thumb{background:var(--dsw-alias-border-l2,#3a4048);border-radius:3px}',
+  '.ac-dock-body::-webkit-scrollbar-track,.ac-textwrap::-webkit-scrollbar-track,.ac-preview::-webkit-scrollbar-track,.ac-lib::-webkit-scrollbar-track{background:transparent}',
   // 收起态：只剩一条细条。它必须在**选中还在**的时候出现 —— 用户能一眼看出
   // 「面板收起来了」而不是「选中丢了」，点一下就能展开。
   '.ac-peek{flex:0 0 auto;display:flex;align-items:center;gap:6px;padding:3px 8px;border-top:1px solid var(--dsw-alias-border-l1,#2a2e35);background:var(--dsw-alias-bg-layer-1,#1b1e23)}',
   '.ac-peek-btn{flex:1 1 auto;min-width:0;text-align:left;background:transparent;border:none;color:var(--dsw-alias-label-secondary,#9aa3af);font:inherit;font-size:11.5px;padding:2px 0;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
   '.ac-peek-btn:hover{color:var(--dsw-alias-label-primary,#e8eaed)}',
-  '.ac-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}',
+  '.ac-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px 10px;max-width:880px;margin:0 auto}',
   '.ac-grid .full{grid-column:1 / -1}',
-  '.ac-field label{display:block;font-size:11px;color:var(--dsw-alias-label-secondary,#9aa3af);margin-bottom:3px}',
+  '.ac-field label{display:block;font-size:11px;color:var(--dsw-alias-label-secondary,#9aa3af);margin-bottom:2px}',
   '.ac-input,.ac-area,.ac-select{width:100%;box-sizing:border-box;background:var(--dsw-alias-bg-base,#14161a);color:inherit;border:1px solid var(--dsw-alias-border-l2,#3a4048);border-radius:7px;padding:5px 7px;font:inherit;font-size:12.5px}',
   '.ac-readonly{opacity:.65}',
   '.ac-area{height:100%;min-height:120px;resize:none;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;line-height:1.55;white-space:pre;overflow:auto}',
@@ -137,19 +141,19 @@ var STUDIO_CSS = [
   // 取的是内容高度，外层高度链一旦有哪一处不定，这个盒子就跟着内容一起长高、永远「没有溢出」。
   // （源码页滚轮不动的**真凶**不在这里 —— 是画布页的滚轮缩放监听器泄漏到了这个节点上，
   //  见 studio.ts 里那条 `if (tab !== 'canvas') return`。这里只是把它做成一个规矩的滚动口。）
-  '.ac-textwrap{flex:1 1 0;min-height:0;display:flex;flex-direction:column;padding:8px;gap:7px;overflow:auto}',
+  '.ac-textwrap{flex:1 1 0;min-height:0;display:flex;flex-direction:column;padding:8px 8px 24px;gap:7px;overflow:auto;scrollbar-color:var(--dsw-alias-border-l2,#3a4048) transparent;scrollbar-width:thin}',
   '.ac-textwrap > *{flex:0 0 auto}',
   // 解析警告区：宿主一直在发 warnings，界面从前一条都不显示。折叠不成，直接列出来。
   '.ac-warn{flex:0 0 auto;max-height:32%;overflow:auto;padding:7px 9px;border:1px solid #e8a33d;border-radius:8px;background:rgba(232,163,61,.07)}',
   '.ac-warn-h{color:#e8a33d;font-size:11.5px;font-weight:600;margin-bottom:4px}',
   '.ac-warn-i{color:var(--dsw-alias-label-secondary,#9aa3af);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;line-height:1.6;word-break:break-all}',
   '.ac-previewwrap{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;overflow:hidden}',
-  '.ac-preview{flex:1 1 auto;min-height:0;overflow:auto;padding:12px;background:#fff;color:#111}',
+  '.ac-preview{flex:1 1 auto;min-height:0;overflow:auto;padding:12px;background:#fff;color:#111;scrollbar-color:var(--dsw-alias-border-l2,#3a4048) transparent;scrollbar-width:thin}',
   '.ac-preview svg{max-width:100%;height:auto}',
   '.ac-err{margin:8px;padding:8px 10px;border:1px solid var(--dsw-alias-state-error-primary,#ff5f56);border-radius:8px;color:var(--dsw-alias-state-error-primary,#ff5f56);font-family:ui-monospace,Menlo,monospace;font-size:11.5px;white-space:pre-wrap;max-height:36%;overflow:auto}',
   '.ac-hint{color:var(--dsw-alias-label-secondary,#9aa3af);font-size:11.5px;line-height:1.65}',
   // 图库选择器：列图 / 切图 / 新建（人这一侧换图的入口）
-  '.ac-lib{flex:0 0 auto;max-height:52%;overflow:auto;display:flex;flex-direction:column;gap:6px;padding:8px 10px;border-bottom:1px solid var(--dsw-alias-border-l1,#2a2e35);background:var(--dsw-alias-bg-layer-1,#1b1e23)}',
+  '.ac-lib{flex:0 0 auto;max-height:52%;overflow:auto;display:flex;flex-direction:column;gap:6px;padding:8px 10px;border-bottom:1px solid var(--dsw-alias-border-l1,#2a2e35);background:var(--dsw-alias-bg-layer-1,#1b1e23);scrollbar-color:var(--dsw-alias-border-l2,#3a4048) transparent;scrollbar-width:thin}',
   '.ac-lib-head{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--dsw-alias-label-secondary,#9aa3af)}',
   '.ac-lib-head .grow{flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
   '.ac-lib-item{text-align:left;background:transparent;border:1px solid transparent;border-radius:7px;color:inherit;font:inherit;font-size:12.5px;padding:5px 8px;cursor:pointer}',
@@ -193,7 +197,7 @@ var STUDIO_CSS = [
   '.ac-hist .ac-hist-item.ai{border-left-color:var(--dsw-alias-brand-primary,#4c8dff);color:var(--dsw-alias-label-primary,#e8eaed)}',
   '.ac-hist .ac-hist-item.on{font-weight:600;color:var(--dsw-alias-label-primary,#e8eaed)}',
   '.ac-hist .ac-hist-cur{flex:0 0 auto;font-size:11px;color:var(--dsw-alias-label-secondary,#9aa3af)}',
-  '.ac-note-actions{display:flex;gap:6px;margin-top:6px}',
+  '.ac-note-actions{display:flex;gap:6px;margin-top:4px}',
   // 节点上的代码锚点角标与检查器中的引用校验状态
   '.ac-file-badge circle{fill:var(--dsw-alias-brand-primary,#4c8dff);stroke:var(--dsw-alias-bg-base,#14161a);stroke-width:1.5}',
   '.ac-file-badge.broken circle{fill:#e5534b}',
@@ -214,7 +218,7 @@ var STUDIO_CSS = [
   '.ac-drift-i{color:var(--dsw-alias-label-secondary,#9aa3af);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;line-height:1.6;word-break:break-all}',
   '.ac-ref-status .ac-ref-stale{color:#e8a33d}',
   '.ac-file-badge text{fill:#fff;font-size:10px;text-anchor:middle;pointer-events:none;user-select:none}',
-  '.ac-ref-status{display:flex;flex-direction:column;gap:2px;margin-top:6px;font-size:11px;color:var(--dsw-alias-label-secondary,#9aa3af)}',
+  '.ac-ref-status{display:flex;flex-direction:column;gap:2px;margin-top:4px;font-size:11px;color:var(--dsw-alias-label-secondary,#9aa3af)}',
   '.ac-ref-status .ac-ref-bad{color:#e5534b}',
   '.ac-statusbar{flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:4px 10px;border-top:1px solid var(--dsw-alias-border-l1,#2a2e35);font-size:11px;color:var(--dsw-alias-label-secondary,#9aa3af);white-space:nowrap;overflow:hidden}',
   '.ac-statusbar .grow{flex:1 1 auto;overflow:hidden;text-overflow:ellipsis}',
