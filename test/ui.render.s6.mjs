@@ -6,8 +6,8 @@ console.log('\n[4z] 客户端交互缺陷修复：发送不顶草稿 / 文档身
   // 八条都是「静默弄丢用户东西」或「静默说谎」那一档。每条都有**负向对照**：
   // 要么证明修复不是恒真式（撤掉修复就红），要么证明旁边的旧行为一个字没动。
   const prevZ = respond
-  const Z = (id, label, extra) => Object.assign({ id, label, shape: 'rect', group: null, x: 40, y: 40 }, extra || {})
-  const mkModelZ = (nodes, edges, groups) => ({ nodes: nodes, edges: edges || [], groups: groups || [], direction: 'TD', extras: [] })
+  const Z = (id, label, extra) => Object.assign({ id, label, shape: 'rect', x: 40, y: 40 }, extra || {})
+  const mkModelZ = (nodes, edges) => ({ nodes: nodes, edges: edges || [], direction: 'TD', extras: [] })
   const nodeEl = (h, t) => Array.from(h.querySelectorAll('g.ac-node')).find((el) => (el.textContent || '').indexOf(t) >= 0)
   const labelsOf = (h) => Array.from(h.querySelectorAll('g.ac-node .ac-lbl')).map((t) => t.textContent.trim())
   const dockState = (h) => ({ dock: !!h.querySelector('.ac-dock'), peek: !!h.querySelector('.ac-peek') })
@@ -474,15 +474,15 @@ console.log('\n[4z] 客户端交互缺陷修复：发送不顶草稿 / 文档身
     // 1. 三节点：源节点 a，两个目标 b、c 都在 a 右侧且竖直错开（同为右侧出边）
     const OUT_JUNCTION_MODEL = {
       nodes: [
-        { id: "oa", label: "源", shape: "rect", group: null, x: 0, y: 100 },
-        { id: "ob", label: "目标一", shape: "rect", group: null, x: 260, y: 40 },
-        { id: "oc", label: "目标二", shape: "rect", group: null, x: 260, y: 160 },
+        { id: "oa", label: "源", shape: "rect", x: 0, y: 100 },
+        { id: "ob", label: "目标一", shape: "rect", x: 260, y: 40 },
+        { id: "oc", label: "目标二", shape: "rect", x: 260, y: 160 },
       ],
       edges: [
         { id: "oe1", from: "oa", to: "ob", label: "", arrow: "-->" },
         { id: "oe2", from: "oa", to: "oc", label: "", arrow: "-->" },
       ],
-      groups: [], direction: "TD", extras: [],
+      direction: "TD", extras: [],
     }
     const tSame = await mountZ({ sessionId: "s-out-junc" }, (method, args) => {
       if (method === "doc:get") return fullDoc({ model: OUT_JUNCTION_MODEL, nodeCount: 3, edgeCount: 2 })
@@ -502,15 +502,15 @@ console.log('\n[4z] 客户端交互缺陷修复：发送不顶草稿 / 文档身
     // 2. 反向对照：目标分别在源节点的不同侧（一个在右、一个在下）
     const DIFF_SIDE_MODEL = {
       nodes: [
-        { id: "da", label: "源", shape: "rect", group: null, x: 0, y: 0 },
-        { id: "db", label: "右目标", shape: "rect", group: null, x: 260, y: 0 },
-        { id: "dc", label: "下目标", shape: "rect", group: null, x: 0, y: 260 },
+        { id: "da", label: "源", shape: "rect", x: 0, y: 0 },
+        { id: "db", label: "右目标", shape: "rect", x: 260, y: 0 },
+        { id: "dc", label: "下目标", shape: "rect", x: 0, y: 260 },
       ],
       edges: [
         { id: "de1", from: "da", to: "db", label: "", arrow: "-->" },
         { id: "de2", from: "da", to: "dc", label: "", arrow: "-->" },
       ],
-      groups: [], direction: "TD", extras: [],
+      direction: "TD", extras: [],
     }
     const tDiff = await mountZ({ sessionId: "s-diff-side" }, (method, args) => {
       if (method === "doc:get") return fullDoc({ model: DIFF_SIDE_MODEL, nodeCount: 3, edgeCount: 2 })

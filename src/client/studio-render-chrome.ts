@@ -4,17 +4,15 @@
 function studioChromeFns(S) {
   var currentDiagramRef = S.currentDiagramRef, descDraft = S.descDraft, dockH = S.dockH, dockOpen = S.dockOpen, dockRef = S.dockRef, draft = S.draft
   var driftOpen = S.driftOpen, driftRef = S.driftRef, edgeDraft = S.edgeDraft, external = S.external, fileStatusRef = S.fileStatusRef
-  var filesDraft = S.filesDraft, groupNewName = S.groupNewName, groupPick = S.groupPick, hist = S.hist, hlRef = S.hlRef, inputActions = S.inputActions
+  var filesDraft = S.filesDraft, hist = S.hist, hlRef = S.hlRef, inputActions = S.inputActions
   var labelDraft = S.labelDraft, libKey = S.libKey, liveDraft = S.liveDraft, model = S.model, noteDoneDraft = S.noteDoneDraft, noteDraft = S.noteDraft
   var notesOpen = S.notesOpen, patchHist = S.patchHist, renderError = S.renderError, saveFail = S.saveFail, sel = S.sel, setDescDraft = S.setDescDraft
-  var setDockOpen = S.setDockOpen, setDraft = S.setDraft, setDriftOpen = S.setDriftOpen, setEdgeDraft = S.setEdgeDraft, setFilesDraft = S.setFilesDraft, setGroupNewName = S.setGroupNewName
-  var setGroupPick = S.setGroupPick, setLabelDraft = S.setLabelDraft, setNoteDraft = S.setNoteDraft, setNotesOpen = S.setNotesOpen, setSel = S.setSel, setStatus = S.setStatus
+  var setDockOpen = S.setDockOpen, setDraft = S.setDraft, setDriftOpen = S.setDriftOpen, setEdgeDraft = S.setEdgeDraft, setFilesDraft = S.setFilesDraft
+  var setLabelDraft = S.setLabelDraft, setNoteDraft = S.setNoteDraft, setNotesOpen = S.setNotesOpen, setSel = S.setSel, setStatus = S.setStatus
   var setTagsDraft = S.setTagsDraft, svg = S.svg, taRef = S.taRef, tagsDraft = S.tagsDraft, textWrapRef = S.textWrapRef, warnings = S.warnings
-  function applyGroup(...args) { return S.applyGroup.apply(null, args) }
   function commitEdgeLabel(...args) { return S.commitEdgeLabel.apply(null, args) }
   function commitFiles(...args) { return S.commitFiles.apply(null, args) }
   function commitLabel(...args) { return S.commitLabel.apply(null, args) }
-  function commitNewGroup(...args) { return S.commitNewGroup.apply(null, args) }
   function commitNote(...args) { return S.commitNote.apply(null, args) }
   function commitTags(...args) { return S.commitTags.apply(null, args) }
   function deleteSel(...args) { return S.deleteSel.apply(null, args) }
@@ -290,21 +288,6 @@ function studioChromeFns(S) {
   ) : null
 
   // ---------- 底部检查器（点选后才展开，拖动中不弹） ----------
-  // 分组下拉框要用到三样东西：现有组（带成员数）、节点当前指着的那个组、以及
-  // 「这个组 id 其实已经不在 groups 里了」这种情况（文件手改过 / 组被删过）。
-  // 最后那种必须也在下拉框里有名字 —— 否则 select 找不到匹配项会退回显示第一个选项，界面就在说谎。
-  var groupCounts = {}
-  var groupIdSet = {}
-  var allGroups = (model && model.groups) || []
-  for (var gq = 0; gq < allGroups.length; gq++) if (allGroups[gq]) groupIdSet[allGroups[gq].id] = true
-  if (model && model.nodes) {
-    for (var nq = 0; nq < model.nodes.length; nq++) {
-      var gqn = model.nodes[nq].group
-      if (gqn) groupCounts[gqn] = (groupCounts[gqn] || 0) + 1
-    }
-  }
-  var orphanGroup = (groupPick && groupPick !== GROUP_NEW && !groupIdSet[groupPick]) ? groupPick : null
-
   // 详情面板分三态：展开 / 收起成一条细条 / 没有选中。
   // 内容（`dockBody`）与外壳（标题栏 + 分隔条 + 滚动体）分开构造 —— 外壳是给两种内容共用的。
   var dockBody = null
@@ -330,37 +313,14 @@ function studioChromeFns(S) {
             onKeyDown: function (e) { if (e.key === 'Enter' && !e.shiftKey && !isComposingEv(e)) { e.preventDefault(); commitLabel() } },
           }),
         ),
-        React.createElement('div', { className: 'ac-field' },
+        // 「形状」原本与「分组」并排占 .ac-grid 的两列；分组删掉后改成整行，
+        // 免得右半边永远空着一格（.ac-grid 是 1fr 1fr，只有 .full 才跨满）。
+        React.createElement('div', { className: 'ac-field full' },
           React.createElement('label', null, '形状'),
           React.createElement('select', { className: 'ac-select', value: nodeSel.shape, onChange: function (e) { setShape(e.target.value) } },
             choiceList(SHAPE_CHOICES, nodeSel.shape).map(function (k) {
               return React.createElement('option', { key: k, value: k }, shapeChoiceText(k))
             }),
-          ),
-        ),
-        React.createElement('div', { className: 'ac-field' },
-          React.createElement('label', null, '分组'),
-          React.createElement('select', {
-            className: 'ac-select', value: groupPick,
-            onChange: function (e) {
-              var v = e.target.value
-              setGroupPick(v)
-              setGroupNewName('')
-              if (v === GROUP_NEW) return
-              applyGroup(v ? v : null, null)
-            },
-          },
-            React.createElement('option', { value: '' }, '不属于任何组'),
-            orphanGroup
-              ? React.createElement('option', { key: 'orphan', value: orphanGroup }, orphanGroup + '（组已不存在）')
-              : null,
-            allGroups.map(function (g) {
-              if (!g) return null
-              var cnt = groupCounts[g.id] || 0
-              return React.createElement('option', { key: g.id, value: g.id },
-                String(g.label || g.id) + (cnt ? '（' + cnt + '）' : '（空）'))
-            }),
-            React.createElement('option', { value: GROUP_NEW }, '＋ 新建组…'),
           ),
         ),
         React.createElement('div', { className: 'ac-field full' },
@@ -372,15 +332,6 @@ function studioChromeFns(S) {
             onKeyDown: function (e) { if (e.key === 'Enter' && !isComposingEv(e)) { e.preventDefault(); commitTags() } },
           }),
         ),
-        groupPick === GROUP_NEW ? React.createElement('div', { className: 'ac-field full' },
-          React.createElement('label', null, '新组名字（回车生效）'),
-          React.createElement('input', {
-            className: 'ac-input', value: groupNewName, placeholder: '例如：AI 端', autoFocus: true,
-            onChange: function (e) { setGroupNewName(e.target.value) },
-            onBlur: commitNewGroup,
-            onKeyDown: function (e) { if (e.key === 'Enter' && !isComposingEv(e)) { e.preventDefault(); commitNewGroup() } },
-          }),
-        ) : null,
         React.createElement('div', { className: 'ac-field full' },
           React.createElement('label', null, noteDraft
             ? (noteDoneDraft ? '留言（已投递，在历史里 —— 不会再进上下文）' : '留言（AI 读一次就消失）')

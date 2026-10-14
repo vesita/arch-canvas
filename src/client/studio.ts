@@ -148,13 +148,6 @@ function ArchStudio(props) {
   var descDraft = descState[0]
   var setDescDraft = descState[1]
 
-  // 组折叠：**视图状态，不落盘**。它只改变「怎么画」，不动模型、不进文件 ——
-  // 所以重开面板就复原，也不需要动解析器与 normalizeModel 的白名单。
-  // 将来若要落盘，得走 `%% @collapsed` 那条完整的链（解析 / 白名单 / 快照 / 提示词），一处都不能漏。
-  var collState = React.useState({})
-  var collapsed = collState[0]
-  var setCollapsed = collState[1]
-
   // 拖拽时的吸附参考线：{ gx, gy }，null = 没有吸上任何一条线。
   // 它只是**反馈**，不进模型、不进文件 —— 松手即消失。
   var hintState = React.useState(null)
@@ -177,15 +170,6 @@ function ArchStudio(props) {
   var helpState = React.useState(false)
   var helpOpen = helpState[0]
   var setHelpOpen = helpState[1]
-
-  // 分组：下拉框选「不属于任何组 / 某个已有组 / ＋ 新建组…」，只在选到「新建」时才用得上那个名字框。
-  // 用 '#new' 当哨兵：'#' 是 groupKeyOf 唯一会剥掉、而组 id 里**绝不可能出现**的字符，撞不上真 id。
-  var grpState = React.useState('')
-  var groupPick = grpState[0]
-  var setGroupPick = grpState[1]
-  var grpNewState = React.useState('')
-  var groupNewName = grpNewState[0]
-  var setGroupNewName = grpNewState[1]
 
   var elabState = React.useState('')
   var edgeDraft = elabState[0]
@@ -299,90 +283,13 @@ function ArchStudio(props) {
     return out
   }, [model])
 
-  // 折叠后每个节点落在哪个「可见单元」上：普通节点是它自己，被收起来的组内节点合到组块上。
-  // 边只有经过这张映射，才会从「连到节点」正确改接到「连到折叠块」。
-  var foldMap = React.useMemo(function () {
-    var m = {}
-    if (!model || !model.groups) return m
-    for (var i = 0; i < model.groups.length; i++) {
-      var g = model.groups[i]
-      if (!collapsed[g.id]) continue
-      for (var j = 0; j < model.nodes.length; j++) {
-        if (model.nodes[j].group === g.id) m[model.nodes[j].id] = g.id
-      }
-    }
-    return m
-  }, [model, collapsed])
-
-  // 折叠块自身的几何：位置取该组原本的包围盒中心 —— **成员节点的坐标一个字节都不动**，
-  // 展开时原样回来。折叠是渲染视图，不是「删掉再放回」。尺寸与节点共用 nodeSize。
-  var foldGeom = React.useMemo(function () {
-    var out = {}
-    if (!model || !model.groups) return out
-    for (var i = 0; i < model.groups.length; i++) {
-      var g = model.groups[i]
-      if (!collapsed[g.id]) continue
-      var members = 0
-      var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
-      for (var j = 0; j < model.nodes.length; j++) {
-        var n = model.nodes[j]
-        if (n.group !== g.id) continue
-        var gm = gstate[n.id]
-        if (!gm) continue
-        members++
-        minX = Math.min(minX, gm.x - gm.w / 2); maxX = Math.max(maxX, gm.x + gm.w / 2)
-        minY = Math.min(minY, gm.y - gm.h / 2); maxY = Math.max(maxY, gm.y + gm.h / 2)
-      }
-      if (!members || !isFinite(minX)) continue
-      var lbl = String(g.label == null ? g.id : g.label) + '（' + members + '）'
-      var s = nodeSize(lbl, 0)
-      out[g.id] = {
-        x: Math.round((minX + maxX) / 2), y: Math.round((minY + maxY) / 2),
-        w: s.w, h: s.h, label: lbl, members: members,
-      }
-    }
-    return out
-  }, [model, gstate, collapsed])
-
-  // 连线几何管线缓存：解耦 sel，仅在 [model, foldMap, foldGeom, gstate] 改变时重算
+  // 连线几何管线缓存：解耦 sel，仅在 [model, gstate] 改变时重算。
+  // （这里从前还挂着两个「折叠映射 / 折叠块几何」的入参 —— 组删掉之后它们恒为空对象，
+  //   整条折叠分支都是死代码，已随组一起摘掉。）
   var edgeLayout = React.useMemo(function () {
-    return computeEdgeLayout(model, foldMap, foldGeom, gstate)
-  }, [model, foldMap, foldGeom, gstate])
-
-  // 给边用的几何：折叠组内的节点，一律换成它所属的那个折叠块。
-  var visGeom = function (id) {
-    var fid = foldMap[id]
-    if (fid && foldGeom[fid]) return foldGeom[fid]
-    return gstate[id]
-  }
-
-  // 组 → 色相档位。只取决于「有哪些组」，与它们在文件里的顺序无关（见 runtime.ts 的 groupHueIndex）。
-  var hueOfGroup = React.useMemo(function () {
-    return groupHueIndex(model && model.groups ? model.groups : [])
-  }, [model])
-
-  var groups = React.useMemo(function () {
-    if (!model || !model.groups) return []
-    var res = []
-    for (var i = 0; i < model.groups.length; i++) {
-      var g = model.groups[i]
-      var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
-      for (var j = 0; j < model.nodes.length; j++) {
-        var n = model.nodes[j]
-        if (n.group !== g.id) continue
-        var gm = gstate[n.id]
-        if (!gm) continue
-        minX = Math.min(minX, gm.x - gm.w / 2); maxX = Math.max(maxX, gm.x + gm.w / 2)
-        minY = Math.min(minY, gm.y - gm.h / 2); maxY = Math.max(maxY, gm.y + gm.h / 2)
-      }
-      if (!isFinite(minX)) continue
-      // 顶部要留出**标题那一行**：标题画在 box.y + 17，而最上面那个成员节点的上沿在
-      // minY - 节点半高（高约 44 ⇒ 22）。原来给 34 ⇒ 标题与节点上沿重叠、被节点压住。
-      // 余量按「节点半高 + 标题行高」给足；底部照旧 20。
-      res.push({ id: g.id, label: g.label, x: minX - 20, y: minY - 52, w: maxX - minX + 40, h: maxY - minY + 72 })
-    }
-    return res
+    return computeEdgeLayout(model, gstate)
   }, [model, gstate])
+
   // 本帧的运行时对象：把 state / setter / ref / 跨片函数收在一个可变对象上，交给顶层
   // 工厂函数（分片不能 import，见 AGENTS）。每个渲染重建一次，所以工厂里解构到的
   // state 值永远是这个渲染的那一份；ref 传的是同一个对象，语义与在组件里一样。
@@ -391,24 +298,23 @@ function ArchStudio(props) {
     committedRef, currentDiagramRef, cwd, cwdRef, descDraft, diagKeyRef,
     dockForRef, dockH, dockOpen, dockOpenRef, dockRef, draft,
     dragHint, dragRef, dragging, driftOpen, driftRef, edgeDraft, edgeLayout,
-    external, filePath, fileStatusRef, filesDraft, fittedRef, foldGeom,
-    foldMap, geomRef, groupNewName, groupPick, groups, gstate,
+    external, filePath, fileStatusRef, filesDraft, fittedRef, geomRef, gstate,
     helpOpen, highlight, hist, histRef, historyCount, hlRef,
-    hlTimerRef, hostRef, hueOfGroup, inputActions, labelDraft, libDir,
+    hlTimerRef, hostRef, inputActions, labelDraft, libDir,
     libFiles, libItems, libKey, libRevRef, linkPt, liveDraft,
     memoKeyRef, mermaidText, model, modelRef, noteDoneDraft, noteDraft,
     notesOpen, nudgeRef, patchHist, picker, renderError, revRef,
     revision, rootRef, sashCleanupRef, saveFail, sel, selRef,
-    sessionId, setCollapsed, setDescDraft, setDockH, setDockOpen, setDraft,
+    sessionId, setDescDraft, setDockH, setDockOpen, setDraft,
     setDragHint, setDragging, setDriftOpen, setDriftTick, setEdgeDraft, setExternal,
-    setFilePath, setFileStatusTick, setFilesDraft, setGroupNewName, setGroupPick, setHelpOpen,
+    setFilePath, setFileStatusTick, setFilesDraft, setHelpOpen,
     setHighlight, setHistTick, setHistoryCount, setLabelDraft, setLibDir, setLibKey,
     setLinkPt, setMermaidText, setModel, setNoteDoneDraft, setNoteDraft, setNotesOpen,
     setPicker, setRenderError, setRevision, setSaveFail, setSel, setStatus,
     setTab, setTagsDraft, setUpdatedBy, setView, setWarnings, sidRef,
     status, svg, svgRef, taRef, tab, tabRef,
     tagsDraft, textWrapRef, updatedBy, userViewRef, view, viewRef,
-    visGeom, warnings,
+    warnings,
   }
   makeApplyServer(S)
   studioEditFns(S)

@@ -662,38 +662,16 @@ var EXPORT_CSS = [
   '.ac-tag-badge rect{fill:#4c8dff;fill-opacity:.12;stroke:#4c8dff;stroke-width:1}',
   '.ac-tag-badge text{fill:#4c8dff;font-size:10px;font-weight:700;text-anchor:middle;dominant-baseline:central}',
   '.ac-elbl-bg{fill:#ffffff}',
-  '.ac-group-box{fill:#f2f6fa;stroke:#7b8794;stroke-dasharray:5 5;stroke-width:1.4}',
-  '.ac-group-lbl{fill:#4a5568;font-size:11.5px;font-weight:600};paint-order:stroke fill;stroke:#ffffff;stroke-width:4px;stroke-linejoin:round',
-  // 组配色：与屏幕同一套色相，这里写字面值（导出件没有主题上下文，取不到变量）。
+  // 标签配色：与屏幕同一套色相，这里写字面值（导出件没有主题上下文，取不到变量）。
   // 白的底上用的是浅色那一列：每一档对白底 ≈4.5:1，实测见 runtime.ts 里屏幕那一段的注释。
-  '.ac-h0 .ac-shape,.ac-h0 .ac-group-box,.ac-h0 .ac-fold-box{stroke:#c238c2}',
-  '.ac-h0 .ac-group-box,.ac-h0 .ac-fold-box{fill:#c238c2;fill-opacity:.13}',
-  '.ac-h0 .ac-group-lbl,.ac-h0 .ac-fold-lbl{fill:#c238c2}',
-  '.ac-h1 .ac-shape,.ac-h1 .ac-group-box,.ac-h1 .ac-fold-box{stroke:#ca4772}',
-  '.ac-h1 .ac-group-box,.ac-h1 .ac-fold-box{fill:#ca4772;fill-opacity:.13}',
-  '.ac-h1 .ac-group-lbl,.ac-h1 .ac-fold-lbl{fill:#ca4772}',
-  '.ac-h2 .ac-shape,.ac-h2 .ac-group-box,.ac-h2 .ac-fold-box{stroke:#c94f43}',
-  '.ac-h2 .ac-group-box,.ac-h2 .ac-fold-box{fill:#c94f43;fill-opacity:.13}',
-  '.ac-h2 .ac-group-lbl,.ac-h2 .ac-fold-lbl{fill:#c94f43}',
-  '.ac-h3 .ac-shape,.ac-h3 .ac-group-box,.ac-h3 .ac-fold-box{stroke:#91732a}',
-  '.ac-h3 .ac-group-box,.ac-h3 .ac-fold-box{fill:#91732a;fill-opacity:.13}',
-  '.ac-h3 .ac-group-lbl,.ac-h3 .ac-fold-lbl{fill:#91732a}',
-  '.ac-h4 .ac-shape,.ac-h4 .ac-group-box,.ac-h4 .ac-fold-box{stroke:#27864f}',
-  '.ac-h4 .ac-group-box,.ac-h4 .ac-fold-box{fill:#27864f;fill-opacity:.13}',
-  '.ac-h4 .ac-group-lbl,.ac-h4 .ac-fold-lbl{fill:#27864f}',
-  '.ac-h5 .ac-shape,.ac-h5 .ac-group-box,.ac-h5 .ac-fold-box{stroke:#268478}',
-  '.ac-h5 .ac-group-box,.ac-h5 .ac-fold-box{fill:#268478;fill-opacity:.13}',
-  '.ac-h5 .ac-group-lbl,.ac-h5 .ac-fold-lbl{fill:#268478}',
-  '.ac-h6 .ac-shape,.ac-h6 .ac-group-box,.ac-h6 .ac-fold-box{stroke:#377abc}',
-  '.ac-h6 .ac-group-box,.ac-h6 .ac-fold-box{fill:#377abc;fill-opacity:.13}',
-  '.ac-h6 .ac-group-lbl,.ac-h6 .ac-fold-lbl{fill:#377abc}',
-  '.ac-h7 .ac-shape,.ac-h7 .ac-group-box,.ac-h7 .ac-fold-box{stroke:#8e5ed0}',
-  '.ac-h7 .ac-group-box,.ac-h7 .ac-fold-box{fill:#8e5ed0;fill-opacity:.13}',
-  '.ac-h7 .ac-group-lbl,.ac-h7 .ac-fold-lbl{fill:#8e5ed0}',
-  '.ac-fold-box{fill:#ebf4ff;stroke:#4c8dff;stroke-width:1.5}',
-  '.ac-fold-lbl{fill:#1a202c;font-size:12.5px;text-anchor:middle;dominant-baseline:central}',
-  '.ac-fold-btn circle,.ac-group-btn circle{fill:#4c8dff;stroke:#ffffff;stroke-width:1.5}',
-  '.ac-fold-btn text,.ac-group-btn text{fill:#fff;font-size:10px;text-anchor:middle}',
+  '.ac-h0 .ac-shape{stroke:#c238c2}',
+  '.ac-h1 .ac-shape{stroke:#ca4772}',
+  '.ac-h2 .ac-shape{stroke:#c94f43}',
+  '.ac-h3 .ac-shape{stroke:#91732a}',
+  '.ac-h4 .ac-shape{stroke:#27864f}',
+  '.ac-h5 .ac-shape{stroke:#268478}',
+  '.ac-h6 .ac-shape{stroke:#377abc}',
+  '.ac-h7 .ac-shape{stroke:#8e5ed0}',
 ].join('')
 
 // 把画布内容做成一张独立的、自解释的 SVG。
@@ -832,16 +810,14 @@ function junctionPoint(node, side, dist?: number) {
 }
 
 /**
- * 连线几何管线计算：从模型、折叠映射、折叠几何与节点几何计算整图所有连线的几何。
- * 纯函数，按 [model, foldMap, foldGeom, gstate] 缓存，解耦选中有助于大幅提升点选交互响应速度。
+ * 连线几何管线计算：从模型与节点几何算出整图所有连线的几何。
+ * 纯函数，按 [model, gstate] 缓存，解耦选中有助于大幅提升点选交互响应速度。
  */
-function computeEdgeLayout(model, foldMap, foldGeom, gstate) {
+function computeEdgeLayout(model, gstate) {
   if (!model || !model.nodes || !model.edges) {
     return { routed: [], junctionAnchors: {}, outJunctionAnchors: {}, edgeToJunction: {} }
   }
   var visGeom = function (id) {
-    var fid = foldMap && foldMap[id]
-    if (fid && foldGeom && foldGeom[fid]) return foldGeom[fid]
     return gstate && gstate[id]
   }
 
@@ -875,14 +851,10 @@ function computeEdgeLayout(model, foldMap, foldGeom, gstate) {
 
   var consolidatedRenderModel = consolidateEdgesModel(model)
   var renderEdges = consolidatedRenderModel.edges || []
-  var sideGroups = {}
+  var sideBuckets = {}
   var edgeSidesList = []
   for (var gi = 0; gi < renderEdges.length; gi++) {
     var ge = renderEdges[gi]
-    if (foldMap && foldMap[ge.from] && foldMap[ge.from] === foldMap[ge.to]) {
-      edgeSidesList.push(null)
-      continue
-    }
     var ga2 = visGeom(ge.from)
     var gb2 = visGeom(ge.to)
     if (!ga2 || !gb2) {
@@ -895,17 +867,17 @@ function computeEdgeLayout(model, foldMap, foldGeom, gstate) {
       var got = gend === 0 ? gb2 : ga2
       var gside = gend === 0 ? gSides.a : gSides.b
       var gunit = gend === 0 ? ge.from : ge.to
-      var gkey = ((foldMap && foldMap[gunit]) || gunit) + '|' + gside
-      if (!sideGroups[gkey]) sideGroups[gkey] = []
+      var gkey = gunit + '|' + gside
+      if (!sideBuckets[gkey]) sideBuckets[gkey] = []
       var gax = gside === 't' || gside === 'b'
-      sideGroups[gkey].push({ ei: gi, end: gend, at: gax ? got.x : got.y })
+      sideBuckets[gkey].push({ ei: gi, end: gend, at: gax ? got.x : got.y })
     }
   }
 
   var junctionAnchors = {}
   var edgeToJunction = {}
-  for (var sk2 in sideGroups) {
-    var arr2 = sideGroups[sk2]
+  for (var sk2 in sideBuckets) {
+    var arr2 = sideBuckets[sk2]
     var parts2 = sk2.split('|')
     var unit2 = parts2[0], side2 = parts2[1]
     var inEdges = []
@@ -930,8 +902,8 @@ function computeEdgeLayout(model, foldMap, foldGeom, gstate) {
 
   var outJunctionAnchors = {}
   var edgeToOutJunction = {}
-  for (var sk3 in sideGroups) {
-    var arr3 = sideGroups[sk3]
+  for (var sk3 in sideBuckets) {
+    var arr3 = sideBuckets[sk3]
     var outEdges = []
     for (var oi2 = 0; oi2 < arr3.length; oi2++) {
       if (arr3[oi2].end === 0) outEdges.push(arr3[oi2])
@@ -949,8 +921,8 @@ function computeEdgeLayout(model, foldMap, foldGeom, gstate) {
   }
 
   var portSlots = {}
-  for (var sk in sideGroups) {
-    var sArr = sideGroups[sk]
+  for (var sk in sideBuckets) {
+    var sArr = sideBuckets[sk]
     sArr.sort(function (x, y) { return x.at - y.at })
     for (var si2 = 0; si2 < sArr.length; si2++) {
       var sItem = sArr[si2]
@@ -968,7 +940,6 @@ function computeEdgeLayout(model, foldMap, foldGeom, gstate) {
   var routed = []
   for (var ei = 0; ei < renderEdges.length; ei++) {
     var red = renderEdges[ei]
-    if (foldMap && foldMap[red.from] && foldMap[red.from] === foldMap[red.to]) continue
     var rek = red.from < red.to ? red.from + '|' + red.to : red.to + '|' + red.from
     var ren = pairCount[rek] || 1
     var reidx = pairSeen[rek] || 0

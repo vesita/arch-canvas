@@ -41,6 +41,8 @@ function registerArchInputTrigger(ctx, disposers) {
   var source = {
     trigger: '@',
     name: 'arch-canvas',
+    // 这是 **DSH 输入触发器菜单**的开关（要不要在 @ 菜单里显示「来源分组标题」这一行），
+    // 与画布上已经删掉的那个「组」毫无关系 —— 别连坐。
     showGroupTitle: true,
     candidates: function (session, req) {
       var query = String(req && req.query != null ? req.query : '').trim().toLowerCase()

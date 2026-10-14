@@ -38,7 +38,7 @@ ok('退回原生定时器（轮询挂在原生 setInterval 上）', nativeInterv
 ok('起始页在装机形态下也在', strictHost.innerHTML.indexOf('这张图还是空的') >= 0)
 await act(async () => { strictRoot.unmount() })
 
-console.log('\n[4r] 客户端逻辑审计的修复：自动布局不许丢字段 / 导出不带角标 / 折叠端口 / 组 id / 无穿透 / @ 词边界 / 点选才展开详情')
+console.log('\n[4r] 客户端逻辑审计的修复：自动布局不许丢字段 / 导出不带角标 / 无穿透 / @ 词边界 / 点选才展开详情')
 {
   const mountModel = async (MODEL, draft, ops) => {
     const prevR = respond
@@ -83,16 +83,16 @@ console.log('\n[4r] 客户端逻辑审计的修复：自动布局不许丢字段
   }
 
   // ---- A. 自动布局（点按钮 / 加载没坐标的图）不许把 files / note / link 丢掉 ----
-  // 从前的 autoLayout 逐字段重建节点，只留 {id,label,shape,group,x,y} —— 点一下「自动布局」，
+  // 从前的 autoLayout 逐字段重建节点，只留 {id,label,shape,x,y} —— 点一下「自动布局」，
   // 锚点、留言、已解决标记、下钻链接全没，而且紧接着落盘，永久损坏。
   const AL_MODEL = {
     // 故意不给坐标：needsLayout → applyServer 里就会走 autoLayout
     nodes: [
-      { id: 'ay1', label: '甲', shape: 'rect', group: null, note: '别丢我', noteDone: false, files: ['src/client/studio.ts'], link: 'sub' },
-      { id: 'ay2', label: '乙', shape: 'rect', group: null },
+      { id: 'ay1', label: '甲', shape: 'rect', note: '别丢我', noteDone: false, files: ['src/client/studio.ts'], link: 'sub' },
+      { id: 'ay2', label: '乙', shape: 'rect' },
     ],
     edges: [{ id: 'ae1', from: 'ay1', to: 'ay2', label: '', arrow: '-->' }],
-    groups: [], direction: 'TD', extras: [],
+    direction: 'TD', extras: [],
   }
   const alRes = await mountModel(AL_MODEL, '', async ({ host }) => {
     const g = Array.from(host.querySelectorAll('g.ac-node')).find((el) => (el.textContent || '').indexOf('甲') >= 0)
@@ -121,15 +121,15 @@ console.log('\n[4r] 客户端逻辑审计的修复：自动布局不许丢字段
   })
 
   // ---- B. 导出的 SVG 不许带角标（脱离主题的独立文档里 circle/text 缺省是纯黑，会成一坨黑斑）----
-  // 模型里带上第二个节点 / 一条连线 / 一个组：这样 live DOM 里**确实**有 `.ac-edge-hit`
-  // （连线的透明命中区，宽 14）、组框、边标签 —— 否则 C 段「导出里没有命中区」是空断言。
+  // 模型里带上第二个节点 / 一条连线 / 一个带标签的节点：这样 live DOM 里**确实**有 `.ac-edge-hit`
+  // （连线的透明命中区，宽 14）、标签徽章、边标签 —— 否则「导出里没有命中区」是空断言。
   const EXP_MODEL = {
     nodes: [
-      { id: 'ex1', label: '导出的方块', shape: 'rect', group: 'eg', x: 0, y: 0, note: '有留言', files: ['a.ts'], link: 'sub', tags: ['核心'] },
-      { id: 'ex2', label: '另一个方块', shape: 'rect', group: null, x: 260, y: 200 },
+      { id: 'ex1', label: '导出的方块', shape: 'rect', x: 0, y: 0, note: '有留言', files: ['a.ts'], link: 'sub', tags: ['核心'] },
+      { id: 'ex2', label: '另一个方块', shape: 'rect', x: 260, y: 200 },
     ],
     edges: [{ id: 'ee1', from: 'ex1', to: 'ex2', label: '连着', arrow: '-->' }],
-    groups: [{ id: 'eg', label: '导出组' }], direction: 'TD', extras: [],
+    direction: 'TD', extras: [],
   }
   const realBlob = globalThis.Blob
   const realCreate = globalThis.URL.createObjectURL
@@ -165,173 +165,19 @@ console.log('\n[4r] 客户端逻辑审计的修复：自动布局不许丢字段
     ;(exportedSvg.match(/class="[^"]*"/g) || []).forEach((attr) => {
       attr.slice(7, -1).split(/\s+/).forEach((c) => { if (c) usedClasses.add(c) })
     })
-    // 白名单只有**纯几何容器**：那个 <g> 只做分组，没有自己的绘制属性，不需要样式规则。
-    const CLASS_WHITELIST = ['ac-grp']
     const ruleOfClass = (c) => new RegExp('\\.' + c.replace(/[-]/g, '\\-') + '(?![\\w-])')
-    const noRule = Array.from(usedClasses).filter((c) => CLASS_WHITELIST.indexOf(c) < 0 && !ruleOfClass(c).test(styleBlock))
+    const noRule = Array.from(usedClasses).filter((c) => !ruleOfClass(c).test(styleBlock))
     eq('导出里每个 class 都在 EXPORT_CSS 里有规则（纯几何容器除外）', noRule.join(','), '')
     ok('用到的 class 够多（否则上一条是空转）', usedClasses.size >= 8, Array.from(usedClasses).sort().join(','))
     ok('导出里没有连线命中区 ac-edge-hit（缺省 fill 是纯黑，会沿每条折线糊一块）',
       exportedSvg.indexOf('ac-edge-hit') < 0)
-    // 负向对照：别把整张图也剔掉了 —— 节点 / 连线 / 箭头 / 组框 / 组名都还得在
+    // 负向对照：别把整张图也剔掉了 —— 节点 / 连线 / 箭头都还得在
     ok('负向对照：节点还在', /class="ac-node(?![\w-])/.test(exportedSvg))
     ok('负向对照：连线与箭头还在', /class="ac-edge(?![\w-])/.test(exportedSvg) && exportedSvg.indexOf('ac-arrowhead') >= 0)
-    ok('负向对照：组框与组名还在', exportedSvg.indexOf('ac-group-box') >= 0 && exportedSvg.indexOf('ac-group-lbl') >= 0)
+    ok('负向对照：节点上的标签徽章还在（tags 配色的新载体）', exportedSvg.indexOf('ac-tag-badge') >= 0
+      && Array.from(usedClasses).some((c) => /^ac-h[0-7]$/.test(c)), Array.from(usedClasses).sort().join(','))
     ok('负向对照：EXPORT_CSS 里确实有 .ac-node / .ac-edge / .ac-shape 规则（所以上上条不是恒真式）',
       ruleOfClass('ac-node').test(styleBlock) && ruleOfClass('ac-edge').test(styleBlock) && ruleOfClass('ac-shape').test(styleBlock))
-  })
-
-  // ---- C. 折叠组的端口要沿块边展开，而不是全叠在块边中心 ----
-  const FOLD_MODEL = {
-    nodes: [
-      { id: 'f1', label: '组内一', shape: 'rect', group: 'fg', x: 0, y: 0 },
-      { id: 'f2', label: '组内二', shape: 'rect', group: 'fg', x: 220, y: 0 },
-      { id: 'f3', label: '外部', shape: 'rect', group: null, x: 110, y: 420 },
-    ],
-    edges: [
-      { id: 'fe1', from: 'f1', to: 'f3', label: '', arrow: '-->' },
-      { id: 'fe2', from: 'f2', to: 'f3', label: '', arrow: '-->' },
-    ],
-    groups: [{ id: 'fg', label: '折叠组' }], direction: 'TD', extras: [],
-  }
-  await mountModel(FOLD_MODEL, '', async ({ host }) => {
-    const foldBtn = host.querySelector('.ac-group-btn')
-    ok('找到组的收起按钮', !!foldBtn)
-    await act(async () => {
-      foldBtn.dispatchEvent(new dom.window.PointerEvent('pointerdown', { bubbles: true, button: 0 }))
-    })
-    await flush()
-    const ds = Array.from(host.querySelectorAll('path.ac-edge')).map((p) => p.getAttribute('d'))
-    eq('折叠后两根外部连线都画出来了', ds.length, 2)
-    const firstX = ds.map((d) => Number((/^M (-?[\d.]+)/.exec(d) || [])[1]))
-    // 两根线的起点都在折叠块的同一条边上；从前按**原始节点 id** 分组，每组只有 1 根线，
-    // 端口偏移恒为 0 —— 箭头全叠在块边中心（|Δ| = 0）。
-    ok('两根线在折叠块边上展开了（端口相距 ≥ 12）',
-      Math.abs(firstX[0] - firstX[1]) >= 12 || Math.abs(firstX[0] - firstX[1]) === 0,
-      firstX)
-    ok('负向对照：它们确实分开摆（不是都落在块边中心）', Math.abs(firstX[0] - firstX[1]) >= 12, firstX)
-  })
-
-  // ---- D. 组 id 必须洗掉空格，且能认领已有组（按标签）----
-  const GRP_MODEL = {
-    nodes: [
-      { id: 'g1', label: '甲', shape: 'rect', group: 'AI端', x: 0, y: 0 },
-      { id: 'g2', label: '乙', shape: 'rect', group: null, x: 220, y: 0 },
-    ],
-    edges: [], groups: [{ id: 'AI端', label: 'AI 端' }], direction: 'TD', extras: [],
-  }
-  const groupField = (host) => Array.from(host.querySelectorAll('.ac-dock .ac-field'))
-    .find((el) => (el.querySelector('label')?.textContent || '').indexOf('分组') === 0)
-  const groupSelect = (host) => groupField(host)?.querySelector('select')
-  // 「新组名字」那一格只在选到「＋ 新建组…」时才存在
-  const groupNameInput = (host) => {
-    const f = Array.from(host.querySelectorAll('.ac-dock .ac-field'))
-      .find((el) => (el.querySelector('label')?.textContent || '').indexOf('新组名字') === 0)
-    return f && f.querySelector('input')
-  }
-  const optTexts = (sel) => Array.from(sel.querySelectorAll('option')).map((o) => o.textContent)
-  const pickOption = async (sel, value) => {
-    const d = Object.getOwnPropertyDescriptor(dom.window.HTMLSelectElement.prototype, 'value').set
-    d.call(sel, value)
-    await act(async () => { sel.dispatchEvent(new dom.window.Event('change', { bubbles: true })) })
-    await flush()
-  }
-  const typeName = async (input, v) => {
-    await act(async () => { setNativeValue(input, v, dom.window.HTMLInputElement.prototype) })
-    await flush()
-    await act(async () => { input.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true })) })
-    await flush()
-  }
-  await mountModel(GRP_MODEL, '', async ({ host, sets }) => {
-    const nodeOf = (t) => Array.from(host.querySelectorAll('g.ac-node')).find((el) => (el.textContent || '').indexOf(t) >= 0)
-
-    // ---- A. 三态都在：不分组 / 现有组（带成员数）/ 新建 ----
-    await act(async () => { clickEl(nodeOf('乙')) })
-    await flush()
-    const sel = groupSelect(host)
-    ok('检查器里的分组是一个下拉框', !!sel)
-    eq('下拉框的值就是节点当前的组（乙没组 → 空）', sel.value, '')
-    const texts = optTexts(sel)
-    ok('第 1 项是「不属于任何组」', texts[0] === '不属于任何组', texts)
-    ok('列出了现有组，并且带成员数', texts.indexOf('AI 端（1）') >= 0, texts)
-    eq('最后一项是「＋ 新建组…」', texts[texts.length - 1], '＋ 新建组…')
-
-    // ---- B. 新建：id 洗过、label 保留原话 ----
-    await pickOption(sel, '#new')
-    ok('选了「新建组」才出现名字输入框', !!groupNameInput(host))
-    // 用一个**全新的**名字：没有任何已有组能按标签认领，所以这里考的就是 id 清洗本身
-    await typeName(groupNameInput(host), '数据 层')
-    ok('新建过之后名字框收起来了', !groupNameInput(host))
-    const sent = sets[sets.length - 1]
-    const node = sent && sent.nodes.find((x) => x.id === 'g2')
-    ok('新组的 id 不含空格（含空格会把 subgraph 语法写坏）',
-      /^\S+$/.test(String((node && node.group) || '')), node && node.group)
-    eq('空格被洗成下划线', node && node.group, '数据_层')
-    ok('label 保留用户打的原话（给人看的名字不用洗）',
-      !!(sent && sent.groups.find((g) => g.id === '数据_层' && g.label === '数据 层')),
-      sent && sent.groups)
-
-    // ---- C. 认领：名字撞上已有组的标签，不该凭空多一个组 ----
-    await act(async () => { clickEl(nodeOf('甲')) })
-    await flush()
-    eq('已属于某个组时，下拉框选中的是那个组', groupSelect(host).value, 'AI端')
-    await pickOption(groupSelect(host), '#new')
-    await typeName(groupNameInput(host), 'AI 端')
-    const sent2 = sets[sets.length - 1]
-    const node1 = sent2 && sent2.nodes.find((x) => x.id === 'g1')
-    eq('按标签认领已有组：打 "AI 端" 对上 id "AI端"（不是凭空多一个）', node1 && node1.group, 'AI端')
-    eq('组总数不变（没有多出第二个 AI 组）', sent2 && sent2.groups.length, 2)
-
-    // ---- D. 选一个现有组：这是接线的老毛病，值得一条断言 ----
-    //    `mountModel` 每次都换一份桩模型，所以这里先把「乙」放回一个已存在的组里再验下拉框。
-    await act(async () => { clickEl(nodeOf('乙')) })
-    await flush()
-    await pickOption(groupSelect(host), 'AI端')
-    const sent3 = sets[sets.length - 1]
-    eq('选现有组 → 直接落到那个组 id 上', sent3 && sent3.nodes.find((x) => x.id === 'g2').group, 'AI端')
-    // 反向：选「不属于任何组」要真的移出（值回到空串，节点 group 变 null）
-    await pickOption(groupSelect(host), '')
-    const sent4 = sets[sets.length - 1]
-    eq('选「不属于任何组」→ 节点的 group 变成 null',
-      sent4 && sent4.nodes.find((x) => x.id === 'g2').group, null)
-  })
-
-  // ---- D3. 真实的危险案例：宿主与客户端对同一个名字**洗得不一样**
-  //   两条路的规则本来就不是一套：
-  //     宿主 `cleanId`：不在 [A-Za-z0-9_] 里的字符**一律换成 '_'**（'数据-层' → '数据_层'）
-  //     客户端 `groupKeyOf`：空格换成 '_'，但 `-` `+` `.` 这些标点**原样留着**（→ '数据-层'）
-  //   所以文件里真会出现 `subgraph 数据_层["数据-层"]`。用户在检查器里再打一次同样的名字，
-  //   必须**按 label 认领**那个已经是同一组的组 —— 否则图上凭空多一个同名组，结构被分成两半。
-  //   （第一版这里用的是 'AI 端'，而空格两边都洗成 '_'，于是这条断言在没有认领逻辑时照样过 ——
-  //    空转。负向对照抓出来的。）
-  const DUAL_MODEL = {
-    nodes: [{ id: 'd1', label: '丁', shape: 'rect', group: null, x: 0, y: 0 }],
-    edges: [], groups: [{ id: '数据_层', label: '数据-层' }], direction: 'TD', extras: [],
-  }
-  await mountModel(DUAL_MODEL, '', async ({ host, sets }) => {
-    await act(async () => { clickEl(Array.from(host.querySelectorAll('g.ac-node'))[0]) })
-    await flush()
-    await pickOption(groupSelect(host), '#new')
-    await typeName(groupNameInput(host), '数据-层')
-    const sent = sets[sets.length - 1]
-    eq('两边洗法不一致时也要认领已有组（否则图上多一个同名组）',
-      sent && sent.nodes.find((n) => n.id === 'd1').group, '数据_层')
-    eq('组数没有变多', sent && sent.groups.length, 1)
-  })
-
-  // ---- D2. 负向对照：节点指着一个**不在 groups 里**的组（文件手改过 / 组被删过），
-  //   下拉框必须也把它列出来 —— 否则 select 找不到匹配项会退回显示第一项，界面就在说谎。
-  const ORPHAN_MODEL = {
-    nodes: [{ id: 'o1', label: '孤儿', shape: 'rect', group: '没这个组', x: 0, y: 0 }],
-    edges: [], groups: [], direction: 'TD', extras: [],
-  }
-  await mountModel(ORPHAN_MODEL, '', async ({ host }) => {
-    await act(async () => { clickEl(Array.from(host.querySelectorAll('g.ac-node'))[0]) })
-    await flush()
-    const sel = groupSelect(host)
-    eq('孤儿组的 id 真的被选中了（不是掉回第一项）', sel.value, '没这个组')
-    ok('下拉框里有它，并标明组已不存在',
-      optTexts(sel).some((t) => t.indexOf('没这个组') >= 0 && t.indexOf('组已不存在') >= 0), optTexts(sel))
   })
 
   // ---- E. 无穿透：自环不许捅穿自己；两个方块几乎重叠时线也不许消失 ----
@@ -372,9 +218,9 @@ console.log('\n[4r] 客户端逻辑审计的修复：自动布局不许丢字段
   }
 
   const SELF_MODEL = {
-    nodes: [{ id: 's1', label: '自环', shape: 'rect', group: null, x: 0, y: 0 }],
+    nodes: [{ id: 's1', label: '自环', shape: 'rect', x: 0, y: 0 }],
     edges: [{ id: 'se', from: 's1', to: 's1', label: '', arrow: '-->' }],
-    groups: [], direction: 'TD', extras: [],
+    direction: 'TD', extras: [],
   }
   await mountModel(SELF_MODEL, '', async ({ host }) => {
     const ds = Array.from(host.querySelectorAll('path.ac-edge')).map((p) => p.getAttribute('d'))
@@ -394,11 +240,11 @@ console.log('\n[4r] 客户端逻辑审计的修复：自动布局不许丢字段
 
   const OVERLAP_MODEL = {
     nodes: [
-      { id: 'p1', label: '甲', shape: 'rect', group: null, x: 0, y: 100 },
-      { id: 'p2', label: '乙', shape: 'rect', group: null, x: 4, y: 120 },
+      { id: 'p1', label: '甲', shape: 'rect', x: 0, y: 100 },
+      { id: 'p2', label: '乙', shape: 'rect', x: 4, y: 120 },
     ],
     edges: [{ id: 'pe', from: 'p1', to: 'p2', label: '', arrow: '-->' }],
-    groups: [], direction: 'TD', extras: [],
+    direction: 'TD', extras: [],
   }
   await mountModel(OVERLAP_MODEL, '', async ({ host }) => {
     const ds = Array.from(host.querySelectorAll('path.ac-edge')).map((p) => p.getAttribute('d'))
@@ -412,8 +258,8 @@ console.log('\n[4r] 客户端逻辑审计的修复：自动布局不许丢字段
   // 机制连同 `draftHasRef` 一起移除了（见 studio.ts「留言不进输入框」那段注释），
   // 所以现在锁的是更简单的一条：**留言在图上、草稿一个字都不动**。
   const REF_MODEL = {
-    nodes: [{ id: 'c1', label: '节点丙一', shape: 'rect', group: null, x: 0, y: 0, note: '待办', noteDone: false }],
-    edges: [], groups: [], direction: 'TD', extras: [],
+    nodes: [{ id: 'c1', label: '节点丙一', shape: 'rect', x: 0, y: 0, note: '待办', noteDone: false }],
+    edges: [], direction: 'TD', extras: [],
   }
   await mountModel(REF_MODEL, '@c11', async ({ calls }) => {
     eq('草稿里有 @c11、图上有一条未办留言 —— setDraft 一次都不调', calls.length, 0)
@@ -426,10 +272,10 @@ console.log('\n[4r] 客户端逻辑审计的修复：自动布局不许丢字段
   // 把节点挤出视野。所以「展开」必须挂在**没有位移的那一次抬手**上，而不是按下。
   const DOCK_MODEL = {
     nodes: [
-      { id: 'dk1', label: '甲', shape: 'rect', group: null, x: 0, y: 0, note: '留言甲', noteDone: false },
-      { id: 'dk2', label: '乙', shape: 'rect', group: null, x: 240, y: 0 },
+      { id: 'dk1', label: '甲', shape: 'rect', x: 0, y: 0, note: '留言甲', noteDone: false },
+      { id: 'dk2', label: '乙', shape: 'rect', x: 240, y: 0 },
     ],
-    edges: [], groups: [], direction: 'TD', extras: [],
+    edges: [], direction: 'TD', extras: [],
   }
   await mountModel(DOCK_MODEL, '', async ({ host, sets }) => {
     const svgEl = host.querySelector('svg.ac-svg')
@@ -546,10 +392,10 @@ console.log('\n[4s] 跨页记忆（画布是主窗口子页，切走就卸载）
 {
   const MODEL_A = {
     nodes: [
-      { id: 'a4', label: '甲', shape: 'rect', group: null, x: 0, y: 0 },
-      { id: 'b7', label: '乙', shape: 'rect', group: null, x: 240, y: 0 },
+      { id: 'a4', label: '甲', shape: 'rect', x: 0, y: 0 },
+      { id: 'b7', label: '乙', shape: 'rect', x: 240, y: 0 },
     ],
-    edges: [], groups: [], direction: 'TD', extras: [],
+    edges: [], direction: 'TD', extras: [],
   }
   const mountIn = async (opts) => {
     const prevR = respond
@@ -711,7 +557,7 @@ console.log('\n[4s] 跨页记忆（画布是主窗口子页，切走就卸载）
   // 展开文本：活跃会话优先；两个会话同名节点、而活跃的那个没有 —— 宁可不展开
   await mountIn({
     sessionId: 's-at-c', key: 'at/c',
-    model: { nodes: [{ id: 'a4', label: '三号', shape: 'rect', group: null, x: 0, y: 0 }], edges: [], groups: [], direction: 'TD', extras: [] },
+    model: { nodes: [{ id: 'a4', label: '三号', shape: 'rect', x: 0, y: 0 }], edges: [], direction: 'TD', extras: [] },
     revision: 1, ops: async () => {},
   })
   capturedSource.lexicon({ sessionId: 's-at-c' })
@@ -730,11 +576,11 @@ console.log('\n[4t] 锚点保鲜：角标三态 / 检查器逐条说明 / 画布
   const prevR = respond
   const DR_MODEL = {
     nodes: [
-      { id: 'dr1', label: '改过的', shape: 'rect', group: null, x: 0, y: 0, files: ['src/host/mermaid.ts#parseMermaid'] },
-      { id: 'dr2', label: '好着的', shape: 'rect', group: null, x: 240, y: 0, files: ['src/host/plugin.ts'] },
-      { id: 'dr3', label: '坏掉的', shape: 'rect', group: null, x: 480, y: 0, files: ['src/host/没了.ts'] },
+      { id: 'dr1', label: '改过的', shape: 'rect', x: 0, y: 0, files: ['src/host/mermaid.ts#parseMermaid'] },
+      { id: 'dr2', label: '好着的', shape: 'rect', x: 240, y: 0, files: ['src/host/plugin.ts'] },
+      { id: 'dr3', label: '坏掉的', shape: 'rect', x: 480, y: 0, files: ['src/host/没了.ts'] },
     ],
-    edges: [], groups: [], direction: 'TD', extras: [],
+    edges: [], direction: 'TD', extras: [],
   }
   const drFileStatus = {
     dr1: { 'src/host/mermaid.ts#parseMermaid': 'ok' },
@@ -842,7 +688,7 @@ console.log('\n[4t] 锚点保鲜：角标三态 / 检查器逐条说明 / 画布
   drHost.remove()
 }
 
-console.log('\n[4u] 描边亮度与组配色：描边不再用「边框」令牌，同一组一个稳定色相')
+console.log('\n[4u] 描边亮度与标签配色：描边不再用「边框」令牌，同一个标签一个稳定色相')
 {
   const ruleOf = (sel) => {
     const i = insertedCss.indexOf(sel + '{')
@@ -863,38 +709,40 @@ console.log('\n[4u] 描边亮度与组配色：描边不再用「边框」令牌
   ok('--ac-line 有深色值', darkAt >= 0)
   ok('深色那份描边与浅色不同', darkAt >= 0 && insertedCss.slice(darkAt).indexOf('--ac-line:#86888a') >= 0)
 
-  // c. 八档色相：每档都要有「描边 / 框填充 / 组名」三条，且都指向自己的变量
+  // c. 八档色相：每档一条「节点描边」规则，指向自己的变量。组的那两条（框填充 / 组名）
+  //    已随组一起删掉 —— 这里顺带钉死它们回不来。
   let hueRules = 0
   for (let i = 0; i < 8; i++) {
-    if (insertedCss.indexOf(`.ac-h${i} .ac-shape,.ac-h${i} .ac-group-box,.ac-h${i} .ac-fold-box{stroke:var(--ac-p${i})}`) >= 0) hueRules++
-    if (insertedCss.indexOf(`.ac-h${i} .ac-group-box,.ac-h${i} .ac-fold-box{fill:var(--ac-p${i});fill-opacity:var(--ac-fill-a)}`) >= 0) hueRules++
-    if (insertedCss.indexOf(`.ac-h${i} .ac-group-lbl,.ac-h${i} .ac-fold-lbl{fill:var(--ac-p${i})}`) >= 0) hueRules++
+    if (insertedCss.indexOf(`.ac-h${i} .ac-shape{stroke:var(--ac-p${i})}`) >= 0) hueRules++
   }
-  eq('八档色相 × 三条规则都在样式表里', hueRules, 24)
+  eq('八档色相都在样式表里', hueRules, 8)
+  ok('样式表里不再有组框 / 折叠块的规则', insertedCss.indexOf('ac-group') < 0 && insertedCss.indexOf('ac-fold') < 0)
   // 导出件（白底）是字面色板，与屏幕同一套色相 —— 别让屏幕和导出长得不一样
   const hueShapeSel = (insertedCss.match(/\.ac-h[0-7] \.ac-shape/g) || []).length
   ok('导出样式表也带了这八档（屏幕 8 条 + 导出 8 条）', hueShapeSel >= 16, hueShapeSel)
 
-  // d. 真渲染一遍：组框、组内节点的边框是同一个档位；无组的节点没有档位
-  // 两个组 id 在哈希上**故意撞档**（alpha 与 组一 都落在 1）：只有这样才真的走到
-  // 「撞了往后探」那条路，也才验得出下面的顺序无关性 —— 不撞的话探针分支一次都没跑。
+  // d. 真渲染一遍：打了同一个 `tag` 的节点同一个档位；没打标签的落回中性（不带档位）。
+  //    两个 tag 在哈希上**故意撞档**（'alpha' 与 '组一' 都落在 1）：只有这样才真的走到
+  //    「撞了按字典序往后探」那条路 —— 不撞的话探针分支一次都没跑。
   const prevR = respond
-  const PAL = (reversed) => ({
-    nodes: [
-      { id: 'pa', label: '甲一', shape: 'rect', group: 'alpha', x: 0, y: 0 },
-      { id: 'pb', label: '甲二', shape: 'rect', group: 'alpha', x: 240, y: 0 },
-      { id: 'pc', label: '乙一', shape: 'rect', group: '组一', x: 0, y: 200 },
-      { id: 'pd', label: '野的', shape: 'rect', group: null, x: 240, y: 200 },
-    ],
-    edges: [{ id: 'e1', from: 'pa', to: 'pc' }],
-    groups: reversed
-      ? [{ id: '组一', label: '乙组' }, { id: 'alpha', label: '甲组' }]
-      : [{ id: 'alpha', label: '甲组' }, { id: '组一', label: '乙组' }],
-    direction: 'TD', extras: [],
-  })
+  // reversed = 节点顺序颠倒。档位只取决于「有哪些 tag」，与它们出现的顺序无关 ——
+  // 否则删掉一个节点，别的节点记住的「那个紫色方块」就会换色。
+  const PAL = (reversed) => {
+    const nodes = [
+      { id: 'pa', label: '甲一', shape: 'rect', x: 0, y: 0, tags: ['alpha'] },
+      { id: 'pb', label: '甲二', shape: 'rect', x: 240, y: 0, tags: ['alpha'] },
+      { id: 'pc', label: '乙一', shape: 'rect', x: 0, y: 200, tags: ['组一'] },
+      { id: 'pd', label: '野的', shape: 'rect', x: 240, y: 200, tags: [] },
+    ]
+    return {
+      nodes: reversed ? nodes.slice().reverse() : nodes,
+      edges: [{ id: 'e1', from: 'pa', to: 'pc' }],
+      direction: 'TD', extras: [],
+    }
+  }
   async function renderPal(model, sid) {
     respond = function (method, args) {
-      const extra = { model, nodeCount: model.nodes.length, groupCount: model.groups.length, key: 'pal/x', diagram: 'pal/x' }
+      const extra = { model, nodeCount: model.nodes.length, key: 'pal/x', diagram: 'pal/x' }
       if (method === 'doc:get') return fullDoc(extra)
       if (method === 'doc:set') return fullDoc(Object.assign({}, extra, { model: args.model }))
       if (method === 'doc:rev') return { revision: 1, updatedBy: 'switch', diagram: 'pal/x', dir: UI + '/.arch-canvas', libraryRev: 1, external: null }
@@ -916,32 +764,27 @@ console.log('\n[4u] 描边亮度与组配色：描边不再用「边框」令牌
     const m = el ? /(?:^|\s)ac-h(\d)(?:\s|$)/.exec(el.getAttribute('class') || '') : null
     return m ? Number(m[1]) : null
   }
-  const nodeHue = (host, title) => hueIn(Array.from(host.querySelectorAll('g.ac-node'))
-    .find((el) => ((el.querySelector('.ac-lbl') || {}).textContent || '').trim() === title))
-  const grpHue = (host, label) => hueIn(Array.from(host.querySelectorAll('g.ac-grp'))
-    .find((el) => ((el.querySelector('.ac-group-lbl') || {}).textContent || '').trim() === label))
+  const nodeEl = (host, title) => Array.from(host.querySelectorAll('g.ac-node'))
+    .find((el) => ((el.querySelector('.ac-lbl') || {}).textContent || '').trim() === title)
+  const nodeHue = (host, title) => hueIn(nodeEl(host, title))
 
   const p1 = await renderPal(PAL(false), 's-pal-1')
-  const a1 = grpHue(p1.host, '甲组')
-  const b1 = grpHue(p1.host, '乙组')
-  ok('组框带上了色相类', a1 !== null && b1 !== null, { a1, b1 })
-  ok('两个组拿到的档位不同', a1 !== null && b1 !== null && a1 !== b1, { a1, b1 })
-  // 正向先立住，否则下面「没色相」那条是空断言
-  eq('组内节点与组框同档（甲）', nodeHue(p1.host, '甲一'), a1)
-  eq('组内第二个节点也同档（甲）', nodeHue(p1.host, '甲二'), a1)
-  eq('另一个组的节点跟另一个档（乙）', nodeHue(p1.host, '乙一'), b1)
-  // **负向对照**：不属于任何组的节点不许带档位（否则它就跟着别人的色走了）
-  eq('无组节点没有色相类', nodeHue(p1.host, '野的'), null)
-  ok('无组节点仍然渲染出来了（所以上一条不是「没找到元素」）', !!Array.from(p1.host.querySelectorAll('g.ac-node'))
-    .find((el) => ((el.querySelector('.ac-lbl') || {}).textContent || '').trim() === '野的'))
+  const a1 = nodeHue(p1.host, '甲一')
+  const b1 = nodeHue(p1.host, '乙一')
+  // **配色断言（去组之后的替代载体）**：同一个 tag 的节点拿到同一个非空档位。
+  ok('打了标签的节点带上色相类（非空）', a1 !== null && b1 !== null, { a1, b1 })
+  eq('同一个 tag 的两个节点同档（甲一 == 甲二）', nodeHue(p1.host, '甲二'), a1)
+  ok('两个撞档的 tag 被探针分开（alpha != 组一）', a1 !== null && b1 !== null && a1 !== b1, { a1, b1 })
+  // **负向对照**：没打标签的节点不许带档位（否则它就跟着别人的色走了）
+  eq('无标签节点没有色相类（中性 --ac-line）', nodeHue(p1.host, '野的'), null)
+  ok('无标签节点仍然渲染出来了（所以上一条不是「没找到元素」）', !!nodeEl(p1.host, '野的'))
   await act(async () => { p1.root.unmount() })
   p1.host.remove()
 
-  // e. **不变量**：档位只取决于「有哪些组」，与组在文件里的顺序无关 ——
-  //    否则删掉中间一个组，用户记住的「那个绿框」就会换色。
+  // e. **不变量**：档位只取决于「有哪些 tag」，与节点在文件里的顺序无关。
   const p2 = await renderPal(PAL(true), 's-pal-2')
-  eq('组顺序颠倒后，同一个组的档位不变（甲）', grpHue(p2.host, '甲组'), a1)
-  eq('组顺序颠倒后，同一个组的档位不变（乙）', grpHue(p2.host, '乙组'), b1)
+  eq('节点顺序颠倒后，同一个 tag 的档位不变（alpha）', nodeHue(p2.host, '甲一'), a1)
+  eq('节点顺序颠倒后，撞档那一档也不变（组一）', nodeHue(p2.host, '乙一'), b1)
   await act(async () => { p2.root.unmount() })
   p2.host.remove()
 
@@ -962,7 +805,6 @@ console.log('\n[4x] 连线几何解耦选中态与 DOM 级等价证明');
       { id: 'se2', from: 'sb', to: 'sc', arrow: '-->' },
       { id: 'se3', from: 'sc', to: 'sa', arrow: '-.->' },
     ],
-    groups: [],
     direction: 'TD',
   }
   respond = function (method, args) {
@@ -1050,7 +892,7 @@ console.log('\n[4u] 画布键盘可达性：节点 tabindex="0"、role="button" 
       { id: 'k2', label: '节点2', shape: 'rect', x: 200, y: 50 },
     ],
     edges: [{ id: 'ke1', from: 'k1', to: 'k2', label: '', arrow: '-->' }],
-    groups: [], direction: 'TD', extras: [],
+    direction: 'TD', extras: [],
   }
   respond = function (method, args) {
     if (method === 'doc:get') return fullDoc({ model: KB_MODEL, nodeCount: 2, edgeCount: 1 })
@@ -1084,6 +926,72 @@ console.log('\n[4u] 画布键盘可达性：节点 tabindex="0"、role="button" 
   await act(async () => { kbRoot.unmount() })
   kbHost.remove()
   respond = prevR
+}
+
+console.log('\n[4y] 「自动布局」锚点接线 + 代码锚点角标的三档（unknown 不再是红圈）')
+{
+  // 这两条都是本轮改出来的行为，各自从真实入口（工具条按钮 / doc:get 的 fileStatus）验一遍。
+  const ANCHOR_MODEL = {
+    nodes: [
+      { id: 'k1', label: '入口', shape: 'rect', x: 0, y: 0, files: ['src/host/没了.ts'] },
+      { id: 'k2', label: '内核', shape: 'rect', x: 240, y: 0, files: ['src/host/plugin.ts'] },
+      { id: 'k3', label: '出口', shape: 'rect', x: 480, y: 0, files: [] },
+    ],
+    edges: [{ id: 'e1', from: 'k1', to: 'k2' }, { id: 'e2', from: 'k2', to: 'k3' }],
+    direction: 'TD', extras: [],
+  }
+  const prevA = respond
+  let curA = JSON.parse(JSON.stringify(ANCHOR_MODEL))
+  respond = function (method, args) {
+    if (method === 'doc:get') {
+      return fullDoc({
+        model: curA, nodeCount: curA.nodes.length, mermaid: 'flowchart TD\n',
+        fileStatus: { k1: { 'src/host/没了.ts': 'missing' }, k2: { 'src/host/plugin.ts': 'unknown' } },
+      })
+    }
+    // doc:set 故意永不回执：否则 sendModel 的异步回执会把 relayout 那句话顶掉。
+    // （真实产品里也是这个顺序 —— 状态栏先说「已…布局」，落盘回执再改成「已同步给 AI」。）
+    if (method === 'doc:set') { curA = args.model; return new Promise(function () {}) }
+    return prevA(method, args)
+  }
+  const aHost = document.createElement('div')
+  document.body.appendChild(aHost)
+  const aRoot = createRoot(aHost)
+  await act(async () => {
+    aRoot.render(React.createElement(captured['conversation.view'], { cwd: UI, sessionId: 's-anchor', useSessions: () => UI }))
+  })
+  await flush()
+  const statusText = () => ((aHost.querySelector('.ac-statusbar') || {}).textContent || '')
+  const relayoutBtn = () => Array.from(aHost.querySelectorAll('.ac-tools button')).find((b) => b.textContent.trim() === '自动布局')
+  ok('前置：工具条上找得到「自动布局」', !!relayoutBtn())
+
+  await act(async () => { relayoutBtn().click() })
+  await flush()
+  ok('没选中节点时不给锚点：文案是「已整理连线并按依赖关系自动布局」',
+    statusText().indexOf('已整理连线并按依赖关系自动布局') >= 0, statusText())
+
+  await act(async () => { clickEl(Array.from(aHost.querySelectorAll('g.ac-node'))[1], 0, 0) })
+  await flush()
+  ok('前置：选中后检查器展开了（所以下一条点的是真节点）', !!aHost.querySelector('.ac-dock'))
+  await act(async () => { relayoutBtn().click() })
+  await flush()
+  ok('选中节点时把它当锚点，文案点名那个节点的**标题**',
+    statusText().indexOf('已以「内核」为锚点整理并自动布局') >= 0, statusText())
+
+  // 角标三档：宿主判不了根时返回 unknown（不许假装 ok），界面只做**视觉降噪** —— 不画成红圈。
+  const badgeCls = (t) => {
+    const n = Array.from(aHost.querySelectorAll('g.ac-node'))
+      .find((el) => ((el.querySelector('.ac-lbl') || {}).textContent || '').trim() === t)
+    const b = n && n.querySelector('.ac-file-badge')
+    return b ? b.getAttribute('class') : null
+  }
+  eq('missing → 红圈 .broken', badgeCls('入口'), 'ac-file-badge broken')
+  eq('unknown → 中性角标，不带 .broken（判不了根 ≠ 失效）', badgeCls('内核'), 'ac-file-badge')
+  eq('没有锚点 → 连角标都不画（负向对照）', badgeCls('出口'), null)
+
+  await act(async () => { aRoot.unmount() })
+  aHost.remove()
+  respond = prevA
 }
 
 endPhase()

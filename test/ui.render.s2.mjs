@@ -1,17 +1,17 @@
 // 界面渲染分片（共享脚手架见 ui.render.shared.mjs；DOM/React/桩 RPC/槽位捕获都由它装载）。
+import { readFileSync } from 'node:fs'
 import { endPhase } from './ui.render.shared.mjs'
 
 console.log('\n[4c] 元素注释：带注释渲染、角标、清单已解决切换与检查器操作')
 {
   const NOTE_MODEL = {
     nodes: [
-      { id: 'n0', label: '无注释节点', shape: 'rect', group: null, x: 0, y: 0, note: '', noteDone: false },
-      { id: 'n1', label: '节点甲', shape: 'rect', group: null, x: 100, y: 100, note: '这里为什么不用队列？', noteDone: false },
-      { id: 'n2', label: '节点乙', shape: 'rect', group: null, x: 200, y: 100, note: '这里需要限流', noteDone: false },
-      { id: 'n3', label: '节点丙', shape: 'rect', group: null, x: 300, y: 100, note: '已确认链路', noteDone: true },
+      { id: 'n0', label: '无注释节点', shape: 'rect', x: 0, y: 0, note: '', noteDone: false },
+      { id: 'n1', label: '节点甲', shape: 'rect', x: 100, y: 100, note: '这里为什么不用队列？', noteDone: false },
+      { id: 'n2', label: '节点乙', shape: 'rect', x: 200, y: 100, note: '这里需要限流', noteDone: false },
+      { id: 'n3', label: '节点丙', shape: 'rect', x: 300, y: 100, note: '已确认链路', noteDone: true },
     ],
     edges: [],
-    groups: [],
     direction: 'TD',
     extras: [],
   }
@@ -272,11 +272,11 @@ console.log('\n[4d] 代码锚点与一句话总结：角标 / 失效可见 / 锚
 {
   const REF_MODEL = {
     nodes: [
-      { id: 'r0', label: '无锚点', shape: 'rect', group: null, x: 0, y: 0, note: '', noteDone: false, files: [] },
-      { id: 'r1', label: '解析器', shape: 'rect', group: null, x: 140, y: 0, note: '', noteDone: false, files: ['src/host/mermaid.ts#parseMermaid'] },
-      { id: 'r2', label: '坏锚点', shape: 'rect', group: null, x: 280, y: 0, note: '', noteDone: false, files: ['src/host/没了.ts'] },
+      { id: 'r0', label: '无锚点', shape: 'rect', x: 0, y: 0, note: '', noteDone: false, files: [] },
+      { id: 'r1', label: '解析器', shape: 'rect', x: 140, y: 0, note: '', noteDone: false, files: ['src/host/mermaid.ts#parseMermaid'] },
+      { id: 'r2', label: '坏锚点', shape: 'rect', x: 280, y: 0, note: '', noteDone: false, files: ['src/host/没了.ts'] },
     ],
-    edges: [], groups: [], direction: 'TD', extras: [],
+    edges: [], direction: 'TD', extras: [],
     summary: '这张图的一句话总结',
   }
   const REF_STATUS = {
@@ -420,18 +420,18 @@ console.log('\n[4e] 检查点清单：谁改的、点「退回」真发 RPC')
 {
   const HIST_MODEL = {
     nodes: [
-      { id: 'h1', label: '入口', shape: 'rect', group: null, x: 0, y: 0, note: '', noteDone: false, files: [] },
-      { id: 'h2', label: '核心（用户改）', shape: 'rect', group: null, x: 140, y: 0, note: '', noteDone: false, files: [] },
+      { id: 'h1', label: '入口', shape: 'rect', x: 0, y: 0, note: '', noteDone: false, files: [] },
+      { id: 'h2', label: '核心（用户改）', shape: 'rect', x: 140, y: 0, note: '', noteDone: false, files: [] },
     ],
-    edges: [], groups: [], direction: 'TD', extras: [], summary: '',
+    edges: [], direction: 'TD', extras: [], summary: '',
   }
   const AI_MODEL = {
     nodes: [
-      { id: 'h1', label: '入口', shape: 'rect', group: null, x: 0, y: 0, note: '', noteDone: false, files: [] },
-      { id: 'h2', label: '核心', shape: 'rect', group: null, x: 140, y: 0, note: '', noteDone: false, files: [] },
-      { id: 'hCache', label: '缓存层', shape: 'rect', group: null, x: 280, y: 0, note: '', noteDone: false, files: [] },
+      { id: 'h1', label: '入口', shape: 'rect', x: 0, y: 0, note: '', noteDone: false, files: [] },
+      { id: 'h2', label: '核心', shape: 'rect', x: 140, y: 0, note: '', noteDone: false, files: [] },
+      { id: 'hCache', label: '缓存层', shape: 'rect', x: 280, y: 0, note: '', noteDone: false, files: [] },
     ],
-    edges: [], groups: [], direction: 'TD', extras: [], summary: '',
+    edges: [], direction: 'TD', extras: [], summary: '',
   }
   const T0 = Date.now()
   let HIST_ENTRIES = [
@@ -529,19 +529,19 @@ console.log('\n[4f] 节点卡片分段与源码页解析警告')
       {
         id: 'c1',
         label: '核心服务\n意图：处理高并发请求\n原理：基于事件循环与非阻塞IO\n补充说明行',
-        shape: 'rect', group: null, x: 100, y: 100,
+        shape: 'rect', x: 100, y: 100,
         note: '', noteDone: false,
         files: ['src/server/core.ts#startServer'],
       },
       {
         id: 'c0',
         label: '单行无锚点',
-        shape: 'rect', group: null, x: 300, y: 100,
+        shape: 'rect', x: 300, y: 100,
         note: '', noteDone: false,
         files: [],
       },
     ],
-    edges: [], groups: [], direction: 'TD', extras: [], summary: '',
+    edges: [], direction: 'TD', extras: [], summary: '',
   }
   const SAMPLE_WARNS = ['第 3 行没能解析', '注释 @note n9 指向不存在的节点']
 
@@ -787,158 +787,74 @@ console.log('\n[4g] 源码页语法高亮')
   respond = prevRespond
 }
 
-console.log('\n[4h] 组折叠')
+console.log('\n[4z] 去组守门：检查器里没有「分组」，产物里没有组/折叠痕迹')
 {
-  const FOLD_MODEL = {
+  // 组（分组下拉框 / 组框 / 折叠块 / 组配色）已经从浏览器半边整个删掉，配色改由 tags 驱动。
+  // 这一节是**去组守门**：谁要把它加回来，这里先红。
+  const GUARD_MODEL = {
     nodes: [
-      { id: 'f1', label: '服务A', shape: 'rect', group: 'g1', x: 100, y: 100, note: '', noteDone: false, files: [] },
-      { id: 'f2', label: '服务B', shape: 'rect', group: 'g1', x: 100, y: 220, note: '', noteDone: false, files: [] },
-      { id: 'f3', label: '外部网关', shape: 'rect', group: null, x: 300, y: 160, note: '', noteDone: false, files: [] },
+      { id: 'gd1', label: '守门甲', shape: 'rect', x: 0, y: 0, note: '', noteDone: false, files: [], tags: ['内核'] },
+      { id: 'gd2', label: '守门乙', shape: 'rect', x: 260, y: 0, note: '', noteDone: false, files: [], tags: [] },
     ],
-    edges: [
-      { from: 'f3', to: 'f1', arrow: '-->', label: '' },
-    ],
-    groups: [
-      { id: 'g1', label: '核心组' },
-    ],
-    direction: 'TD', extras: [], summary: '',
+    edges: [], direction: 'TD', extras: [],
   }
-
-  const prevRespond = respond
-  let currentModel = JSON.parse(JSON.stringify(FOLD_MODEL))
+  const prevR = respond
+  const gm = JSON.parse(JSON.stringify(GUARD_MODEL))
   respond = function (method, args) {
-    if (method === 'doc:get') {
-      return fullDoc({
-        model: currentModel,
-        nodeCount: currentModel.nodes.length,
-        edgeCount: currentModel.edges.length,
-        groupCount: currentModel.groups.length,
-      })
-    }
-    return prevRespond(method, args)
+    if (method === 'doc:get') return fullDoc({ model: gm, nodeCount: gm.nodes.length })
+    if (method === 'doc:set') return fullDoc({ model: args.model, nodeCount: args.model.nodes.length, revision: 2, updatedBy: 'user' })
+    return prevR(method, args)
   }
 
-  const foldHost = document.createElement('div')
-  document.body.appendChild(foldHost)
-  const foldRoot = createRoot(foldHost)
+  const gHost = document.createElement('div')
+  document.body.appendChild(gHost)
+  const gRoot = createRoot(gHost)
   await act(async () => {
-    foldRoot.render(React.createElement(captured['conversation.view'], {
-      cwd: UI, sessionId: 's1', useSessions: () => UI,
+    gRoot.render(React.createElement(captured['conversation.view'], {
+      cwd: UI, sessionId: 's-degroup', useSessions: () => UI,
     }))
   })
   await flush()
 
-  // a. 默认（未折叠）存在 .ac-group-box 与 .ac-group-lbl；标签是**纯组名**，箭头在独立按钮上
-  const groupBox = foldHost.querySelector('rect.ac-group-box')
-  const groupLbl = foldHost.querySelector('text.ac-group-lbl')
-  ok('默认存在 .ac-group-box 组大框', !!groupBox)
-  ok('默认存在 .ac-group-lbl 组标签', !!groupLbl)
-  eq('组标签是纯组名（箭头已挪到按钮上）', groupLbl?.textContent, '核心组')
-  const groupBtn = foldHost.querySelector('g.ac-group-btn')
-  ok('默认存在收起按钮 .ac-group-btn', !!groupBtn)
-  eq('收起按钮的文字是 ▾', groupBtn?.querySelector('text')?.textContent, '▾')
+  // a. 画布上不再有组框与折叠块（连元素都没有，不只是「看不见」）
+  ok('画布上没有组框 rect.ac-group-box', !gHost.querySelector('rect.ac-group-box'))
+  ok('画布上没有折叠块 g.ac-fold', !gHost.querySelector('g.ac-fold'))
+  ok('画布上没有色相挂在组上（g.ac-grp）', !gHost.querySelector('g.ac-grp'))
 
-  // b. 负向对照：默认不存在 .ac-fold
-  ok('默认不存在 .ac-fold 折叠块', !foldHost.querySelector('.ac-fold'))
-
-  const edgesBefore = Array.from(foldHost.querySelectorAll('path.ac-edge'))
-  eq('默认跨组边渲染且条数为 1', edgesBefore.length, 1)
-  const edgeD1 = edgesBefore[0]?.getAttribute('d')
-
-  // c1. **负向对照**：点组名、点组框都**不**折叠 —— 收起/展开只认按钮。
-  //     这是刻意的：组块长得像个节点，点它多半是想选中或拖它，顺手把它弹开是最烦的误触。
-  const clickGroup = async (el) => {
-    await act(async () => {
-      clickEl(el)
-    })
-    await flush()
-  }
-  await clickGroup(groupLbl)
-  ok('点组名不会折叠', !foldHost.querySelector('.ac-fold'))
-  await clickGroup(groupBox)
-  ok('点组框不会折叠', !foldHost.querySelector('.ac-fold'))
-
-  // c2. 点那个按钮才会折叠
-  await clickGroup(groupBtn)
-
-  const foldEl = foldHost.querySelector('.ac-fold')
-  ok('点收起按钮后出现 .ac-fold 折叠块', !!foldEl)
-  ok('点收起按钮后 .ac-group-box 消失', !foldHost.querySelector('rect.ac-group-box'))
-
-  // d. .ac-fold-lbl 的文字是「组名（N）」—— 箭头同样在独立按钮上
-  const foldLbl = foldHost.querySelector('text.ac-fold-lbl')
-  const memberCount = FOLD_MODEL.nodes.filter((n) => n.group === 'g1').length
-  eq('.ac-fold-lbl 文字为 组名（N）且 N 等于成员数', foldLbl?.textContent, `核心组（${memberCount}）`)
-  eq('展开按钮的文字是 ▸', foldHost.querySelector('g.ac-fold-btn text')?.textContent, '▸')
-
-  // e. 负向对照：折叠后，该组内的成员节点不再出现在 g.ac-node 列表中
-  const nodeLabelsAfterFold = Array.from(foldHost.querySelectorAll('g.ac-node .ac-lbl')).map((el) => el.textContent.trim())
-  ok('折叠后组内成员节点不再出现在 g.ac-node 中', !nodeLabelsAfterFold.includes('服务A') && !nodeLabelsAfterFold.includes('服务B'))
-  ok('外部节点仍然在 g.ac-node 中渲染', nodeLabelsAfterFold.includes('外部网关'))
-
-  // g. 跨组边仍保留：折叠后 path.ac-edge 的条数与折叠前相同（边改接到折叠块，不是被删掉）
-  const edgesAfterFold = Array.from(foldHost.querySelectorAll('path.ac-edge'))
-  eq('跨组边仍保留：折叠后 path.ac-edge 条数与折叠前相同', edgesAfterFold.length, edgesBefore.length)
-  const edgeD2 = edgesAfterFold[0]?.getAttribute('d')
-  ok('跨组边端点改接至折叠块（连线路径重新计算）', !!edgeD1 && !!edgeD2 && edgeD1 !== edgeD2)
-
-  // f. 负向对照：点折叠块本体不展开；点它的按钮才复原
-  await clickGroup(foldHost.querySelector('rect.ac-fold-box'))
-  ok('点折叠块本体不会展开', !!foldHost.querySelector('.ac-fold'))
-  await clickGroup(foldHost.querySelector('g.ac-fold-btn'))
-
-  ok('点展开按钮后 .ac-group-box 回来', !!foldHost.querySelector('rect.ac-group-box'))
-  ok('点展开按钮后 .ac-fold 消失', !foldHost.querySelector('.ac-fold'))
-  const restoredNodeLabels = Array.from(foldHost.querySelectorAll('g.ac-node .ac-lbl')).map((el) => el.textContent.trim())
-  ok('复原后成员节点全部回到 g.ac-node', restoredNodeLabels.includes('服务A') && restoredNodeLabels.includes('服务B'))
-
-  await act(async () => { foldRoot.unmount() })
-  foldHost.remove()
-
-  // h. 组内边不渲染：桩模型里放一条两端同组的边，折叠后 path.ac-edge 条数比折叠前少 1
-  const INTRA_MODEL = {
-    nodes: [
-      { id: 'm1', label: '组内A', shape: 'rect', group: 'g2', x: 100, y: 100, note: '', noteDone: false, files: [] },
-      { id: 'm2', label: '组内B', shape: 'rect', group: 'g2', x: 100, y: 220, note: '', noteDone: false, files: [] },
-      { id: 'm3', label: '外部C', shape: 'rect', group: null, x: 300, y: 160, note: '', noteDone: false, files: [] },
-    ],
-    edges: [
-      { from: 'm1', to: 'm2', arrow: '-->', label: '' }, // 组内边（两端同组）
-      { from: 'm3', to: 'm1', arrow: '-->', label: '' }, // 跨组边
-    ],
-    groups: [
-      { id: 'g2', label: '数据组' },
-    ],
-    direction: 'TD', extras: [], summary: '',
-  }
-
-  currentModel = JSON.parse(JSON.stringify(INTRA_MODEL))
-
-  const intraHost = document.createElement('div')
-  document.body.appendChild(intraHost)
-  const intraRoot = createRoot(intraHost)
-  await act(async () => {
-    intraRoot.render(React.createElement(captured['conversation.view'], {
-      cwd: UI, sessionId: 's1', useSessions: () => UI,
-    }))
-  })
+  // b. 选中一个节点，把检查器展开
+  const gSvg = gHost.querySelector('svg.ac-svg')
+  ok('前置：画布渲染出来了（否则下面全是空转）', !!gSvg)
+  await act(async () => { clickEl(Array.from(gHost.querySelectorAll('g.ac-node'))[0]) })
   await flush()
+  const gDock = gHost.querySelector('.ac-dock')
+  ok('前置：检查器展开了（否则下面全是空转）', !!gDock)
 
-  const intraEdgesBefore = Array.from(intraHost.querySelectorAll('path.ac-edge'))
-  eq('折叠前共有 2 条边（1 跨组 + 1 组内）', intraEdgesBefore.length, 2)
+  // c. **守门断言**：检查器里不再有「分组」这个控件
+  ok('守门：检查器里找不到「分组」字样', gHost.innerHTML.indexOf('分组') < 0)
+  const dockSelects = gDock ? Array.from(gDock.querySelectorAll('.ac-select')) : []
+  ok('守门：检查器里的下拉框只剩「形状」一个（分组那个已经删掉）',
+    dockSelects.length === 1 && (dockSelects[0].closest('.ac-field')?.querySelector('label')?.textContent || '') === '形状',
+    dockSelects.map((s) => (s.closest('.ac-field')?.querySelector('label')?.textContent || '')))
 
-  await act(async () => {
-    intraHost.querySelector('g.ac-group-btn').dispatchEvent(new dom.window.PointerEvent('pointerdown', { bubbles: true, button: 0 }))
-  })
-  await flush()
+  // d. **负向对照**：证明上面两条有牙 —— 不是把整个检查器都删掉了
+  ok('负向对照：「概念标签」输入框还在', gHost.innerHTML.indexOf('概念标签') >= 0)
+  ok('负向对照：标题输入框还在', gHost.innerHTML.indexOf('标题（回车生效）') >= 0)
+  ok('负向对照：检查器里的字段够多（> 4 格，否则上面两条会因为整个面板没了而「通过」）',
+    gDock ? gDock.querySelectorAll('.ac-field').length > 4 : false,
+    gDock ? gDock.querySelectorAll('.ac-field').length : 0)
 
-  const intraEdgesAfter = Array.from(intraHost.querySelectorAll('path.ac-edge'))
-  eq('组内边不渲染：折叠后 path.ac-edge 条数比折叠前少 1', intraEdgesAfter.length, intraEdgesBefore.length - 1)
+  await act(async () => { gRoot.unmount() })
+  gHost.remove()
+  respond = prevR
 
-  await act(async () => { intraRoot.unmount() })
-  intraHost.remove()
-
-  respond = prevRespond
+  // e. **产物守门**：构建产物里不许再出现组/折叠的痕迹（CSS 选择器、类名、变量一并算）
+  const uiSrc = readFileSync(new URL('../dist/ui.js', import.meta.url), 'utf8')
+  for (const token of ['ac-group', 'ac-fold', 'ac-grp']) {
+    ok('产物 dist/ui.js 不含 ' + token, uiSrc.indexOf(token) < 0)
+  }
+  // 负向对照：产物确实是这份界面本体（不是读到一个空文件）
+  ok('负向对照：产物里仍有节点渲染（所以上面三条不是因为文件为空）', uiSrc.indexOf('ac-node') >= 0)
+  ok('负向对照：产物里仍有标签徽章（tags 这条新载体还在）', uiSrc.indexOf('ac-tag-badge') >= 0)
 }
 
 endPhase()

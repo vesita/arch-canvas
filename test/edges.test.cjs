@@ -444,7 +444,6 @@ console.log('\n[10] 边标签避让：两条相交边的标签中心距 ≥ 17px
       { id: 'eh', from: 'h1', to: 'h2', label: '水平标签', arrow: '-->' },
       { id: 'ev', from: 'v1', to: 'v2', label: '垂直标签', arrow: '-->' },
     ],
-    groups: [],
   };
   const gstate = {
     h1: { x: 0, y: 100, w: 40, h: 40, shape: 'rect' },
@@ -452,7 +451,7 @@ console.log('\n[10] 边标签避让：两条相交边的标签中心距 ≥ 17px
     v1: { x: 100, y: 0, w: 40, h: 40, shape: 'rect' },
     v2: { x: 100, y: 200, w: 40, h: 40, shape: 'rect' },
   };
-  const layout = computeEdgeLayout(crossModel, null, null, gstate);
+  const layout = computeEdgeLayout(crossModel, gstate);
   eq('布线成功得到两条边', layout.routed.length, 2);
   const midH = layout.routed[0].mid;
   const midV = layout.routed[1].mid;

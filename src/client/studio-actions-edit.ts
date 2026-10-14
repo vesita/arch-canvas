@@ -4,11 +4,11 @@
 function studioEditFns(S) {
   var applyServer = S.applyServer, committedRef = S.committedRef, cwd = S.cwd, cwdRef = S.cwdRef, descDraft = S.descDraft, dockForRef = S.dockForRef
   var draft = S.draft, driftRef = S.driftRef, edgeDraft = S.edgeDraft, filePath = S.filePath, fileStatusRef = S.fileStatusRef, filesDraft = S.filesDraft
-  var fittedRef = S.fittedRef, geomRef = S.geomRef, groupNewName = S.groupNewName, groupPick = S.groupPick, groups = S.groups, histRef = S.histRef
+  var fittedRef = S.fittedRef, geomRef = S.geomRef, histRef = S.histRef
   var hlTimerRef = S.hlTimerRef, hostRef = S.hostRef, labelDraft = S.labelDraft, libRevRef = S.libRevRef, mermaidText = S.mermaidText, modelRef = S.modelRef
   var noteDoneDraft = S.noteDoneDraft, noteDraft = S.noteDraft, nudgeRef = S.nudgeRef, patchHist = S.patchHist, picker = S.picker, revRef = S.revRef
-  var selRef = S.selRef, sessionId = S.sessionId, setCollapsed = S.setCollapsed, setDescDraft = S.setDescDraft, setDockOpen = S.setDockOpen, setDraft = S.setDraft
-  var setDriftTick = S.setDriftTick, setFileStatusTick = S.setFileStatusTick, setFilesDraft = S.setFilesDraft, setGroupNewName = S.setGroupNewName, setGroupPick = S.setGroupPick, setHighlight = S.setHighlight
+  var selRef = S.selRef, sessionId = S.sessionId, setDescDraft = S.setDescDraft, setDockOpen = S.setDockOpen, setDraft = S.setDraft
+  var setDriftTick = S.setDriftTick, setFileStatusTick = S.setFileStatusTick, setFilesDraft = S.setFilesDraft, setHighlight = S.setHighlight
   var setHistTick = S.setHistTick, setLabelDraft = S.setLabelDraft, setLibDir = S.setLibDir, setMermaidText = S.setMermaidText, setModel = S.setModel, setNoteDoneDraft = S.setNoteDoneDraft
   var setNoteDraft = S.setNoteDraft, setNotesOpen = S.setNotesOpen, setPicker = S.setPicker, setRenderError = S.setRenderError, setRevision = S.setRevision, setSaveFail = S.setSaveFail
   var setSel = S.setSel, setStatus = S.setStatus, setTab = S.setTab, setTagsDraft = S.setTagsDraft, setUpdatedBy = S.setUpdatedBy, setView = S.setView
@@ -17,16 +17,6 @@ function studioEditFns(S) {
   function fitView(...args) { return S.fitView.apply(null, args) }
   function flushDrafts(...args) { return S.flushDrafts.apply(null, args) }
   function nudgeFlush(...args) { return S.nudgeFlush.apply(null, args) }
-
-  // 组折叠的开关（视图状态）。整份重建而不是原地改：React 要看到新对象才会重渲染。
-  function toggleGroup(gid) {
-    setCollapsed(function (m) {
-      var next = {}
-      for (var k in m) if (m[k]) next[k] = true
-      if (next[gid]) delete next[gid]; else next[gid] = true
-      return next
-    })
-  }
 
   function setLocal(next) {
     modelRef.current = next
@@ -217,7 +207,7 @@ function studioEditFns(S) {
     var x = Math.round((rect.width / 2 - v.x) / v.k)
     var y = Math.round((rect.height / 2 - v.y) / v.k)
     var next = cloneModel(cur)
-    next.nodes.push({ id: id, label: '新节点', shape: 'rect', group: null, x: x, y: y })
+    next.nodes.push({ id: id, label: '新节点', shape: 'rect', x: x, y: y })
     push(next, '用户新增了节点')
     setSel({ kind: 'node', id: id })
     // 新增的节点要**直接展开**详情（用户下一步一定是给它起名字），
@@ -226,11 +216,10 @@ function studioEditFns(S) {
     setDockOpen(true)
     setLabelDraft('新节点')
     setDescDraft('')
-    setGroupPick('')
-    setGroupNewName('')
     setNoteDraft('')
     setNoteDoneDraft(false)
     setFilesDraft('')
+    setTagsDraft('')
     setStatus('已新增节点，可在下方改名字')
   }
 
@@ -238,8 +227,25 @@ function studioEditFns(S) {
     var cur = modelRef.current
     if (!cur) return
     var cleaned = consolidateEdgesModel(cur)
-    push(autoLayout(cleaned), '用户点了自动布局')
-    setStatus('已整理连线并自动布局')
+    // 锚点 = 当前选中的那个节点：「先放它，其余的照着依赖长」。没选中节点（选着连线、
+    // 或什么都没选）就不给锚点，让算法自己挑一个 —— 两种情况的状态栏要说两样话。
+    var selNow = selRef.current
+    var anchorId = null
+    if (selNow && selNow.kind === 'node') {
+      for (var i = 0; i < cleaned.nodes.length; i++) {
+        if (cleaned.nodes[i].id === selNow.id) { anchorId = selNow.id; break }
+      }
+    }
+    push(autoLayout(cleaned, anchorId ? { anchor: anchorId } : undefined), '用户点了自动布局')
+    if (anchorId) {
+      var anchorNode = null
+      for (var j = 0; j < cleaned.nodes.length; j++) {
+        if (cleaned.nodes[j].id === anchorId) { anchorNode = cleaned.nodes[j]; break }
+      }
+      setStatus('已以「' + (splitLabel(anchorNode.label).title || anchorId) + '」为锚点整理并自动布局')
+    } else {
+      setStatus('已整理连线并按依赖关系自动布局')
+    }
     fittedRef.current = false
     if (fitView(false)) fittedRef.current = true
   }
@@ -270,76 +276,6 @@ function studioEditFns(S) {
   }
 
 
-
-  /**
-   * 组 id 不能含空格：`scanNodeRef` 的 ID_RE 遇到空格就停，`subgraph AI 端["AI 端"]`
-   * 会被解析成 id=`AI` + 标签=`端["AI 端"]`，下次加载组结构就分裂、往返严重漂移。
-   * 宿主侧 `set_group` 会过一遍 `cleanId`，但**检查器这条路是客户端直接改模型** ——
-   * 从前这里没洗，用户在分组框里打一个空格就能把源文本写坏（审计第 3 条）。
-   */
-  function groupKeyOf(name) {
-    return String(name == null ? '' : name).replace(/\s+/g, '_').replace(/[\u005b\u005d{}()"#;|&<>]/g, '')
-  }
-
-  function commitGroup() {
-    // 下拉框的三态：'' = 移出，'#new' = 交给下面那个名字框，其余 = 现有组的 id。
-    // 选「新建」时先一步什么都不做 —— 名字还没打呢。
-    if (groupPick === GROUP_NEW) return
-    applyGroup(groupPick ? groupPick : null, null)
-  }
-
-  /**
-   * 把当前选中的节点放进 `want` 这个组（`want` = null 表示移出）。
-   *
-   * 从前这条路是「一个自由文本框」，于是有三个坑（2026-09-21 按体验反馈改成下拉框）：
-   * ① 用户得**记得**组名，打错一个字就凭空多一个组、图被分成两半；
-   * ② 看不出图上一共有哪些组，也不知道自己现在在哪一个；
-   * ③ 空、已有、新建三种意图挤在同一个输入框里，回车之前分不出来。
-   */
-  function applyGroup(want, newLabel) {
-    var s = selRef.current
-    var cur = modelRef.current
-    if (!s || s.kind !== 'node' || !cur) return
-    var next = cloneModel(cur)
-    var prev = undefined
-    var found = false
-    for (var i = 0; i < next.nodes.length; i++) {
-      if (next.nodes[i].id !== s.id) continue
-      prev = next.nodes[i].group || null
-      next.nodes[i].group = want
-      found = true
-    }
-    if (!found) return
-    if (prev === want) return
-    if (want) {
-      var exists = false
-      for (var g = 0; g < next.groups.length; g++) if (next.groups[g].id === want) exists = true
-      // label 保留用户打的原话（可以是 "AI 端"），id 用洗干净的那个
-      if (!exists) next.groups.push({ id: want, label: newLabel == null ? want : newLabel })
-    }
-    push(next, '用户改了分组')
-    setStatus('已更新分组')
-  }
-
-  /** 「＋ 新建组…」那条路：把名字洗干净当 id，名字已经存在就直接认领那个组。 */
-  function commitNewGroup() {
-    var raw = String(groupNewName || '').trim()
-    if (!raw) return
-    var pick = groupKeyOf(raw)
-    if (!pick) return
-    // 先按现有组的 id 或标签认领：用户打的是给人看的名字（"AI 端"），而 id 早已被洗成 "AI端"。
-    // 不认领就会凭空多出一个同名组、图被分成两半 —— 这条与旧实现一致，别删。
-    var cur = modelRef.current
-    var groups = (cur && cur.groups) || []
-    var want = pick
-    for (var g = 0; g < groups.length; g++) {
-      var gg = groups[g]
-      if (gg && (gg.id === pick || gg.label === raw || groupKeyOf(gg.label) === pick)) { want = gg.id; break }
-    }
-    applyGroup(want, raw)
-    setGroupPick(want)
-    setGroupNewName('')
-  }
 
   /**
    * 提交节点留言。空文本 = 删除留言（文件里那一行也不再写出）。
@@ -454,8 +390,6 @@ function studioEditFns(S) {
     var sp1 = splitLabel(node.label)
     setLabelDraft(sp1.title)
     setDescDraft(sp1.desc)
-    setGroupPick(node.group || '')
-    setGroupNewName('')
     setNoteDraft(node.note || '')
     setNoteDoneDraft(node.noteDone === true)
     setFilesDraft((node.files || []).join('\n'))
@@ -519,7 +453,7 @@ function studioEditFns(S) {
     push(next, '用户改了连线样式')
   }
 
-  // 内容包围盒（含分组框），导出与适应窗口共用同一套算法
+  // 内容包围盒（只看节点），导出与适应窗口共用同一套算法
   function contentBox() {
     var cur = modelRef.current
     if (!cur || cur.nodes.length === 0) return null
@@ -529,10 +463,6 @@ function studioEditFns(S) {
       if (!g) continue
       minX = Math.min(minX, g.x - g.w / 2); maxX = Math.max(maxX, g.x + g.w / 2)
       minY = Math.min(minY, g.y - g.h / 2); maxY = Math.max(maxY, g.y + g.h / 2)
-    }
-    for (var j = 0; j < groups.length; j++) {
-      minX = Math.min(minX, groups[j].x); maxX = Math.max(maxX, groups[j].x + groups[j].w)
-      minY = Math.min(minY, groups[j].y); maxY = Math.max(maxY, groups[j].y + groups[j].h)
     }
     if (!isFinite(minX)) return null
     var pad = 26
@@ -721,12 +651,10 @@ function studioEditFns(S) {
   }
   S.addNode = addNode
   S.applyDraft = applyDraft
-  S.applyGroup = applyGroup
   S.closeLibrary = closeLibrary
   S.commitEdgeLabel = commitEdgeLabel
   S.commitFiles = commitFiles
   S.commitLabel = commitLabel
-  S.commitNewGroup = commitNewGroup
   S.commitNote = commitNote
   S.commitTags = commitTags
   S.consolidateEdgesAction = consolidateEdgesAction
@@ -756,6 +684,5 @@ function studioEditFns(S) {
   S.setArrow = setArrow
   S.setLocal = setLocal
   S.setShape = setShape
-  S.toggleGroup = toggleGroup
   S.undo = undo
 }

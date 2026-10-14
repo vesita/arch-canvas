@@ -1,16 +1,15 @@
-// 画布 SVG 那一棵子树（组框 / 连线 / 节点 / 吸附参考线 / 起始页）。
+// 画布 SVG 那一棵子树（连线 / 节点 / 吸附参考线 / 起始页）。
 // 从 studio.ts 的 ArchStudio 组件体里原样搬出来的顶层函数 —— 行为不变。
 // 分片共享同一段作用域、不能 import，所以靠参数 S（本帧的 state / setter / ref 集合）通信。
 function studioCanvasFns(S) {
-  var dragHint = S.dragHint, dragging = S.dragging, driftRef = S.driftRef, edgeLayout = S.edgeLayout, fileStatusRef = S.fileStatusRef, foldGeom = S.foldGeom, foldMap = S.foldMap
-  var groups = S.groups, gstate = S.gstate, highlight = S.highlight, hostRef = S.hostRef, hueOfGroup = S.hueOfGroup, libFiles = S.libFiles
+  var driftRef = S.driftRef, dragHint = S.dragHint, dragging = S.dragging, edgeLayout = S.edgeLayout, fileStatusRef = S.fileStatusRef
+  var gstate = S.gstate, highlight = S.highlight, hostRef = S.hostRef, libFiles = S.libFiles
   var libItems = S.libItems, libKey = S.libKey, linkPt = S.linkPt, model = S.model, sel = S.sel, svgRef = S.svgRef
-  var view = S.view, visGeom = S.visGeom
+  var view = S.view
   function addNode(...args) { return S.addNode.apply(null, args) }
   function loadLibrary(...args) { return S.loadLibrary.apply(null, args) }
   function onBackgroundDown(...args) { return S.onBackgroundDown.apply(null, args) }
   function onEdgeDown(...args) { return S.onEdgeDown.apply(null, args) }
-  function onGroupDown(...args) { return S.onGroupDown.apply(null, args) }
   function onHandleDown(...args) { return S.onHandleDown.apply(null, args) }
   function onJumpDown(...args) { return S.onJumpDown.apply(null, args) }
   function onLostPointerCapture(...args) { return S.onLostPointerCapture.apply(null, args) }
@@ -21,7 +20,6 @@ function studioCanvasFns(S) {
   function openDiagram(...args) { return S.openDiagram.apply(null, args) }
   function openFilePicker(...args) { return S.openFilePicker.apply(null, args) }
   function openPath(...args) { return S.openPath.apply(null, args) }
-  function toggleGroup(...args) { return S.toggleGroup.apply(null, args) }
   // ---------- SVG 画布 ----------
   var canvasKids = []
   canvasKids.push(React.createElement('defs', { key: 'defs' },
@@ -34,47 +32,9 @@ function studioCanvasFns(S) {
   ))
 
   var inner = []
-  for (var gi = 0; gi < groups.length; gi++) {
-    var gb = groups[gi]
-    var fg = foldGeom[gb.id]
-    var openFold = (function (gid) { return function (ev) { ev.stopPropagation(); toggleGroup(gid) } })(gb.id)
-    if (fg) {
-      inner.push(React.createElement('g', {
-        key: 'g' + gb.id, className: 'ac-fold' + hueClassOf(hueOfGroup, gb.id),
-        onPointerDown: (function (gid) { return function (ev) { onGroupDown(ev, gid) } })(gb.id),
-      },
-        React.createElement('rect', { className: 'ac-fold-box', x: fg.x - fg.w / 2, y: fg.y - fg.h / 2, width: fg.w, height: fg.h, rx: 10 }),
-        React.createElement('text', { className: 'ac-fold-lbl', x: fg.x, y: fg.y }, fg.label),
-        React.createElement('g', {
-          className: 'ac-fold-btn',
-          transform: 'translate(' + (fg.x + fg.w / 2 - 13) + ',' + fg.y + ')',
-          onPointerDown: openFold,
-        },
-          React.createElement('circle', { r: 9 }),
-          React.createElement('text', { y: 3.6 }, '▸')),
-      ))
-    } else {
-      inner.push(React.createElement('g', {
-        key: 'g' + gb.id,
-        className: 'ac-grp' + hueClassOf(hueOfGroup, gb.id),
-        onPointerDown: (function (gid) { return function (ev) { onGroupDown(ev, gid) } })(gb.id),
-      },
-        React.createElement('rect', { className: 'ac-group-box', x: gb.x, y: gb.y, width: gb.w, height: gb.h, rx: 12 }),
-        React.createElement('text', { className: 'ac-group-lbl', x: gb.x + 12, y: gb.y + 17 },
-          String(gb.label == null ? gb.id : gb.label)),
-        React.createElement('g', {
-          className: 'ac-group-btn',
-          transform: 'translate(' + (gb.x + gb.w - 14) + ',' + (gb.y + 14) + ')',
-          onPointerDown: openFold,
-        },
-          React.createElement('circle', { r: 9 }),
-          React.createElement('text', { y: 3.6 }, '▾')),
-      ))
-    }
-  }
 
   if (model) {
-    var elayout = edgeLayout || computeEdgeLayout(model, foldMap, foldGeom, gstate)
+    var elayout = edgeLayout || computeEdgeLayout(model, gstate)
     if (elayout && elayout.routed) {
       // 记录已经为分支锚点画过箭头的集合（同汇流点只画一次箭头）
       var junctionArrowDrawn = {}
@@ -144,8 +104,6 @@ function studioCanvasFns(S) {
     }
     for (var ni = 0; ni < model.nodes.length; ni++) {
       var node = model.nodes[ni]
-      // 被收起来的组，成员节点整个不画（几何仍在 gstate 里，展开时立刻回来）。
-      if (foldMap[node.id]) continue
       var gm = gstate[node.id]
       if (!gm) continue
       var isSel = sel && sel.kind === 'node' && sel.id === node.id
@@ -175,7 +133,7 @@ function studioCanvasFns(S) {
       var isHl = !!(highlight && highlight.nodes && highlight.nodes.indexOf(node.id) >= 0)
       inner.push(React.createElement('g', {
         key: 'n' + node.id,
-        className: 'ac-node' + (isSel ? ' sel' : '') + (isHl ? ' hl' : '') + hueClassOf(hueOfGroup, node.group),
+        className: 'ac-node' + (isSel ? ' sel' : '') + (isHl ? ' hl' : '') + hueClassOfNode(node),
         tabIndex: 0,
         role: 'button',
         onPointerDown: (function (nd) { return function (ev) { onNodeDown(ev, nd) } })(node),
@@ -247,13 +205,17 @@ function studioCanvasFns(S) {
           for (var fi2 = 0; fi2 < node.files.length; fi2++) {
             var fRef = node.files[fi2]
             var fSt = nStatus[fRef] || 'unknown'
-            if (fSt !== 'ok') { isBroken = true; break }
+            // 三档，别把「判不了」当「失效」：missing / symbol-missing 是红（真的找不到了），
+            // unknown 是宿主**拒绝假装 ok** 时的如实回答 —— 它只说明这一步判不了根，
+            // 画成红圈会逼用户以为锚点坏了。所以 unknown 走**中性**（默认的品牌蓝那一档）。
+            // 注意这里只降噪，不改语义：提示词那一侧照旧按 unknown 说「判不了」。
+            if (fSt === 'missing' || fSt === 'symbol-missing') { isBroken = true; break }
             if (staleSet[fRef]) isStale = true
           }
           return React.createElement('g', {
             key: 'file-badge',
-            // 三态：ok（品牌蓝）/ 文件在图之后改过（琥珀：还指得到，但内容可能已经不是图上说的了）/
-            // 失效（红：文件或符号找不到了）。中间那档是 drift 带来的 —— 从前它和 ok 长得一模一样。
+            // 四态：ok / 判不了 unknown（品牌蓝，中性）/ 文件在图之后改过（琥珀：还指得到，
+            // 但内容可能已经不是图上说的了）/ 失效（红：文件或符号找不到了）。
             className: 'ac-file-badge' + (isBroken ? ' broken' : (isStale ? ' stale' : '')),
             transform: 'translate(' + (gm.x + gm.w / 2 - 9) + ',' + (y0 + gm.h - 9) + ')',
           },

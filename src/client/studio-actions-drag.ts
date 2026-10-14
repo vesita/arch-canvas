@@ -3,15 +3,14 @@
 // 分片共享同一段作用域、不能 import，所以靠参数 S（本帧的 state / setter / ref 集合）通信。
 function studioDragFns(S) {
   var committedRef = S.committedRef, dockForRef = S.dockForRef, dockOpen = S.dockOpen, dockOpenRef = S.dockOpenRef, dockRef = S.dockRef, dragRef = S.dragRef
-  var geomRef = S.geomRef, groupPick = S.groupPick, hostRef = S.hostRef, modelRef = S.modelRef, nudgeRef = S.nudgeRef, rootRef = S.rootRef
+  var geomRef = S.geomRef, hostRef = S.hostRef, modelRef = S.modelRef, nudgeRef = S.nudgeRef, rootRef = S.rootRef
   var sashCleanupRef = S.sashCleanupRef, selRef = S.selRef, setDescDraft = S.setDescDraft, setDockH = S.setDockH, setDockOpen = S.setDockOpen, setDragHint = S.setDragHint
-  var setDragging = S.setDragging, setEdgeDraft = S.setEdgeDraft, setFilesDraft = S.setFilesDraft, setGroupNewName = S.setGroupNewName, setGroupPick = S.setGroupPick, setLabelDraft = S.setLabelDraft
+  var setDragging = S.setDragging, setEdgeDraft = S.setEdgeDraft, setFilesDraft = S.setFilesDraft, setLabelDraft = S.setLabelDraft
   var setLinkPt = S.setLinkPt, setNoteDoneDraft = S.setNoteDoneDraft, setNoteDraft = S.setNoteDraft, setSel = S.setSel, setStatus = S.setStatus, setTagsDraft = S.setTagsDraft
   var setView = S.setView, svgRef = S.svgRef, userViewRef = S.userViewRef, viewRef = S.viewRef
   function commitEdgeLabel(...args) { return S.commitEdgeLabel.apply(null, args) }
   function commitFiles(...args) { return S.commitFiles.apply(null, args) }
   function commitLabel(...args) { return S.commitLabel.apply(null, args) }
-  function commitNewGroup(...args) { return S.commitNewGroup.apply(null, args) }
   function commitNote(...args) { return S.commitNote.apply(null, args) }
   function deleteSel(...args) { return S.deleteSel.apply(null, args) }
   function push(...args) { return S.push.apply(null, args) }
@@ -179,8 +178,6 @@ function studioDragFns(S) {
     if (!s) return
     if (s.kind === 'node') {
       commitLabel()
-      // 「＋ 新建组…」那条路的名字框也是草稿；上面那个 select 是选完即时生效的，不用管。
-      if (groupPick === GROUP_NEW) commitNewGroup()
       commitNote()
       commitFiles()
     } else if (s.kind === 'edge') {
@@ -231,8 +228,6 @@ function studioDragFns(S) {
     var sp0 = splitLabel(node.label)
     setLabelDraft(sp0.title)
     setDescDraft(sp0.desc)
-    setGroupPick(node.group || '')
-    setGroupNewName('')
     setNoteDraft(node.note || '')
     setNoteDoneDraft(node.noteDone === true)
     setFilesDraft((node.files || []).join('\n'))
@@ -254,35 +249,6 @@ function studioDragFns(S) {
       start: { x: g.x, y: g.y },          // 取消（pointercancel）时回滚到这里
       snap: { gx: null, gy: null },       // 吸附迟滞要记住上一步吸在哪条线上
       pending: null, raf: 0,
-    }
-  }
-
-  /**
-   * 拖折叠起来的组。组**没有自己的坐标** —— 它就是成员节点的包围盒，
-   * 所以「把组拖到哪」唯一真实的含义是「把它里面的人一起挪到哪」。
-   * 这里只记起点与成员的初始坐标；位移在 move 里用**起点差值**算，避免逐帧累加磨偏坐标。
-   */
-  function onGroupDown(e, gid) {
-    if (e.button !== 0) return
-    e.stopPropagation()
-    // 拖整组也会移走焦点：先把草稿落下去（见 flushDrafts）。
-    flushDrafts()
-    if (gestureBusy()) return
-    var cur = modelRef.current
-    if (!cur) return
-    var members = []
-    for (var i = 0; i < cur.nodes.length; i++) {
-      var n = cur.nodes[i]
-      if (n.group !== gid) continue
-      members.push({ id: n.id, x: n.x == null ? 0 : n.x, y: n.y == null ? 0 : n.y })
-    }
-    if (!members.length) return
-    setDragging(true)
-    capture(e)
-    dragRef.current = {
-      kind: 'group', gid: gid, start: toModelPt(e), members: members,
-      moved: false, sx: e.clientX, sy: e.clientY, rect: stageRect(),
-      snap: { gx: null, gy: null }, pending: null, raf: 0,
     }
   }
 
@@ -374,49 +340,11 @@ function studioDragFns(S) {
       var nodes = []
       for (var i = 0; i < cur.nodes.length; i++) {
         var n = cur.nodes[i]
-        // 用 Object.assign 保留**所有**字段：原先显式列 {id,label,shape,group,x,y} 会把
+        // 用 Object.assign 保留**所有**字段：原先显式列 {id,label,shape,x,y} 这几个会把
         // note / noteDone / files / link 悄悄丢掉 —— 拖一下，留言和锚点就没了（而且不报错）。
         nodes.push(n.id === d.id ? Object.assign({}, n, { x: sn.x, y: sn.y }) : n)
       }
-      setLocal({ nodes: nodes, edges: cur.edges, groups: cur.groups, direction: cur.direction, extras: cur.extras })
-      return
-    }
-    if (d.kind === 'group') {
-      var curG = modelRef.current
-      if (!curG) return
-      // 与节点拖动同一条门槛：折叠块「点一下」不该把整组挪走，也不该记一条历史。
-      if (!d.moved && Math.abs(p.x - d.sx) + Math.abs(p.y - d.sy) < DRAG_SLOP) return
-      d.moved = true
-      // 组**没有自己的坐标** —— 它就是成员节点的包围盒。所以「拖动组」唯一真实的含义
-      // 是把成员一起挪。位移用**起点差值**而不是逐帧累加，免得浮点误差把坐标磨偏。
-      var gdx = pt.x - d.start.x
-      var gdy = pt.y - d.start.y
-      // 分组拖动也要吸附（从前只有节点吸）—— 同一个动作两种手感，本身就是「不自然」的来源。
-      // 吸附参考取整组的圈心，于是整组一起贴到别的节点/组的中心线上。
-      var startPos = {}
-      for (var mk = 0; mk < d.members.length; mk++) startPos[d.members[mk].id] = d.members[mk]
-      var ids = []
-      var cxs = 0, cys = 0
-      for (var mj = 0; mj < d.members.length; mj++) {
-        ids.push(d.members[mj].id)
-        cxs += d.members[mj].x
-        cys += d.members[mj].y
-      }
-      var n0 = Math.max(1, d.members.length)
-      var gsn = p.alt
-        ? { x: 0, y: 0, gx: null, gy: null }
-        : snapToPeers(curG.nodes, ids, cxs / n0 + gdx, cys / n0 + gdy, viewRef.current.k, d.snap)
-      if (gsn.gx != null) gdx += gsn.gx - (cxs / n0 + gdx)
-      if (gsn.gy != null) gdy += gsn.gy - (cys / n0 + gdy)
-      d.snap = { gx: gsn.gx, gy: gsn.gy }
-      setDragHint(gsn.gx == null && gsn.gy == null ? null : gsn)
-      var gNodes = []
-      for (var gk = 0; gk < curG.nodes.length; gk++) {
-        var gn = curG.nodes[gk]
-        var base = startPos[gn.id]
-        gNodes.push(base ? Object.assign({}, gn, { x: base.x + gdx, y: base.y + gdy }) : gn)
-      }
-      setLocal({ nodes: gNodes, edges: curG.edges, groups: curG.groups, direction: curG.direction, extras: curG.extras })
+      setLocal({ nodes: nodes, edges: cur.edges, direction: cur.direction, extras: cur.extras })
       return
     }
     if (d.kind === 'pan') {
@@ -445,8 +373,7 @@ function studioDragFns(S) {
     var cur = modelRef.current
     if (!cur) return
     var move = {}
-    if (d.kind === 'node') move[d.id] = true
-    else for (var mi = 0; mi < d.members.length; mi++) move[d.members[mi].id] = true
+    move[d.id] = true
     var nodes = []
     for (var i = 0; i < cur.nodes.length; i++) {
       var n = cur.nodes[i]
@@ -454,7 +381,7 @@ function studioDragFns(S) {
         ? Object.assign({}, n, { x: Math.round(n.x == null ? 0 : n.x), y: Math.round(n.y == null ? 0 : n.y) })
         : n)
     }
-    push({ nodes: nodes, edges: cur.edges, groups: cur.groups, direction: cur.direction, extras: cur.extras }, note)
+    push({ nodes: nodes, edges: cur.edges, direction: cur.direction, extras: cur.extras }, note)
   }
 
   /** 把被拖的东西放回按下时的位置（浏览器把这次手势取消时用，不进历史、不写盘）。 */
@@ -462,15 +389,14 @@ function studioDragFns(S) {
     var cur = modelRef.current
     if (!cur) return
     var back = {}
-    if (d.kind === 'node') back[d.id] = d.start
-    else for (var mi = 0; mi < d.members.length; mi++) back[d.members[mi].id] = d.members[mi]
+    back[d.id] = d.start
     var nodes = []
     for (var i = 0; i < cur.nodes.length; i++) {
       var n = cur.nodes[i]
       var b = back[n.id]
       nodes.push(b ? Object.assign({}, n, { x: b.x, y: b.y }) : n)
     }
-    setLocal({ nodes: nodes, edges: cur.edges, groups: cur.groups, direction: cur.direction, extras: cur.extras })
+    setLocal({ nodes: nodes, edges: cur.edges, direction: cur.direction, extras: cur.extras })
   }
 
   /**
@@ -487,7 +413,7 @@ function studioDragFns(S) {
     var d = dragRef.current
     dragRef.current = null
     if (d && d.raf) rafCancel(d.raf)
-    if (d && d.moved && (d.kind === 'node' || d.kind === 'group')) restoreDrag(d)
+    if (d && d.moved && d.kind === 'node') restoreDrag(d)
     setDragging(false)
     setDragHint(null)
     setLinkPt(null)
@@ -519,11 +445,6 @@ function studioDragFns(S) {
       // 按下与抬手之间没有真实位移 = 一次「点选」。
       // 详情下挂着一块能吃掉半个画布高度的面板，所以拖动途中不展开（见下面的 toggleDockFor）。
       toggleDockFor({ kind: 'node', id: d.id })
-      return
-    }
-    if (d.kind === 'group' && d.moved) {
-      commitDrag(d, '用户移动了分组')
-      setStatus('已移动分组里的 ' + d.members.length + ' 个节点')
       return
     }
     if (d.kind === 'link') {
@@ -675,7 +596,6 @@ function studioDragFns(S) {
   S.nudgeFlush = nudgeFlush
   S.onBackgroundDown = onBackgroundDown
   S.onEdgeDown = onEdgeDown
-  S.onGroupDown = onGroupDown
   S.onHandleDown = onHandleDown
   S.onKeyDown = onKeyDown
   S.onKeyUp = onKeyUp

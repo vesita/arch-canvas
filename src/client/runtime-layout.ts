@@ -68,8 +68,6 @@ function tokenizeMermaidLine(line) {
   return out
 }
 
-// 编译过渡声明：W1 会话正在彻底去组，在此期间让独立 tsc 顺利过关
-declare var groupHueIndex: any, hueClassOf: any
 
 function needsLayout(model) {
   if (!model || !model.nodes || model.nodes.length === 0) return false

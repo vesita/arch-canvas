@@ -1,85 +1,6 @@
 // 界面渲染分片（共享脚手架见 ui.render.shared.mjs；DOM/React/桩 RPC/槽位捕获都由它装载）。
 import { endPhase } from './ui.render.shared.mjs'
 
-console.log('\n[4v] 展开态的组框整块可拖：拖背景带走整组，拖按钮不带走')
-{
-  // 用户的原话：「我希望展开的时候，节点组的背景也能被捕捉并移动」。
-  // 折叠态那个块早就能拖，展开态从前只能平移画布 —— 同一个东西一个能拖一个不能。
-  const GMODEL = {
-    nodes: [
-      { id: 'm1', label: '组内一', shape: 'rect', group: 'g1', x: 100, y: 100 },
-      { id: 'm2', label: '组内二', shape: 'rect', group: 'g1', x: 260, y: 100 },
-      { id: 'out1', label: '组外', shape: 'rect', group: null, x: 560, y: 320 },
-    ],
-    edges: [], groups: [{ id: 'g1', label: '一组' }], direction: 'TD', extras: [],
-  }
-  const prevRespondV = respond
-  let curV = JSON.parse(JSON.stringify(GMODEL))
-  let vSets = 0
-  respond = function (method, args) {
-    if (method === 'doc:get') return fullDoc({ model: curV, nodeCount: curV.nodes.length, groupCount: curV.groups.length })
-    if (method === 'doc:set') { vSets++; curV = args.model; return fullDoc({ model: curV, nodeCount: curV.nodes.length, revision: 2, updatedBy: 'user' }) }
-    return prevRespondV(method, args)
-  }
-  const vHost = document.createElement('div')
-  document.body.appendChild(vHost)
-  const vRoot = createRoot(vHost)
-  await act(async () => {
-    vRoot.render(React.createElement(captured['conversation.view'], {
-      cwd: UI, sessionId: 's1', useSessions: () => UI,
-    }))
-  })
-  await flush()
-  const vSvg = vHost.querySelector('svg.ac-svg')
-  const groupBox = vHost.querySelector('rect.ac-group-box')
-  ok('展开态下组框存在（前置条件，否则下面全是空转）', !!groupBox && !!vSvg)
-
-  // a. 拖组框背景 → 组内两个节点移动**同一个位移**，组外的节点一个像素都不动
-  const before = JSON.parse(JSON.stringify(curV))
-  const setsBefore = vSets
-  await act(async () => {
-    groupBox.dispatchEvent(new dom.window.PointerEvent('pointerdown', { bubbles: true, button: 0, clientX: 150, clientY: 110 }))
-    vSvg.dispatchEvent(new dom.window.PointerEvent('pointermove', { bubbles: true, clientX: 260, clientY: 200 }))
-    vSvg.dispatchEvent(new dom.window.PointerEvent('pointerup', { bubbles: true, button: 0, clientX: 260, clientY: 200 }))
-  })
-  await flush()
-  const nodeOfV = (m, id) => m.nodes.find((n) => n.id === id)
-  const d1 = { x: nodeOfV(curV, 'm1').x - nodeOfV(before, 'm1').x, y: nodeOfV(curV, 'm1').y - nodeOfV(before, 'm1').y }
-  const d2 = { x: nodeOfV(curV, 'm2').x - nodeOfV(before, 'm2').x, y: nodeOfV(curV, 'm2').y - nodeOfV(before, 'm2').y }
-  ok('拖组框真的写盘了（否则下面全是空转）', vSets > setsBefore)
-  ok('组内两个节点都被带走了', (d1.x !== 0 || d1.y !== 0) && (d2.x !== 0 || d2.y !== 0), { d1, d2 })
-  eq('而且位移完全一致（整组平移，不是各走各的）—— x', d1.x, d2.x)
-  eq('而且位移完全一致 —— y', d1.y, d2.y)
-  eq('组外的节点 x 一个像素都不动（负向对照）', nodeOfV(curV, 'out1').x, nodeOfV(before, 'out1').x)
-  eq('组外的节点 y 一个像素都不动（负向对照）', nodeOfV(curV, 'out1').y, nodeOfV(before, 'out1').y)
-  ok('负向对照：拖动**不**折叠（组框还在）', !!vHost.querySelector('rect.ac-group-box'))
-
-  // b. 拖那个收起按钮 → 不许把整组拖走（openFold 有 stopPropagation），只换折叠态
-  const before2 = JSON.parse(JSON.stringify(curV))
-  const setsBefore2 = vSets
-  const vBtn = vHost.querySelector('g.ac-group-btn')
-  ok('收起按钮还在（否则下面那条是空转）', !!vBtn)
-  await act(async () => {
-    vBtn.dispatchEvent(new dom.window.PointerEvent('pointerdown', { bubbles: true, button: 0, clientX: 150, clientY: 110 }))
-    vSvg.dispatchEvent(new dom.window.PointerEvent('pointermove', { bubbles: true, clientX: 300, clientY: 240 }))
-    vSvg.dispatchEvent(new dom.window.PointerEvent('pointerup', { bubbles: true, button: 0, clientX: 300, clientY: 240 }))
-  })
-  await flush()
-  eq('拖收起按钮不会写盘（没把组拖走）', vSets, setsBefore2)
-  eq('组内节点 x 一点没变', nodeOfV(curV, 'm1').x, nodeOfV(before2, 'm1').x)
-  eq('组内节点 y 一点没变', nodeOfV(curV, 'm1').y, nodeOfV(before2, 'm1').y)
-  ok('而它确实折叠了（说明按钮本身还是工作的）', !!vHost.querySelector('g.ac-fold'))
-
-  // c. 样式表里那两条 cursor —— jsdom 不算层叠样式，只能断言规则本身
-  ok('组框与组名都是 cursor:move（不是那个骗人的 pointer）',
-    insertedCss.indexOf('.ac-group-box{') >= 0 && /\.ac-group-box\{[^}]*cursor:move/.test(insertedCss)
-    && /\.ac-group-lbl\{[^}]*cursor:move/.test(insertedCss))
-
-  await act(async () => { vRoot.unmount() })
-  vHost.remove()
-  respond = prevRespondV
-}
-
 console.log('\n[4w] 拖动：rAF 合帧不丢位移 / 吸附按屏幕像素 + 迟滞 + Alt / 取消要回滚')
 {
   // 这一节量的是「手感」里可断言的那部分：
@@ -89,10 +10,10 @@ console.log('\n[4w] 拖动：rAF 合帧不丢位移 / 吸附按屏幕像素 + �
   //      lostpointercapture（捕获中途丢了）= 提交，绝不静默丢掉用户已经拖出来的位移。
   const DRAG_MODEL = {
     nodes: [
-      { id: 'd1', label: '甲', shape: 'rect', group: null, x: 0, y: 0 },
-      { id: 'd2', label: '乙', shape: 'rect', group: null, x: 200, y: 0 },
+      { id: 'd1', label: '甲', shape: 'rect', x: 0, y: 0 },
+      { id: 'd2', label: '乙', shape: 'rect', x: 200, y: 0 },
     ],
-    edges: [], groups: [], direction: 'TD', extras: [],
+    edges: [], direction: 'TD', extras: [],
   }
   const prevR = respond
   const sets = []
@@ -232,46 +153,6 @@ console.log('\n[4w] 拖动：rAF 合帧不丢位移 / 吸附按屏幕像素 + �
   await act(async () => { root.unmount() })
   host.remove()
   respond = prevR
-
-  // ---- 8) 分组拖动也吸附（从前只有节点吸，同一个动作两种手感） ----
-  const GRP_MODEL = {
-    nodes: [
-      { id: 'm1', label: '甲', shape: 'rect', group: 'g1', x: 0, y: 0 },
-      { id: 'm2', label: '乙', shape: 'rect', group: 'g1', x: 100, y: 0 },
-      { id: 'p1', label: '丙', shape: 'rect', group: null, x: 450, y: 0 },
-    ],
-    edges: [], groups: [{ id: 'g1', label: '组一' }], direction: 'TD', extras: [],
-  }
-  const gSets = []
-  const gm0 = JSON.parse(JSON.stringify(GRP_MODEL))
-  respond = function (method, args) {
-    if (method === 'doc:get') return fullDoc({ model: gm0, nodeCount: gm0.nodes.length })
-    if (method === 'doc:set') { gSets.push(args.model); return fullDoc({ model: args.model, nodeCount: args.model.nodes.length, revision: 7, updatedBy: 'user' }) }
-    return prevR(method, args)
-  }
-  const gHost = document.createElement('div')
-  document.body.appendChild(gHost)
-  const gRoot = createRoot(gHost)
-  await act(async () => {
-    // 换个会话：视角记忆按「会话|文档」存，上一个挂载把画布放大过
-    gRoot.render(React.createElement(captured['conversation.view'], { cwd: UI, sessionId: 's-drag-grp', useSessions: () => UI }))
-  })
-  await flush()
-  const gBox = gHost.querySelector('rect.ac-group-box')
-  const gSvg = gHost.querySelector('svg.ac-svg')
-  ok('前置：组框在（展开态）', !!gBox)
-  // 组成员中心 = (0+100)/2 = 50；拖 396 → 圈心到 446，距 p1 的中心 450 差 4px → 吸上 → 位移变 400
-  await act(async () => { gBox.dispatchEvent(new dom.window.PointerEvent('pointerdown', { bubbles: true, button: 0, clientX: 0, clientY: 0 })) })
-  await flush()
-  await act(async () => { gSvg.dispatchEvent(new dom.window.PointerEvent('pointermove', { bubbles: true, clientX: 396, clientY: 0 })) })
-  await act(async () => { await new Promise((r) => dom.window.requestAnimationFrame(() => r())) })
-  await act(async () => { gSvg.dispatchEvent(new dom.window.PointerEvent('pointerup', { bubbles: true, button: 0, clientX: 396, clientY: 0 })) })
-  await flush()
-  const gm = gSets[gSets.length - 1]
-  eq('分组拖动也吸附：圈心吸到对端中心线（396 → 400）', gm && gm.nodes.find((n) => n.id === 'm1').x, 400)
-  await act(async () => { gRoot.unmount() })
-  gHost.remove()
-  respond = prevR
 }
 
 console.log('\n[4x] 交互修复 A：未提交的草稿 / 中文输入法 / 写盘被拒后的画布')
@@ -282,10 +163,10 @@ console.log('\n[4x] 交互修复 A：未提交的草稿 / 中文输入法 / 写�
   //   3) 宿主拒绝写盘（saved:false）之后，画布必须跟着回滚到真相，而不是继续显示没存下去的东西。
   const X_MODEL = {
     nodes: [
-      { id: 'x1', label: '甲', shape: 'rect', group: null, x: 0, y: 0, note: '旧留言' },
-      { id: 'x2', label: '乙', shape: 'rect', group: null, x: 260, y: 0 },
+      { id: 'x1', label: '甲', shape: 'rect', x: 0, y: 0, note: '旧留言' },
+      { id: 'x2', label: '乙', shape: 'rect', x: 260, y: 0 },
     ],
-    edges: [], groups: [], direction: 'TD', extras: [],
+    edges: [], direction: 'TD', extras: [],
   }
   const X_MERMAID = 'flowchart TD\n  x1["甲"]\n  x2["乙"]\n'
   const prevR = respond
@@ -432,8 +313,8 @@ console.log('\n[4x] 交互修复 A：未提交的草稿 / 中文输入法 / 写�
 
   // ---- 3) 宿主拒绝写盘（saved:false）：画布必须跟着回滚 ----
   const ROLLED = {
-    nodes: [{ id: 'r1', label: '回滚后的', shape: 'rect', group: null, x: 0, y: 0 }],
-    edges: [], groups: [], direction: 'TD', extras: [],
+    nodes: [{ id: 'r1', label: '回滚后的', shape: 'rect', x: 0, y: 0 }],
+    edges: [], direction: 'TD', extras: [],
   }
   const ROLL_MERMAID = 'flowchart TD\n  r1["回滚后的"]\n'
   let savedFlag = false
@@ -447,8 +328,8 @@ console.log('\n[4x] 交互修复 A：未提交的草稿 / 中文输入法 / 写�
       if (savedFlag) {
         // 成功那一档刻意回一份**不同**的模型：客户端要是照它重画，画布上就会冒出这个幽灵节点。
         // 「saved:true 不重画」这条负向对照因此有牙 —— 不是靠自己跟自己比。
-        const ghost = args.model.nodes.concat([{ id: 'ghost', label: '幽灵节点', shape: 'rect', group: null, x: 0, y: 400 }])
-        return fullDoc({ model: { nodes: ghost, edges: [], groups: [], direction: 'TD', extras: [] }, nodeCount: ghost.length, mermaid: ROLL_MERMAID, revision: 2, updatedBy: 'user' })
+        const ghost = args.model.nodes.concat([{ id: 'ghost', label: '幽灵节点', shape: 'rect', x: 0, y: 400 }])
+        return fullDoc({ model: { nodes: ghost, edges: [], direction: 'TD', extras: [] }, nodeCount: ghost.length, mermaid: ROLL_MERMAID, revision: 2, updatedBy: 'user' })
       }
       // 失败那一档照着宿主的真实回执来：model 是**回滚后**的那一份，warnings 里带原因，
       // revision **没有前进**（宿主 restoreModel 把版本三件套一起还原了）。
@@ -545,10 +426,10 @@ console.log('\n[4y] 交互修复 B：连线提示 / 光标 / 滚轮语义 / 解�
   const prevR = respond
   const Y_MODEL = {
     nodes: [
-      { id: 'y1', label: '一', shape: 'rect', group: null, x: 0, y: 0 },
-      { id: 'y2', label: '二', shape: 'rect', group: null, x: 400, y: 0 },
+      { id: 'y1', label: '一', shape: 'rect', x: 0, y: 0 },
+      { id: 'y2', label: '二', shape: 'rect', x: 400, y: 0 },
     ],
-    edges: [], groups: [], direction: 'TD', extras: [],
+    edges: [], direction: 'TD', extras: [],
   }
   const yStub = function (method, args) {
     if (method === 'doc:get') return fullDoc({ model: JSON.parse(JSON.stringify(Y_MODEL)), nodeCount: 2, mermaid: 'flowchart TD\n  y1["一"]\n  y2["二"]\n' })
@@ -556,7 +437,7 @@ console.log('\n[4y] 交互修复 B：连线提示 / 光标 / 滚轮语义 / 解�
   }
   // 先来一版**空画布**：起始页的提示文案（「怎么建一条边」）在这一节里验。
   respond = function (method, args) {
-    if (method === 'doc:get') return fullDoc({ model: { nodes: [], edges: [], groups: [], direction: 'TD', extras: [] } })
+    if (method === 'doc:get') return fullDoc({ model: { nodes: [], edges: [], direction: 'TD', extras: [] } })
     return prevR(method, args)
   }
   const eHost = document.createElement('div')

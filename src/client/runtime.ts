@@ -59,64 +59,31 @@ var STUDIO_CSS = [
   '.ac-tag-badge text{fill:var(--dsw-alias-brand-primary,#4c8dff);font-size:10px;font-weight:700;text-anchor:middle;dominant-baseline:central}',
   '.ac-elbl{fill:var(--dsw-alias-label-secondary,#9aa3af);font-size:11.5px;text-anchor:middle;dominant-baseline:central;pointer-events:none;user-select:none;paint-order:stroke fill;stroke:var(--dsw-alias-bg-base,#14161a);stroke-width:4px;stroke-linejoin:round}',
   '.ac-elbl-bg{fill:var(--dsw-alias-bg-base,#14161a)}',
-  '.ac-group-box{fill:var(--dsw-alias-bg-layer-1,#1b1e23);fill-opacity:.5;stroke:var(--ac-line);stroke-dasharray:5 5;stroke-width:1.4;cursor:move}',
-  // 组名从前是 cursor:pointer —— 可点它**不**折叠（收起只认那个按钮），所以那个手型是在骗人。
-  // 现在它和组框一样，是「抓住整组」的意思。
-  '.ac-group-lbl{fill:var(--ac-line);font-size:11.5px;font-weight:600;cursor:move;paint-order:stroke fill;stroke:var(--dsw-alias-bg-base,#14161a);stroke-width:4px;stroke-linejoin:round}',
-  // ==================== 描边与组配色 ====================
+  // ==================== 描边与标签配色 ====================
   // 为什么不直接用 --dsw-alias-border-*：「边框」与「图形描边」在令牌体系里是两件事。
   // 实测（2026-09-21，把两个 token 的合成色算出来比对）：border-l2 = #ffffff1f（12% 白），
-  // 当作节点描边只有 1.48:1、当作连线 1.42:1，border-l1 当作组框 1.17:1 —— 而 WCAG 对
+  // 当作节点描边只有 1.48:1、当作连线 1.42:1，border-l1 当作 1.17:1 —— 而 WCAG 对
   // 「有意义的图形」要求 ≥3:1。用户说「淡」不是审美偏好，是这三个数。所以这里自带描边色。
-  '.ac-root{--ac-line:#7c828a;--ac-fill-a:.13;--ac-p0:#c238c2;--ac-p1:#ca4772;--ac-p2:#c94f43;--ac-p3:#91732a;--ac-p4:#27864f;--ac-p5:#268478;--ac-p6:#377abc;--ac-p7:#8e5ed0}',
+  '.ac-root{--ac-line:#7c828a;--ac-p0:#c238c2;--ac-p1:#ca4772;--ac-p2:#c94f43;--ac-p3:#91732a;--ac-p4:#27864f;--ac-p5:#268478;--ac-p6:#377abc;--ac-p7:#8e5ed0}',
   // 深色钩子：DSH 把深色调色板挂在 body[data-ds-dark-theme] 上（浅色在裸 body 上）。
   // **主题只在这两行里体现** —— 下面每档色相都写 var(--ac-pN)，于是「深/浅」只改这里的值，
   // 不必把每档规则写两遍，规则的特异性也就停在两个类上，永远不会盖掉 .ac-node.sel（三个类）。
   // 套 :where() 是让这条主题规则自身不涨权重（它只是几个变量的声明）。
   // 这个属性名不在令牌清单里，属于实现细节。万一哪天改名，退化成浅色值不会失读
-  // （#7c828a 在深色底上仍有 4.8:1），只是组框偏淡 —— 是可接受的退化，不是崩。
-  ':where(body[data-ds-dark-theme]) .ac-root{--ac-line:#86888a;--ac-fill-a:.18;--ac-p0:#d139d1;--ac-p1:#d54d7b;--ac-p2:#d45549;--ac-p3:#9d7925;--ac-p4:#229150;--ac-p5:#218d7f;--ac-p6:#3281cf;--ac-p7:#9664db}',
-  // 八档色相：同一个组的**组框描边 + 组名 + 组内节点的边框**都是这个色 —— 组框互相压住、
-  // 或者折叠起来的时候，成员关系照样读得出来。每档都做过**亮度归一**：让相对亮度相同，
+  // （#7c828a 在深色底上仍有 4.8:1），只是描边偏淡 —— 是可接受的退化，不是崩。
+  ':where(body[data-ds-dark-theme]) .ac-root{--ac-line:#86888a;--ac-p0:#d139d1;--ac-p1:#d54d7b;--ac-p2:#d45549;--ac-p3:#9d7925;--ac-p4:#229150;--ac-p5:#218d7f;--ac-p6:#3281cf;--ac-p7:#9664db}',
+  // 八档色相：同一个 `tag` 的**节点描边**都是这个色 —— 打了同一个概念标签的方块
+  // 一眼连成一片，靠的是这一条。每档都做过**亮度归一**：让相对亮度相同，
   // 而不是 HSL 的 L 相同 —— 同一个 L 下蓝色比绿色暗三倍（实测 2.58:1 vs 7.83:1）。
-  // 归一后每档对底色都是 ≈4.5:1。组框填充只取 13~18%：整块铺满色相会盖过节点本身。
-  '.ac-h0 .ac-shape,.ac-h0 .ac-group-box,.ac-h0 .ac-fold-box{stroke:var(--ac-p0)}',
-  '.ac-h0 .ac-group-box,.ac-h0 .ac-fold-box{fill:var(--ac-p0);fill-opacity:var(--ac-fill-a)}',
-  '.ac-h0 .ac-group-lbl,.ac-h0 .ac-fold-lbl{fill:var(--ac-p0)}',
-  '.ac-h1 .ac-shape,.ac-h1 .ac-group-box,.ac-h1 .ac-fold-box{stroke:var(--ac-p1)}',
-  '.ac-h1 .ac-group-box,.ac-h1 .ac-fold-box{fill:var(--ac-p1);fill-opacity:var(--ac-fill-a)}',
-  '.ac-h1 .ac-group-lbl,.ac-h1 .ac-fold-lbl{fill:var(--ac-p1)}',
-  '.ac-h2 .ac-shape,.ac-h2 .ac-group-box,.ac-h2 .ac-fold-box{stroke:var(--ac-p2)}',
-  '.ac-h2 .ac-group-box,.ac-h2 .ac-fold-box{fill:var(--ac-p2);fill-opacity:var(--ac-fill-a)}',
-  '.ac-h2 .ac-group-lbl,.ac-h2 .ac-fold-lbl{fill:var(--ac-p2)}',
-  '.ac-h3 .ac-shape,.ac-h3 .ac-group-box,.ac-h3 .ac-fold-box{stroke:var(--ac-p3)}',
-  '.ac-h3 .ac-group-box,.ac-h3 .ac-fold-box{fill:var(--ac-p3);fill-opacity:var(--ac-fill-a)}',
-  '.ac-h3 .ac-group-lbl,.ac-h3 .ac-fold-lbl{fill:var(--ac-p3)}',
-  '.ac-h4 .ac-shape,.ac-h4 .ac-group-box,.ac-h4 .ac-fold-box{stroke:var(--ac-p4)}',
-  '.ac-h4 .ac-group-box,.ac-h4 .ac-fold-box{fill:var(--ac-p4);fill-opacity:var(--ac-fill-a)}',
-  '.ac-h4 .ac-group-lbl,.ac-h4 .ac-fold-lbl{fill:var(--ac-p4)}',
-  '.ac-h5 .ac-shape,.ac-h5 .ac-group-box,.ac-h5 .ac-fold-box{stroke:var(--ac-p5)}',
-  '.ac-h5 .ac-group-box,.ac-h5 .ac-fold-box{fill:var(--ac-p5);fill-opacity:var(--ac-fill-a)}',
-  '.ac-h5 .ac-group-lbl,.ac-h5 .ac-fold-lbl{fill:var(--ac-p5)}',
-  '.ac-h6 .ac-shape,.ac-h6 .ac-group-box,.ac-h6 .ac-fold-box{stroke:var(--ac-p6)}',
-  '.ac-h6 .ac-group-box,.ac-h6 .ac-fold-box{fill:var(--ac-p6);fill-opacity:var(--ac-fill-a)}',
-  '.ac-h6 .ac-group-lbl,.ac-h6 .ac-fold-lbl{fill:var(--ac-p6)}',
-  '.ac-h7 .ac-shape,.ac-h7 .ac-group-box,.ac-h7 .ac-fold-box{stroke:var(--ac-p7)}',
-  '.ac-h7 .ac-group-box,.ac-h7 .ac-fold-box{fill:var(--ac-p7);fill-opacity:var(--ac-fill-a)}',
-  '.ac-h7 .ac-group-lbl,.ac-h7 .ac-fold-lbl{fill:var(--ac-p7)}',
-  // 折叠块：被收起来的组（视图状态，不落盘）。点一下展开 —— 与「点节点展开描述」同一个心智模型。
-  // 块本体**可拖**（拖的是组内所有人），但不可点开 —— 展开只认右边那个按钮。
-  // 所以光标是 move 而不是 pointer：给的是「能搬动它」的暗示，不是「点了会发生什么」。
-  '.ac-fold{cursor:move}',
-  '.ac-fold-box{fill:var(--dsw-alias-bg-layer-2,#232830);stroke:var(--dsw-alias-brand-primary,#4c8dff);stroke-width:1.5}',
-  '.ac-fold-lbl{fill:var(--dsw-alias-label-primary,#e8eaed);font-size:12.5px;text-anchor:middle;dominant-baseline:central;pointer-events:none;user-select:none}',
-  '.ac-fold-btn,.ac-group-btn{cursor:pointer}',
-  // 底色写死品牌蓝，**不要**用 --dsw-alias-brand-primary：那个变量在浅色主题下是近黑的
-  // （neutral-bluish-1000），实心圆 + 白字就成了一坨黑块；深色主题下它又近乎纯白，白字看不见。
-  // 它适合做描边/文字色，不适合做「填充底 + 白字」。AC 里其他角标（留言 ✎ / 锚点 ▤ / 下钻 ↗）
-  // 用的也都是写死的语义色 —— 按钮跟着它们走，别自成一套。
-  '.ac-fold-btn circle,.ac-group-btn circle{fill:#4c8dff;stroke:var(--dsw-alias-bg-base,#14161a);stroke-width:1.5}',
-  '.ac-fold-btn text,.ac-group-btn text{fill:#fff;font-size:10px;text-anchor:middle;pointer-events:none;user-select:none}',
+  // 归一后每档对底色都是 ≈4.5:1。没打标签的节点落回 --ac-line（中性）。
+  '.ac-h0 .ac-shape{stroke:var(--ac-p0)}',
+  '.ac-h1 .ac-shape{stroke:var(--ac-p1)}',
+  '.ac-h2 .ac-shape{stroke:var(--ac-p2)}',
+  '.ac-h3 .ac-shape{stroke:var(--ac-p3)}',
+  '.ac-h4 .ac-shape{stroke:var(--ac-p4)}',
+  '.ac-h5 .ac-shape{stroke:var(--ac-p5)}',
+  '.ac-h6 .ac-shape{stroke:var(--ac-p6)}',
+  '.ac-h7 .ac-shape{stroke:var(--ac-p7)}',
   '.ac-handle{fill:var(--dsw-alias-brand-primary,#4c8dff);stroke:var(--dsw-alias-bg-base,#14161a);stroke-width:2;cursor:crosshair}',
   '.ac-link-preview{stroke:var(--dsw-alias-brand-primary,#4c8dff);stroke-width:2;stroke-dasharray:5 4;fill:none}',
   // 拖拽吸附的参考线：拖拽时才出现，松手即消失（不进模型、不进文件、也不导出）。

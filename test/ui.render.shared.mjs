@@ -30,14 +30,14 @@ const UI = '/tmp/uiproj'
 
 // ---------- 打桩的 RPC：形状照着宿主真实的回执 ----------
 const rpcCalls = []
-const EMPTY_MODEL = { nodes: [], edges: [], groups: [], direction: 'TD', extras: [] }
+const EMPTY_MODEL = { nodes: [], edges: [], direction: 'TD', extras: [] }
 function fullDoc(extra) {
   return Object.assign({
     ok: true, revision: 1, updatedBy: 'switch',
     model: EMPTY_MODEL, mermaid: 'flowchart TD\n',
     file: UI + '/.arch-canvas/architecture.mmd', diagram: 'architecture', key: 'architecture',
     external: null, project: '', dir: UI + '/.arch-canvas', scope: 'project', workspace: UI,
-    tombstoned: false, nodeCount: 0, edgeCount: 0, groupCount: 0, libraryRev: 1, historyCount: 1,
+    tombstoned: false, nodeCount: 0, edgeCount: 0, libraryRev: 1, historyCount: 1,
     warnings: [], notes: [], lastChange: null,
   }, extra || {})
 }

@@ -1,18 +1,15 @@
 // 界面渲染分片（共享脚手架见 ui.render.shared.mjs；DOM/React/桩 RPC/槽位捕获都由它装载）。
 import { endPhase } from './ui.render.shared.mjs'
 
-console.log('\n[4i] 组拖动与拖拽不丢字段')
+console.log('\n[4i] 拖拽不丢字段')
 {
   const TEST_MODEL = {
     nodes: [
-      { id: 'g_n1', label: '组内节点1', shape: 'rect', group: 'g1', x: 100, y: 100, note: '', noteDone: false, files: [] },
-      { id: 'g_n2', label: '组内节点2', shape: 'rect', group: 'g1', x: 200, y: 120, note: '', noteDone: false, files: [] },
-      { id: 'n_field', label: '带字段节点', shape: 'rect', group: null, x: 400, y: 300, note: '待办事项', noteDone: false, files: ['src/core.ts'] },
+      { id: 'g_n1', label: '旁边的甲', shape: 'rect', x: 100, y: 100, note: '', noteDone: false, files: [] },
+      { id: 'g_n2', label: '旁边的乙', shape: 'rect', x: 200, y: 120, note: '', noteDone: false, files: [] },
+      { id: 'n_field', label: '带字段节点', shape: 'rect', x: 400, y: 300, note: '待办事项', noteDone: false, files: ['src/core.ts'] },
     ],
     edges: [],
-    groups: [
-      { id: 'g1', label: '拖拽组' },
-    ],
     direction: 'TD', extras: [], summary: '',
   }
 
@@ -24,7 +21,6 @@ console.log('\n[4i] 组拖动与拖拽不丢字段')
         model: currentModel,
         nodeCount: currentModel.nodes.length,
         edgeCount: currentModel.edges.length,
-        groupCount: currentModel.groups.length,
       })
     }
     if (method === 'doc:set') {
@@ -52,51 +48,9 @@ console.log('\n[4i] 组拖动与拖拽不丢字段')
   const svgEl = dragHost.querySelector('svg.ac-svg')
   ok('渲染出画布 svg.ac-svg', !!svgEl)
 
-  // 先折叠组 g1
-  const groupBtn = dragHost.querySelector('g.ac-group-btn')
-  ok('存在收起按钮 g.ac-group-btn', !!groupBtn)
-  await act(async () => {
-    groupBtn.dispatchEvent(new dom.window.PointerEvent('pointerdown', { bubbles: true, button: 0 }))
-  })
-  await flush()
-
-  const foldEl = dragHost.querySelector('g.ac-fold')
-  ok('折叠后存在 g.ac-fold', !!foldEl)
-  const foldBox = dragHost.querySelector('rect.ac-fold-box')
-  ok('折叠后存在 rect.ac-fold-box', !!foldBox)
-  const initialFoldX = foldBox?.getAttribute('x')
-
-  // c. 负向对照：只按下不移动，什么都不变 —— pointerdown 后直接 pointerup（中途没有位移），
-  //    断言折叠块位置不变、且仍是折叠态。
-  await act(async () => {
-    foldEl.dispatchEvent(new dom.window.PointerEvent('pointerdown', { bubbles: true, button: 0, clientX: 150, clientY: 110 }))
-    svgEl.dispatchEvent(new dom.window.PointerEvent('pointerup', { bubbles: true, button: 0, clientX: 150, clientY: 110 }))
-  })
-  await flush()
-  eq('负向对照：只按下不移动，折叠块位置不变', dragHost.querySelector('rect.ac-fold-box')?.getAttribute('x'), initialFoldX)
-  ok('负向对照：只按下不移动，仍是折叠态（.ac-fold 仍存在）', !!dragHost.querySelector('g.ac-fold'))
-
-  // a. 拖折叠块会带走整个组：先折叠一个组，记下 rect.ac-fold-box 的 x；
-  //    对 g.ac-fold 派发 pointerdown，再对 svg.ac-svg 派发 pointermove（带位移），最后 pointerup；
-  //    断言 rect.ac-fold-box 的 x 变了（成员被一起挪了，块才跟着动）。
-  const foldElBeforeDrag = dragHost.querySelector('g.ac-fold')
-  await act(async () => {
-    foldElBeforeDrag.dispatchEvent(new dom.window.PointerEvent('pointerdown', { bubbles: true, button: 0, clientX: 150, clientY: 110 }))
-    svgEl.dispatchEvent(new dom.window.PointerEvent('pointermove', { bubbles: true, clientX: 210, clientY: 170 }))
-    svgEl.dispatchEvent(new dom.window.PointerEvent('pointerup', { bubbles: true, button: 0, clientX: 210, clientY: 170 }))
-  })
-  await flush()
-
-  const movedFoldBox = dragHost.querySelector('rect.ac-fold-box')
-  const movedFoldX = movedFoldBox?.getAttribute('x')
-  ok('拖折叠块会带走整个组（rect.ac-fold-box 的 x 改变）', !!movedFoldX && movedFoldX !== initialFoldX, { initialFoldX, movedFoldX })
-
-  // b. 负向对照：拖动不会误展开 —— 上面那串操作之后，.ac-fold 仍然存在。
-  ok('负向对照：拖动不会误展开（.ac-fold 仍然存在）', !!dragHost.querySelector('g.ac-fold'))
-
-  // d. 拖拽不丢字段：构造一个带 note（未解决）与 files 的节点，对它派发
-  //    pointerdown → pointermove（带位移）→ pointerup，断言它的 .ac-note-badge 与 .ac-file-badge
-  //    都还在（旧实现下这两个角标会在拖动后消失）。
+  // 拖拽不丢字段：构造一个带 note（未解决）与 files 的节点，对它派发
+  // pointerdown → pointermove（带位移）→ pointerup，断言它的 .ac-note-badge 与 .ac-file-badge
+  // 都还在（旧实现下这两个角标会在拖动后消失）。
   const findFieldNode = () => Array.from(dragHost.querySelectorAll('g.ac-node')).find((el) => el.querySelector('.ac-lbl')?.textContent.trim() === '带字段节点')
   const nodeElBefore = findFieldNode()
   ok('拖拽前带字段节点存在 .ac-note-badge', !!nodeElBefore?.querySelector('.ac-note-badge'))
@@ -124,12 +78,11 @@ console.log('\n[4j] 连线布线：正交折线 + 避让中间的方块')
   // 这是本次改动的**核心断言** —— 线必须绕开它，而不是穿过去。
   const ROUTE_MODEL = {
     nodes: [
-      { id: 'ra', label: '甲', shape: 'rect', group: null, x: 0, y: 0 },
-      { id: 'rc', label: '中间障碍', shape: 'rect', group: null, x: 0, y: 220 },
-      { id: 'rb', label: '乙', shape: 'rect', group: null, x: 0, y: 440 },
+      { id: 'ra', label: '甲', shape: 'rect', x: 0, y: 0 },
+      { id: 'rc', label: '中间障碍', shape: 'rect', x: 0, y: 220 },
+      { id: 'rb', label: '乙', shape: 'rect', x: 0, y: 440 },
     ],
     edges: [{ id: 're1', from: 'ra', to: 'rb', label: '', arrow: '-->' }],
-    groups: [],
     direction: 'TD',
     extras: [],
   }
@@ -298,17 +251,16 @@ console.log('\n[4j] 连线布线：正交折线 + 避让中间的方块')
   // 从前三根线的端口是**同一个点**（这就是"一侧的箭头叠在一起"），现在必须沿边展开。
   const FAN_MODEL = {
     nodes: [
-      { id: 'f1', label: '源一', shape: 'rect', group: null, x: -220, y: 0 },
-      { id: 'f2', label: '源二', shape: 'rect', group: null, x: 0, y: 0 },
-      { id: 'f3', label: '源三', shape: 'rect', group: null, x: 220, y: 0 },
-      { id: 'ft', label: '汇总节点', shape: 'rect', group: null, x: 0, y: 340 },
+      { id: 'f1', label: '源一', shape: 'rect', x: -220, y: 0 },
+      { id: 'f2', label: '源二', shape: 'rect', x: 0, y: 0 },
+      { id: 'f3', label: '源三', shape: 'rect', x: 220, y: 0 },
+      { id: 'ft', label: '汇总节点', shape: 'rect', x: 0, y: 340 },
     ],
     edges: [
       { id: 'fe1', from: 'f1', to: 'ft', label: '', arrow: '-->' },
       { id: 'fe2', from: 'f2', to: 'ft', label: '', arrow: '-->' },
       { id: 'fe3', from: 'f3', to: 'ft', label: '', arrow: '-->' },
     ],
-    groups: [],
     direction: 'TD',
     extras: [],
   }
@@ -362,9 +314,9 @@ console.log('\n[4l] 写完留言**不**动输入框：留言只走注入，要�
   // 这个状态根本不存在。现在锁的是新契约：**留言不许碰草稿**，要发就用清单头部那个按钮。
   const AUTO_MODEL = {
     nodes: [
-      { id: 'a1', label: '节点甲', shape: 'rect', group: null, x: 0, y: 0, note: '这里为什么不用队列？', noteDone: false },
+      { id: 'a1', label: '节点甲', shape: 'rect', x: 0, y: 0, note: '这里为什么不用队列？', noteDone: false },
     ],
-    edges: [], groups: [], direction: 'TD', extras: [],
+    edges: [], direction: 'TD', extras: [],
   }
   const prevRespondAuto = respond
   const autoModel = JSON.parse(JSON.stringify(AUTO_MODEL))
@@ -448,13 +400,13 @@ console.log('\n[4m] 端口的硬约束：绝不许越过方块边界（悬空连
   // 一侧挤进 4 条线时整串就溢出了方块，线头挂在框外。
   const SHORT_MODEL = {
     nodes: [
-      { id: 's1', label: '源一', shape: 'rect', group: null, x: -320, y: 0 },
-      { id: 's2', label: '源二', shape: 'rect', group: null, x: -320, y: 90 },
-      { id: 's3', label: '源三', shape: 'rect', group: null, x: -320, y: 180 },
-      { id: 's4', label: '源四', shape: 'rect', group: null, x: -320, y: 270 },
-      { id: 's5', label: '源五', shape: 'rect', group: null, x: -320, y: 360 },
-      { id: 's6', label: '源六', shape: 'rect', group: null, x: -320, y: 450 },
-      { id: 'st', label: '目标', shape: 'rect', group: null, x: 0, y: 135 },
+      { id: 's1', label: '源一', shape: 'rect', x: -320, y: 0 },
+      { id: 's2', label: '源二', shape: 'rect', x: -320, y: 90 },
+      { id: 's3', label: '源三', shape: 'rect', x: -320, y: 180 },
+      { id: 's4', label: '源四', shape: 'rect', x: -320, y: 270 },
+      { id: 's5', label: '源五', shape: 'rect', x: -320, y: 360 },
+      { id: 's6', label: '源六', shape: 'rect', x: -320, y: 450 },
+      { id: 'st', label: '目标', shape: 'rect', x: 0, y: 135 },
     ],
     edges: [
       { id: 'se1', from: 's1', to: 'st', label: '', arrow: '-->' },
@@ -464,7 +416,7 @@ console.log('\n[4m] 端口的硬约束：绝不许越过方块边界（悬空连
       { id: 'se5', from: 's5', to: 'st', label: '', arrow: '-->' },
       { id: 'se6', from: 's6', to: 'st', label: '', arrow: '-->' },
     ],
-    groups: [], direction: 'TD', extras: [],
+    direction: 'TD', extras: [],
   }
   const prevRespondShort = respond
   const shortModel = JSON.parse(JSON.stringify(SHORT_MODEL))
@@ -522,10 +474,10 @@ console.log('\n[4n] 输入框再也不被留言碰：挂载 / 写新留言 / 标
   // （留言真的写进去了），否则「没动草稿」在实现整个坏掉时照样能过。
   const NOTE_MODEL = {
     nodes: [
-      { id: 'x1', label: '甲', shape: 'rect', group: null, x: 0, y: 0, note: '未办一', noteDone: false },
-      { id: 'x3', label: '丙', shape: 'rect', group: null, x: 320, y: 0, note: '未办二', noteDone: false },
+      { id: 'x1', label: '甲', shape: 'rect', x: 0, y: 0, note: '未办一', noteDone: false },
+      { id: 'x3', label: '丙', shape: 'rect', x: 320, y: 0, note: '未办二', noteDone: false },
     ],
-    edges: [], groups: [], direction: 'TD', extras: [],
+    edges: [], direction: 'TD', extras: [],
   }
   const prevRespondNote = respond
   let curNoteModel = JSON.parse(JSON.stringify(NOTE_MODEL))
@@ -611,9 +563,9 @@ console.log('\n[4o] Esc 两段式：第一下只拿焦点，第二下才关编�
 {
   const ESC_MODEL = {
     nodes: [
-      { id: 'e1', label: '节点甲', shape: 'rect', group: null, x: 0, y: 0, note: '这里为什么不用队列？', noteDone: false },
+      { id: 'e1', label: '节点甲', shape: 'rect', x: 0, y: 0, note: '这里为什么不用队列？', noteDone: false },
     ],
-    edges: [], groups: [], direction: 'TD', extras: [],
+    edges: [], direction: 'TD', extras: [],
   }
   const prevRespondEsc = respond
   const escModel = JSON.parse(JSON.stringify(ESC_MODEL))
@@ -732,16 +684,16 @@ console.log('\n[4p] 连线之间的两件事：平行间隔（不叠在一起）
   //      不绕行）、中位线相同、跨度重叠，唯一能解释「车道差 ≥10px」的就只剩间隔算法本身。
   const PARALLEL_MODEL = {
     nodes: [
-      { id: 'pa', label: '甲', shape: 'rect', group: null, x: -60, y: 0 },
-      { id: 'pb', label: '乙', shape: 'rect', group: null, x: 40, y: 500 },
-      { id: 'pc', label: '丙', shape: 'rect', group: null, x: -40, y: 1000 },
-      { id: 'pd', label: '丁', shape: 'rect', group: null, x: 20, y: -500 },
+      { id: 'pa', label: '甲', shape: 'rect', x: -60, y: 0 },
+      { id: 'pb', label: '乙', shape: 'rect', x: 40, y: 500 },
+      { id: 'pc', label: '丙', shape: 'rect', x: -40, y: 1000 },
+      { id: 'pd', label: '丁', shape: 'rect', x: 20, y: -500 },
     ],
     edges: [
       { id: 'pe1', from: 'pa', to: 'pb', label: '', arrow: '-->' },
       { id: 'pe2', from: 'pc', to: 'pd', label: '', arrow: '-->' },
     ],
-    groups: [], direction: 'TD', extras: [],
+    direction: 'TD', extras: [],
   }
   const pds = await renderEdges(PARALLEL_MODEL)
   eq('两条平行线都画出来了', pds.length, 2)
@@ -777,16 +729,16 @@ console.log('\n[4p] 连线之间的两件事：平行间隔（不叠在一起）
   // 一条竖线（x=0，y 22.5→277.5）与一条横线（y=150，x -248→248）在 (0,150) 正交相交。
   const CROSS_MODEL = {
     nodes: [
-      { id: 'xa', label: '甲', shape: 'rect', group: null, x: 0, y: 0 },
-      { id: 'xb', label: '乙', shape: 'rect', group: null, x: 0, y: 300 },
-      { id: 'xc', label: '丙', shape: 'rect', group: null, x: -300, y: 150 },
-      { id: 'xd', label: '丁', shape: 'rect', group: null, x: 300, y: 150 },
+      { id: 'xa', label: '甲', shape: 'rect', x: 0, y: 0 },
+      { id: 'xb', label: '乙', shape: 'rect', x: 0, y: 300 },
+      { id: 'xc', label: '丙', shape: 'rect', x: -300, y: 150 },
+      { id: 'xd', label: '丁', shape: 'rect', x: 300, y: 150 },
     ],
     edges: [
       { id: 'xe1', from: 'xa', to: 'xb', label: '', arrow: '-->' },
       { id: 'xe2', from: 'xc', to: 'xd', label: '', arrow: '-->' },
     ],
-    groups: [], direction: 'TD', extras: [],
+    direction: 'TD', extras: [],
   }
   const xds = await renderEdges(CROSS_MODEL)
   eq('交叉用例的两条线都画出来了', xds.length, 2)
@@ -820,7 +772,7 @@ console.log('\n[4q] 源码页的滚动：flex-basis 为 0 + 一道原生 wheel �
   const prevR2 = respond
   respond = function (method, args) {
     if (method === 'doc:get') {
-      return fullDoc({ model: { nodes: [], edges: [], groups: [], direction: 'TD', extras: [] }, mermaid: HL_MERMAID2 })
+      return fullDoc({ model: { nodes: [], edges: [], direction: 'TD', extras: [] }, mermaid: HL_MERMAID2 })
     }
     return prevR2(method, args)
   }

@@ -215,13 +215,58 @@ function studioMemoFor(key, create) {
   return m
 }
 
-// 原来声明在组件体里、但被多个分片共用的小常量（提到模块级，保持「一个事实只有一个家」）：
-/**
- * 分组下拉框里「新建组」那一项的哨兵值。挑 '#' 是因为 groupKeyOf 会把 '#' 剥掉，
- * 所以**任何真实组 id 都不可能是它** —— 哨兵与真 id 不可能撞。
- */
-var GROUP_NEW = '#new'
+// ==================== 标签 → 色相档位 ====================
+// 节点配色由 `tags` 驱动：打了同一个概念标签的方块，描边同一个色相档。
+// 算法照搬从前那份「按 id 分色相」的实现：5381 哈希定起点 + 撞档时线性往后探。
+// 为什么必须「整批重算」而不是「谁先来谁占位」：分配要只取决于**有哪些 tag**、与出现顺序无关
+// ——否则删掉/插入一个 tag 会让后面一串 tag 换色，而用户记住的是「那个紫色方块」。
+// 所以已知 tag 集合永远按字典序排好再分配；tag 多于 8 档时色相从头复用
+// （图上一眼看得出「不是同一个 tag」，但两 tag 同色 —— 与从前的组一样，是有意的取舍）。
+var TAG_HUE_COUNT = 8
+// 已经参与分配的 tag（按字典序）与它们当前的档位。这是**派生缓存**，不是配置：
+// 只被 tagHueIndex 写，只决定颜色长什么样，不进模型、不落盘、不进任何判断分支。
+var TAG_HUE_TAGS = []
+var TAG_HUE_SLOTS = {}
 
+function tagHueIndex(tag) {
+  var id = typeof tag === 'string' ? tag : ''
+  if (!id) return 0
+  if (TAG_HUE_SLOTS[id] !== undefined) return TAG_HUE_SLOTS[id]
+  // 还没见过的 tag：并进集合（插到字典序正确的位置），然后整批重算 ——
+  // 与「每次拿一份 id 清单重算」是同一件事，只是这份清单在这里累积。
+  var at = 0
+  while (at < TAG_HUE_TAGS.length && TAG_HUE_TAGS[at] < id) at++
+  if (TAG_HUE_TAGS[at] !== id) TAG_HUE_TAGS.splice(at, 0, id)
+  var used = {}
+  var slots = {}
+  for (var k = 0; k < TAG_HUE_TAGS.length; k++) {
+    var s = TAG_HUE_TAGS[k]
+    var h = 5381
+    for (var j = 0; j < s.length; j++) h = ((h * 33) ^ s.charCodeAt(j)) >>> 0
+    var slot = h % TAG_HUE_COUNT
+    for (var probe = 0; probe < TAG_HUE_COUNT; probe++) {
+      var cand = (slot + probe) % TAG_HUE_COUNT
+      if (!used[cand]) { slot = cand; break }
+    }
+    used[slot] = true
+    slots[s] = slot
+  }
+  TAG_HUE_SLOTS = slots
+  return slots[id]
+}
+
+/**
+ * 节点的色相类：`''` 或 `' ac-h' + n`（n = tags[0] 的档位）。
+ * 没有标签、或第一个标签是空串，就落回中性的 `--ac-line` —— 中性是「还没打标签」的如实表达，
+ * 不是「打了标签但没色」。
+ */
+function hueClassOfNode(node) {
+  var tags = node && node.tags
+  if (!tags || !tags.length) return ''
+  var t = tags[0]
+  if (typeof t !== 'string' || !t) return ''
+  return ' ac-h' + tagHueIndex(t)
+}
 
 /**
  * 外部文件路径提取基础文件名（反斜杠归一后取最后一段）。
