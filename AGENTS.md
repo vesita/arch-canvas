@@ -119,7 +119,7 @@ Package 形态下 `code.host` 是**源码字符串**，wasm 塞不进去；真�
 
 ### 提示词模板注入：`{{` 必须在注入前拆开
 
-`systemPrompt.context` 把注册的文本当 `{{变量}}` 模板渲染，**这条通道没有关插值的开关**（只有 section 通道认 `interpolate: false`）。源文本里出现
+`systemPrompt.context` 默认把注册的文本当 `{{变量}}` 模板渲染。**两条通道都认 `interpolate: false`**（context 见 `dsh-system-prompt/lib/index.js:154`，section 见 `:118`），注册时传上它就能保留字面文本；本插件没传（`plugin-tools.ts` 的 `systemPromptSvc.context({ name, order, text })`），所以下面这道守卫仍然必要。源文本里出现
 `{{...}}`（Mermaid 的 **hexagon 形状**就是 `id{{"标签"}}`）而中间那段名字不匹配 `/^[a-z][a-z0-9_]*$/` 就**直接抛错** ——
 整条提示词注入失败、插件当场崩，**连会话都起不来**。守卫收口在 `promptSafe()`（`plugin.ts`）：把 `{{` 拆成 `{ {`、循环拆到不动为止，`promptText()` 每个
 return 都过它；这是唯一一处**必须改动用户文本**的地方，别在别处再开第二个口子。
