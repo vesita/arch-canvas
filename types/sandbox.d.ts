@@ -76,6 +76,8 @@ declare const hostEnv: {
    * 认不出的取值在 log.ts 里退回 `info`。
    */
   logLevel?: string
+  /** dsh-llm 的 createUserMessage：真插件形态注入，供 durable 图源基线；动态形态没有。 */
+  createUserMessage?: (input: any) => any
   /**
    * 随包 skill 的落点与正文。真插件那半用 node:fs 同步读 `<包>/skills/arch-canvas/SKILL.md`，
    * 动态形态走 fs 服务读 `<项目>/skills/...`；**解析与注册收口在宿主逻辑里**，所以这里只递原文。

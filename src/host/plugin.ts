@@ -128,6 +128,72 @@ function foreignCanvasText(sessWhere: string, sameProject?: boolean) {
  * 现在的规矩：**画布属于项目，不属于进程**。这一步的会话在自己项目里 → 正常注入；
  * 不在 → 只给一句说明，绝不把别人项目的图、锚点、留言读给这一步，也绝不消费那些留言。
  */
+// ==================== durable 上下文：图源作为会话基线 ====================
+// promptText 每步注入「当前状态」；**图源**是稳定的大头（大图上万 token）。它改走 dsh 原生 durable 注入：
+// 在 agent/pre-step 用 createUserMessage 注入一条带 source.kind 的 durable 用户消息（会话顶部），
+// 按 revision（图源内容哈希）去重/替换，图变才更新 —— 每步不再重复塞整份源码。
+// 只有真插件形态拿得到 createUserMessage；动态 Package 沙箱没有，DURABLE=false 时回退到 promptText 内嵌图源。
+var CREATE_USER_MSG = (typeof hostEnv === 'object' && hostEnv && typeof hostEnv.createUserMessage === 'function')
+  ? hostEnv.createUserMessage
+  : null
+var DURABLE = !!CREATE_USER_MSG
+
+function hashSource(s) {
+  var h = 5381
+  for (var i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0
+  return h >>> 0
+}
+
+/** 当前图的「注入视图」源文本 + revision（内容哈希）。与 promptText 内嵌用的是同一份过滤。 */
+function durableSourceView() {
+  if (!doc || !doc.nodes || doc.nodes.length === 0) return null
+  var src = serializeDoc(doc).replace(/\n+$/, '')
+  src = src.split('\n').filter(function (l) {
+    return l.indexOf('%% @done ') !== 0 && l.slice(0, 3) !== '%%!' && l.indexOf('%% @pos ') !== 0
+  }).join('\n')
+  if (!src) return null
+  return {
+    revision: hashSource(src),
+    text: '下面是**源文本**（这份图文件的全文；已滤掉 `@pos` 坐标行、`%%!` 格式说明，要看原文用 `arch_read`）。' +
+      '`%%` 开头的行是元数据，原样保留、不要当成图的内容来讨论。\n```mermaid\n' + src + '\n```',
+  }
+}
+
+/** agent/pre-step：把当前图源作为一条 durable 用户消息注入/刷新。归属不属本项目就不注入（该会话 promptText 会给 foreign 说明）。 */
+async function preStepDurable(event, next) {
+  var decision = await next()
+  if (!decision || decision.kind === 'reject') return decision
+  var exec = { agent: event && event.agent }
+  var sessWhere = whereOfExec(exec)
+  var sessId = sessionIdOfExec(exec)
+  if (typeof sessWhere === 'string' && sessWhere) {
+    if (!docBelongsTo(sessWhere, sessId) && !syncWorkspaceFor(sessWhere, sessId)) return decision
+  }
+  var view = durableSourceView()
+  if (!view) return decision
+  var desired = CREATE_USER_MSG({
+    content: [{ type: 'text', text: view.text }],
+    source: { kind: 'arch-canvas-source', form: 'primer', baseline: true, revision: view.revision },
+  })
+  if (!desired) return decision
+  var messages = Array.isArray(decision.messages) ? decision.messages.slice() : []
+  var idx = -1
+  for (var i = 0; i < messages.length; i++) {
+    if (messages[i] && messages[i].source && messages[i].source.kind === 'arch-canvas-source') { idx = i; break }
+  }
+  if (idx >= 0) {
+    if (messages[idx].source && messages[idx].source.revision === view.revision) return decision
+    messages[idx] = desired
+    return Object.assign({}, decision, { messages: messages })
+  }
+  messages.unshift(desired)
+  return Object.assign({}, decision, { messages: messages })
+}
+
+if (DURABLE) {
+  ctx.on('agent/pre-step', preStepDurable)
+}
+
 function promptText(asctx?) {
   var sessWhere = whereOfExec({ agent: asctx && asctx.agent })
   var sessId = sessionIdOfExec({ agent: asctx && asctx.agent })
@@ -319,6 +385,16 @@ function promptText(asctx?) {
   if (doc.nodes.length === 0) {
     head.push('', '画布目前是空的。可以用 `arch_write` 画一版初稿，或用 `arch_edit` 逐块搭建。')
     return promptSafe(head.join('\n'))
+  }
+  if (DURABLE) {
+    var outD = head.concat([
+      '',
+      '本图的**源文本**作为 durable 基线注入在会话顶部（图有变化时才更新）；要看最新原文 / 坐标细节用 `arch_read`。',
+      '`%%` 开头的行是元数据，原样保留、不要当成图的内容来讨论。',
+      '',
+      '工具用法与图库规则见 `arch-canvas` skill（用 `skill` 工具加载）。',
+    ]).join('\n')
+    return promptSafe(outD)
   }
   var src = serializeDoc(doc).replace(/\n+$/, '')
   // 「注入用的视图」与文件不逐字相同，为的都是别把噪音灌给 AI（文件里一切都在，要看原文用 `arch_read`）：
