@@ -255,9 +255,13 @@ mRef2.nodes.find((n) => n.id === 'r1').files = ['src/host/mermaid.ts#parseMermai
 mRef2.nodes.find((n) => n.id === 'r1').tags = ['core', 'parser']
 await call('doc:set', { model: mRef2, where: dirRef })
 const wRef = await tool('arch_write').execute({
-  mermaid: 'flowchart TD\n  r1["解析器重画"] --> r3["新下游"]\n',
+  mermaid: 'flowchart TD\n  r1["解析器重画"] --> r3["新下游"]\n%% @file r3 "src/host/mermaid.ts#parseMermaid"\n',
 }, {})
 ok('arch_write 成功', wRef && wRef.ok !== false)
+// 回归守卫：arch_write 落盘后必须重算锚点校验。用**新引入的节点 r3**（重画前 fileStatus 没有它）——
+// 修复前（无 verifyFileRefs）arch_write 直接返回的 fileStatus 里 r3 → MISSING（而界面 doc:get 会重算成 ok，两边不一致）；修复后 → ok。
+eq('arch_write 返回的 fileStatus 已刷新（新锚点 r3 已算，不是重画前的旧缓存）',
+  (wRef.fileStatus && wRef.fileStatus.r3 && wRef.fileStatus.r3['src/host/mermaid.ts#parseMermaid']) || 'MISSING', 'ok')
 const getWRef = await call('doc:get', { where: dirRef })
 eq('arch_write 后同 id 节点继承了锚点',
   JSON.stringify(getWRef.model.nodes.find((n) => n.id === 'r1').files), JSON.stringify(['src/host/mermaid.ts#parseMermaid']))
