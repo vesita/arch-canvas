@@ -6,9 +6,10 @@
 // 契约不变：仍返回 { d, mid }（mid 给标签用）。新增的两个参数都是可选的，
 // 老调用（只传 a、b）仍然得到一条合法的正交折线。
 var EDGE_PAD = 12       // 避让余量：线离方块至少这么远
-var EDGE_LANE = 16      // 绕行时走到障碍外侧的额外距离
+var EDGE_MIN_BEND = 20   // 统一「最小弯折距离」：拐点离节点/障碍外侧、平行线之间都至少这么远（一处管理，偏美观）
+var EDGE_LANE = EDGE_MIN_BEND // 绕行/避让距离统一取最小弯折距离
 var EDGE_PORT_INSET = 8 // 端口离方块两角的边距，别让线从角上出去
-var EDGE_STUB = 20       // 折点离「连接点(端口)」的最小距离：微错开时把竖直段贴到端点，别放半程中点成台阶
+var EDGE_STUB = EDGE_MIN_BEND // 折点离连接点的最小距离（统一取最小弯折距离）
 var EDGE_PORT_MIN_GAP = 12 // 同一侧两个端口的最小间距 ≈ 箭头宽度，否则箭头会叠在一起
 var EDGE_CORNER = 8     // 拐角的圆角半径：折线不是画成直角，而是「稍微转个弯」（用户要的观感）
 var EDGE_HOP = 5        // 交叉处的半圆拱桥半径：十字交叉时有一条线从上面跨过去
@@ -431,6 +432,30 @@ function edgeSidesOf(a, b, obstacles = null) {
     if (bestDetour) return bestDetour
   }
 
+  // 对角：优先「混轴单折 L」（1 个弯，通常更短更顺），**但只在比同轴更短时采用**（保证不增白绕）。
+  // 用 EDGE_MIN_BEND 约束两段长度；端口方向必须顺（首/末段沿法线）。
+  var dxAB = Math.abs(b.x - a.x), dyAB = Math.abs(b.y - a.y)
+  if (dxAB > (a.w + b.w) / 2 && dyAB > (a.h + b.h) / 2) {
+    var combos = [['t', 'l'], ['t', 'r'], ['b', 'l'], ['b', 'r'], ['l', 't'], ['l', 'b'], ['r', 't'], ['r', 'b']]
+    var bestL = null, bestLLen = Infinity
+    for (var ci = 0; ci < combos.length; ci++) {
+      var saL = combos[ci][0], sbL = combos[ci][1]
+      var aVert = (saL === 't' || saL === 'b')
+      var pL = sideCenter(a, saL), qL = sideCenter(b, sbL)
+      var cornerL = aVert ? { x: pL.x, y: qL.y } : { x: qL.x, y: pL.y }
+      var seg1 = Math.abs(cornerL.x - pL.x) + Math.abs(cornerL.y - pL.y)
+      var seg2 = Math.abs(qL.x - cornerL.x) + Math.abs(qL.y - cornerL.y)
+      if (seg1 < EDGE_MIN_BEND || seg2 < EDGE_MIN_BEND) continue
+      var naL = sideNormal(saL), nbL = sideNormal(sbL)
+      if ((cornerL.x - pL.x) * naL.x + (cornerL.y - pL.y) * naL.y <= 0.5) continue
+      if ((qL.x - cornerL.x) * nbL.x + (qL.y - cornerL.y) * nbL.y <= 0.5) continue
+      if (obs.length && edgePathHits([pL, cornerL, qL], obs)) continue
+      var lenL = seg1 + seg2
+      if (lenL < bestLLen) { bestLLen = lenL; bestL = { a: saL, b: sbL, mix: aVert ? 'VH' : 'HV' } }
+    }
+    if (bestL && bestLLen <= bestCost + 0.5) return bestL
+  }
+
   return best
 }
 
@@ -615,6 +640,11 @@ function edgeGeometry(a, b, obstacles, offset, ports, usedLanes, preSides, preOb
   var vertical = sides.vertical
   var p0 = portPointOf(a, sides.a, pA)
   var p1 = portPointOf(b, sides.b, pB)
+  if (sides && sides.mix) {
+    var cornerM = sides.mix === 'VH' ? { x: p0.x, y: p1.y } : { x: p1.x, y: p0.y }
+    var lcM = edgeCleanPath([p0, cornerM, p1])
+    return { d: lcM.d, mid: { x: cornerM.x, y: cornerM.y }, pts: lcM.pts, lanes: edgePathLanes(lcM.pts) }
+  }
   // 「端口倒挂」（出点反而落在入点之后）从前靠一段 `inverted` 特判兜住，现在由
   // edgeSidesOf 的代价函数在选边阶段就排除掉 —— 自穿透与回头线都是重罚项。
 
@@ -653,7 +683,7 @@ function edgeGeometry(a, b, obstacles, offset, ports, usedLanes, preSides, preOb
   // AI编辑→源文本 两端同高、只端口错开 15px，竖直段却落在中点，看着像多了个折）。
   var preC = []
   var otherDiff = vertical ? Math.abs(p0.x - p1.x) : Math.abs(p0.y - p1.y)
-  if (otherDiff > 0.5 && otherDiff <= EDGE_LANE * 2) {
+  if (otherDiff > 0.5 && otherDiff <= EDGE_MIN_BEND) {
     var dirC = (vertical ? (p1.y >= p0.y) : (p1.x >= p0.x)) ? 1 : -1
     if (vertical) { preC.push(p1.y - dirC * EDGE_STUB, p0.y + dirC * EDGE_STUB) }
     else { preC.push(p1.x - dirC * EDGE_STUB, p0.x + dirC * EDGE_STUB) }
