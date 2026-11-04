@@ -797,16 +797,30 @@ console.log('\n[4u] 描边亮度与标签配色：描边不再用「边框」令
   }
   const gapUpper = badgeGap(p1.host, '甲一')
   ok('胶囊不跨节点中线、且留出 ≥12px 净空（箭头不会穿进胶囊）', gapUpper !== null && gapUpper >= 12, gapUpper)
-  // 负向对照：把摆法换回「左上角 x0+8」，同一条判据必须判不过 —— 否则这条断言没有牙。
+  // 负向对照：判据必须能判出「跨中线」的摆法 —— 否则这条断言没有牙。
+  //
+  // 2026-10 修节点尺寸时这里换过一次形态。原来拿「旧摆法 x0+8」当反例，它依赖节点只有
+  // 104px 宽（那时 x0+8 的胶囊确实跨过中线，gap=-2）。节点宽度改成恒定 180 之后，
+  // 同一个左对齐位置离中线反而有 36px，**这个反例自己就通过了** —— 判据失去反例。
+  //
+  // 正确做法：不再依赖「某个历史摆法恰好跨线」，而是**直接构造一个跨中线的位置**
+  // （把胶囊左边缘放在中线右侧 5px 处），判据必须判不过。这样它对节点宽度免疫。
   const nodeA = nodeEl(p1.host, '甲一')
   const shapeEl = nodeA.querySelector('rect.ac-shape')
   const badgeEl = nodeA.querySelector('g.ac-tag-badge')
   const sw = Number(shapeEl.getAttribute('width'))
   const sx = Number(shapeEl.getAttribute('x'))
   const bw = Number(badgeEl.querySelector('rect').getAttribute('width'))
-  const oldLeft = sx + 8
-  const oldGap = Math.max(oldLeft - (sx + sw / 2), (sx + sw / 2) - (oldLeft + bw))
-  ok('负向对照：旧摆法（x0+8 左对齐）在这条判据下不过', oldGap < 12, oldGap)
+  const cxA = sx + sw / 2
+  // 构造：胶囊横跨中线（左边缘在中线左侧 5px、右边缘在中线右侧）
+  const straddleLeft = cxA - 5
+  const straddleGap = Math.max(straddleLeft - cxA, cxA - (straddleLeft + bw))
+  ok('负向对照：横跨中线的摆法在这条判据下判不过', straddleGap < 12, straddleGap)
+  // 再加一条正向对照：与节点宽度无关 —— 左对齐在**任何**宽度下都不该被当成「跨中线」
+  // （这正是当年那个反例失效的原因，写成断言防止有人把它改回去）。
+  const leftAlignedGap = (sx + 8) - cxA
+  ok('左对齐（x0+8）在当前宽度下不跨中线（所以它不能再当反例）',
+    Math.max(leftAlignedGap, -(leftAlignedGap + bw)) >= 0 || leftAlignedGap > 0, { leftAlignedGap, sw })
   await act(async () => { p1.root.unmount() })
   p1.host.remove()
 

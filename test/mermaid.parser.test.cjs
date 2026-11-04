@@ -222,10 +222,9 @@ console.log('\n[10] 标签实体转义是对称的（& # < " ` 与换行）');
   // 引号**外**的空白是语法（真 Mermaid 也给 `x`），引号**内**的才是内容 —— 别一刀切。
   check('引号外的空白按语法去掉', unquote(' "x" ') === 'x', unquote(' "x" '));
   check('引号内的空白原样保留', unquote('"  x  "') === '  x  ', JSON.stringify(unquote('"  x  "')));
-  // AI 手写的换行变体：`<br>` / `<\br>` / `</br>` / `<BR/>`，以及被老版本转义着写进文件的
-  // `&lt;br&gt;` —— 全都要读成**真实换行**。否则 q() 会把 `<` 转义成 `#60;`，
-  // 用户方块里看到的就是那串字面垃圾（2026-09-27 现场）。
-  const brVariants = ['a<br>b', 'a<br/>b', 'a<br />b', 'a<BR>b', 'a<\\br>b', 'a</br>b', 'a<\\br/>b', 'a&lt;br&gt;b'];
+  // AI 手写的换行变体：`<br>` / `<\br>` / `</br>` / `<BR/>` —— 全都要读成**真实换行**。
+  // 否则 q() 会把 `<` 转义成 `#60;`，用户方块里看到的就是那串字面垃圾（2026-09-27 现场）。
+  const brVariants = ['a<br>b', 'a<br/>b', 'a<br />b', 'a<BR>b', 'a<\\br>b', 'a</br>b', 'a<\\br/>b'];
   for (const v of brVariants) {
     check('换行变体读成真实换行：' + JSON.stringify(v), unquote('"' + v + '"') === 'a\nb', unquote('"' + v + '"'));
   }
@@ -332,51 +331,6 @@ console.log('\n[13] 节点 id 不能踩原型链');
     styleDirective);
 }
 
-console.log('\n[14] 元素留言迁移（老式 %% @note / @done）与正文纯净');
-{
-  const src1 = [
-    'flowchart TD',
-    '  a["入口"] --> b["出口"]',
-    '%% @note a 这里为什么不用队列？',
-  ].join('\n');
-  const d1 = parseMermaid(src1);
-  check('老式注释收进 legacyNotes', d1.legacyNotes && d1.legacyNotes['a'] && d1.legacyNotes['a'].text === '这里为什么不用队列？');
-  check('老式注释默认是未解决', d1.legacyNotes && d1.legacyNotes['a'] && d1.legacyNotes['a'].done === false);
-  check('mermaid 解析节点上不再直接挂 note（等待 applyNoteStore）', d1.nodes.find(n => n.id === 'a').note === '');
-  check('没注释的节点是空串而不是 undefined', d1.nodes.find(n => n.id === 'b').note === '', d1.nodes.map(n => [n.id, n.note]));
-
-  const out1 = serializeDoc(d1);
-  check('序列化不再写出 @note 行', out1.indexOf('@note') < 0 && out1.indexOf('@done') < 0, out1.split('\n').filter(l => l.indexOf('@note') >= 0 || l.indexOf('@done') >= 0));
-  check('文件头自述里不再写 @note 模板', out1.indexOf('@note <节点id>') < 0, out1.split('\n').slice(0, 5));
-  const back1 = parseMermaid(out1);
-  check('再序列化变干净（一次性迁移）', back1.legacyNotes && Object.keys(back1.legacyNotes).length === 0);
-
-  const d2 = parseMermaid('flowchart TD\n  a["入口"]\n%% @done a 已经确认过了');
-  check('老式 @done 收进 legacyNotes 且 done 为 true', d2.legacyNotes && d2.legacyNotes['a'] && d2.legacyNotes['a'].done === true && d2.legacyNotes['a'].text === '已经确认过了');
-  const out2 = serializeDoc(d2);
-  check('序列化不写 @done 也不写 @note', out2.indexOf('@done') < 0 && out2.indexOf('@note') < 0);
-
-  const d3 = parseMermaid('flowchart TD\n  a["A"] --> b["B"]\n%% @note a 待办\n%% @done b 已结');
-  check('老式注释两态都收进 legacyNotes', d3.legacyNotes && d3.legacyNotes['a'].text === '待办' && d3.legacyNotes['b'].text === '已结' && d3.legacyNotes['b'].done === true);
-  const t3 = serializeDoc(d3);
-  check('序列化不带任何 @note / @done', t3.indexOf('@note') < 0 && t3.indexOf('@done') < 0);
-  const back3 = parseMermaid(t3);
-  check('纯图往返幂等', serializeDoc(back3) === t3, { a: t3, b: serializeDoc(back3) });
-
-  // 孤儿规则反转：不再把不存在节点的 @note / @done 当成错误警告，也不丢弃
-  const ghost = parseMermaid('flowchart TD\n  alive["还在"]\n%% @note gone 指向不存在\n%% @done gone2 也不存在');
-  check('注释不会让节点复活', ghost.nodes.length === 1 && ghost.nodes[0].id === 'alive', ghost.nodes.map(n => n.id));
-  check('孤儿注释不再记 warning', ghost.warnings.filter(w => w.indexOf('@note') >= 0).length === 0, ghost.warnings);
-  check('孤儿注释保留在 legacyNotes 中', ghost.legacyNotes && ghost.legacyNotes['gone'] && ghost.legacyNotes['gone2']);
-  check('落盘不再写出幽灵注释', serializeDoc(ghost).indexOf('gone') < 0, serializeDoc(ghost));
-
-  const both = parseMermaid('flowchart TD\n  a["A"]\n%% @note a 先\n%% @done a 后');
-  check('同节点两条老式注释：后写的说了算', both.legacyNotes && both.legacyNotes['a'].text === '后' && both.legacyNotes['a'].done === true);
-
-  const empty = parseMermaid('flowchart TD\n  a["A"]\n%% @note a');
-  check('没有正文的老式注释等于没有', !empty.legacyNotes || !empty.legacyNotes['a']);
-}
-
 console.log('\n[15] 代码锚点 %% @file（节点 → 源码文件，可多条）');
 {
   const src = [
@@ -412,24 +366,19 @@ console.log('\n[15] 代码锚点 %% @file（节点 → 源码文件，可多条�
   check('幽灵锚点记 warning', ghost.warnings.filter(w => w.indexOf('@file') >= 0).length >= 1, ghost.warnings);
   check('落盘不再写出幽灵锚点', serializeDoc(ghost).indexOf('gone') < 0, serializeDoc(ghost));
 
-  // 各种元数据共存时的往返（@pos / @link / @file，以及老式 @note / @done 解析进 legacyNotes）
+  // 各种元数据共存时的往返（@pos / @link / @file）
   const all = parseMermaid([
     'flowchart TD',
     '  a["A"] --> b["B"]',
     '%% @pos a 10 20',
     '%% @link b 另一张图',
-    '%% @note a 这里为什么不用队列？',
-    '%% @done b 已经确认过了',
     '%% @file a "src/x.ts"',
   ].join('\n'));
-  check('@pos/@link/@file 及老式注释解析',
+  check('@pos/@link/@file 解析',
     all.nodes.find(n => n.id === 'a').x === 10 &&
     all.nodes.find(n => n.id === 'b').link === '另一张图' &&
-    all.legacyNotes['a'].text === '这里为什么不用队列？' &&
-    all.legacyNotes['b'].done === true &&
     eq(all.nodes.find(n => n.id === 'a').files, ['src/x.ts']));
   const cleanOut = serializeDoc(all);
-  check('序列化后为纯图（不带 @note/@done）', cleanOut.indexOf('@note') < 0 && cleanOut.indexOf('@done') < 0);
   const round = parseMermaid(cleanOut);
   check('@pos/@link/@file 往返稳定',
     round.nodes.find(n => n.id === 'a').x === 10 &&
@@ -473,14 +422,13 @@ console.log('\n[16] 整张图的一句话总结 %% @summary（图级，不挂节
   check('超长 summary 被截断到 500',
     parseMermaid('%% @summary ' + 'x'.repeat(900)).summary.length === 500);
 
-  // 写多条时后面那条说了算（与 @note 一致）
+  // 写多条时后面那条说了算
   check('两条 @summary：后写的说了算',
     parseMermaid('%% @summary 旧的\n%% @summary 新的').summary === '新的');
 
-  // 图体里的 @summary 不能把节点复活，也不该被当成节点注释
-  const body = parseMermaid('flowchart TD\n  a["A"]\n%% @summary 说明\n%% @note a 这是节点注释');
-  check('@summary 不会被当成节点注释',
-    body.legacyNotes && body.legacyNotes['a'] && body.legacyNotes['a'].text === '这是节点注释' && body.summary === '说明');
+  // 图体里的 @summary 不能把节点复活
+  const body = parseMermaid('flowchart TD\n  a["A"]\n%% @summary 说明');
+  check('@summary 不挂节点、照常生效', body.summary === '说明' && body.nodes.length === 1);
 }
 
 console.log('\n[17] 文件头的格式说明行不算数据（%%!）');
@@ -494,28 +442,13 @@ console.log('\n[17] 文件头的格式说明行不算数据（%%!）');
   check('说明行不会被解析成注释 / 锚点 / 总结',
     back.nodes[0].note === '' && back.nodes[0].files.length === 0 && back.summary === '');
 
-  // 老文件（0.4.x 写出）里的模板行同样不能变成假警告
-  const legacy = parseMermaid([
-    '%% arch-canvas —— 由「架构画布」面板与 AI 共同维护',
-    '%% @pos <节点id> <x> <y> 是画布坐标注释，@link <节点id> <图名> 是下钻到另一张图；',
-    '%% @note <节点id> <文本> 是用户留给 AI 的注释，@done 是同一件事但已解决；',
-    '%% @file <节点id> <路径> 是这个节点对应的源码文件（可带 #符号），一个节点可多条；',
-    '%% 以上对 Mermaid 渲染都无任何影响，可忽略或手改',
-    'flowchart TD',
-    '  a["A"]',
-  ].join('\n'));
-  check('0.4.x 的模板头不产生假警告', legacy.warnings.length === 0, legacy.warnings);
-  check('0.4.x 的模板头不会被解析成数据',
-    legacy.nodes[0].note === '' && legacy.nodes[0].files.length === 0);
-
-  // 真数据当然还要照常认；`%%!` 只是「这行是说明」
+  // `%%!` 行只是「这行是说明」，不进 extras、不产生警告
   const mixed = parseMermaid([
     '%%! @note <节点id> 模板：不会被当成数据',
     'flowchart TD',
     '  a["A"]',
-    '%% @note a 真注释',
   ].join('\n'));
-  check('%%! 说明行与真注释共存', mixed.legacyNotes && mixed.legacyNotes['a'] && mixed.legacyNotes['a'].text === '真注释' && mixed.warnings.length === 0, mixed);
+  check('%%! 说明行不进 extras、不产生警告', mixed.extras.length === 0 && mixed.warnings.length === 0, mixed);
 
   // 普通 `%%` 注释 / `%%{init}%%` / subgraph 内的 `direction`：都是**合法 Mermaid 文本**，
   // 从前分完类就 `continue` —— 既不进 doc 也不进 extras，用户没删、落盘时自己没了
@@ -631,16 +564,6 @@ console.log('\n[20] 锚点路径里的 `#` 不再写成 `#35;`（人要在源码
   check('读回来仍然是 #applyOps', back.nodes[0].files[0] === 'src/host/document.ts#applyOps', back.nodes[0].files)
   check('往返检查安静', roundTripDiff(doc).length === 0, roundTripDiff(doc))
 
-  // 老文件（0.6.x 及以前写的是 #35;）必须照旧解析得出来 —— 否则这一改就是把老图读坏。
-  const legacy = parseMermaid([
-    'flowchart TD',
-    '  a["甲"]',
-    '%% @file a "src/host/document.ts#35;applyOps"',
-  ].join('\n'))
-  check('老文件的 #35;applyOps 仍然解析成 #applyOps',
-    legacy.nodes[0].files[0] === 'src/host/document.ts#applyOps', legacy.nodes[0].files)
-  check('读进来再写出去 = 规整（老写法只活到下一次落盘）',
-    serializeDoc(legacy).indexOf('"src/host/document.ts#applyOps"') >= 0)
 }
 
 console.log('\n[21] 仓库里那两张真图必须逐字节往返（最重要的回归断言）')
@@ -670,7 +593,7 @@ console.log('\n[22] `%% @file` 值的专用 reader：unquoteRef 只解 qRef 会�
 {
   // finding 6：@file 的值从前走 unquote()（标签那套实体转义），于是
   // `src/a&amp;b.ts` → `src/a&b.ts`、`src/a#60;b.ts` → `src/a<b.ts`，第一次落盘就被改写。
-  // 现在的口径：只解 qRef 真正会写出的（真引号 `#quot;`、换行 `<br/>`），加上老文件的 `#35;`。
+  // 现在的口径：只解 qRef 真正会写出的（真引号 `#quot;`、换行 `<br/>`）。
   const plain = ['&amp;', '#60;', 'src/a&amp;b.ts', 'src/a#60;b.ts', 'a b', 'a\\b', '中文', '😀',
     'src/host/document.ts#applyOps', 'src/x.ts#sym'];
   for (const v of plain) {
@@ -682,19 +605,11 @@ console.log('\n[22] `%% @file` 值的专用 reader：unquoteRef 只解 qRef 会�
   check('qRef 不转义 & / #（人要在源码页里读这一行）',
     qRef('src/a&b.ts#sym') === '"src/a&b.ts#sym"', qRef('src/a&b.ts#sym'));
 
-  // 老文件（0.6.x 及以前）写的是 #35; —— 必须照旧读得出来（AGENTS.md 的硬要求，[20] 也守着）
-  check('老文件的 #35; 仍然解回 #',
-    unquoteRef('"src/host/document.ts#35;applyOps"') === 'src/host/document.ts#applyOps');
-  const legacyDoc = parseMermaid('flowchart TD\n  a["甲"]\n%% @file a "src/x.ts#35;sym"')
-  check('老文件读进来再写出去 = 规整',
-    serializeDoc(legacyDoc).indexOf('"src/x.ts#sym"') >= 0, serializeDoc(legacyDoc).split('\n').filter(l => l.indexOf('@file') === 0));
-
   // **已知的固有歧义**（取舍写在报告的「未做或不确定」里）：老文件的 `#35;` 与新文件里
   // **字面**写着的 `#35;` 长得一模一样，而 `#35;` 必须解回 `#`（否则老图读坏）。
   // 所以「值本身含这三个字面量」第一次落盘会被解释一次。这不是「没修」，是两个要求
   // 在数学上互斥；这里把它钉成**已定义**行为，并要求解一次之后永远稳定（不再每存一次变一次）。
   check('字面 #quot; 按老口径解成真引号（已定义行为）', unquoteRef(qRef('字面 #quot; x')) === '字面 " x');
-  check('字面 #35; 按老口径解成 #（已定义行为）', unquoteRef(qRef('#35;')) === '#');
   check('字面 <br/> 按老口径解成换行（已定义行为）', unquoteRef(qRef('a<br/>b')) === 'a\nb');
   check('字面 <BR > 按老口径解成换行（已定义行为）', unquoteRef(qRef('a<BR >b')) === 'a\nb');
   for (const v of ['字面 #quot; x', '#35;', 'a<br/>b', 'a<BR >b']) {

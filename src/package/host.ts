@@ -1,4 +1,4 @@
-'use strict'
+'use strict';
 // arch-canvas 的宿主半边（真插件形态）。
 //
 // 与动态 Package 的差别只有四处，全部收在本文件里；宿主逻辑本体
@@ -14,12 +14,12 @@
 //
 // 由 tools/build.mjs 从 src/package/host.js 拷到 lib/index.js，不要手改 lib/。
 
-var path = require('path')
-var fsp = require('fs/promises')
-var os = require('os')
+var path = require('path');
+var fsp = require('fs/promises');
+var os = require('os');
 
-var RPC_PATH = '/arch-canvas/rpc'
-var MAX_BODY = 8 * 1024 * 1024
+var RPC_PATH = '/arch-canvas/rpc';
+var MAX_BODY = 8 * 1024 * 1024;
 
 /**
  * 本插件的设置 schema（`Config` 就是它的值）。
@@ -45,32 +45,35 @@ var MAX_BODY = 8 * 1024 * 1024
  * 原来的行为 —— **绝不能在这里加"没结算就抛错"的判断**，那会把一个偶发的时序问题
  * 变成必然的启动失败（实测：加了那道判断，web profile 下 arch-canvas 直接 failed to import）。
  */
-var cosmokitPreload = null
+var cosmokitPreload = null;
 try {
   // 只用字符串字面量：某些打包/静态分析场景要求 specifier 可静态求值。
-  cosmokitPreload = import('@deepseek-ai/cosmokit')
+  cosmokitPreload = import('@deepseek-ai/cosmokit');
 } catch (e) {
-  cosmokitPreload = null
+  cosmokitPreload = null;
 }
 if (cosmokitPreload && typeof cosmokitPreload.catch === 'function') {
   // 预热失败不该变成 unhandled rejection：读 Config 时会自己报错。
-  cosmokitPreload.catch(function () {})
+  cosmokitPreload.catch(function () {});
 }
 
-var cachedSchema = null
+var cachedSchema = null;
 function loadConfigSchema() {
-  if (cachedSchema) return cachedSchema
+  if (cachedSchema) return cachedSchema;
   // 两种导出形态都要认：CJS 构建直接挂命名导出（无 `default`），ESM 形态是 default。
-  var schemastery = require('@deepseek-ai/schemastery')
-  var z = schemastery.default || schemastery
+  var schemastery = require('@deepseek-ai/schemastery');
+  var z = schemastery.default || schemastery;
   cachedSchema = z.object({
     dataDir: z.string().volatile(),
-  })
-  return cachedSchema
+  });
+  return cachedSchema;
 }
 
 /** `$DSH_HOME`（否则 `~/.dsh`）下的默认数据目录。 */
-var DEFAULT_DATA_DIR = path.join(process.env.DSH_HOME || path.join(os.homedir(), '.dsh'), 'arch-canvas')
+var DEFAULT_DATA_DIR = path.join(
+  process.env.DSH_HOME || path.join(os.homedir(), '.dsh'),
+  'arch-canvas',
+);
 
 /**
  * 读一个字段，认出 0.1.7 的 volatile 引用。
@@ -80,39 +83,65 @@ var DEFAULT_DATA_DIR = path.join(process.env.DSH_HOME || path.join(os.homedir(),
  * 非 volatile 字段是普通值，两种形态都要认。
  */
 function readField(config, field) {
-  var raw = config ? config[field] : undefined
-  return raw !== null && typeof raw === 'object' && typeof raw.get === 'function' ? raw.get() : raw
+  var raw = config ? config[field] : undefined;
+  return raw !== null && typeof raw === 'object' && typeof raw.get === 'function' ? raw.get() : raw;
 }
 
 // 日志后端交给宿主逻辑用。真插件形态在真 Node 里，能直接 append / unlink ——
 // 「追加一行」和「真的删掉过期日志」这两件事 fs 服务都做不到，
 // 而这两种能力正是一个会自己翻天的日志目录需要的。
 var nodeLogBackend = {
-  ensureDir: function (dir) { return fsp.mkdir(dir, { recursive: true }) },
-  append: function (dir, file, text) { return fsp.appendFile(path.join(dir, file), text, 'utf8') },
-  list: function (dir) { return fsp.readdir(dir).then(function (names) { return names }, function () { return [] }) },
-  remove: function (dir, file) { return fsp.unlink(path.join(dir, file)) },
-  size: function (dir, file) {
-    return fsp.stat(path.join(dir, file)).then(function (st) { return st.size }, function () { return 0 })
+  ensureDir: function (dir) {
+    return fsp.mkdir(dir, { recursive: true });
   },
-}
+  append: function (dir, file, text) {
+    return fsp.appendFile(path.join(dir, file), text, 'utf8');
+  },
+  list: function (dir) {
+    return fsp.readdir(dir).then(
+      function (names) {
+        return names;
+      },
+      function () {
+        return [];
+      },
+    );
+  },
+  remove: function (dir, file) {
+    return fsp.unlink(path.join(dir, file));
+  },
+  size: function (dir, file) {
+    return fsp.stat(path.join(dir, file)).then(
+      function (st) {
+        return st.size;
+      },
+      function () {
+        return 0;
+      },
+    );
+  },
+};
 
 function readBody(req) {
   return new Promise<string>(function (resolve, reject) {
-    var chunks = []
-    var size = 0
+    var chunks = [];
+    var size = 0;
     req.on('data', function (c) {
-      size += c.length
+      size += c.length;
       if (size > MAX_BODY) {
-        reject(new Error('请求体过大'))
-        try { req.destroy() } catch (e) {}
-        return
+        reject(new Error('请求体过大'));
+        try {
+          req.destroy();
+        } catch (e) {}
+        return;
       }
-      chunks.push(c)
-    })
-    req.on('end', function () { resolve(Buffer.concat(chunks).toString('utf8')) })
-    req.on('error', reject)
-  })
+      chunks.push(c);
+    });
+    req.on('end', function () {
+      resolve(Buffer.concat(chunks).toString('utf8'));
+    });
+    req.on('error', reject);
+  });
 }
 
 module.exports = {
@@ -132,49 +161,55 @@ module.exports = {
   // `require` 一个 ESM-only 的包（见文件顶部那段说明）。写成顶层属性就会在
   // import 期撞上并发加载的竞态，插件直接 'failed to import'。
   get Config() {
-    return loadConfigSchema()
+    return loadConfigSchema();
   },
 
   apply: function (ctx, config) {
     // 与动态 Package 里的 harness.handle 同构：处理函数收进一张表，由下面那个 POST 路由分发。
-    var handlers = new Map()
+    var handlers = new Map();
     // 路由只登记，等 webServer 就绪再 register —— 宿主逻辑不猜服务时序。
-    var routes = []
-    var toolNames = []
+    var routes = [];
+    var toolNames = [];
 
     var harness = {
       handle: function (name, fn) {
-        handlers.set(name, fn)
-        return function () { handlers.delete(name) }
+        handlers.set(name, fn);
+        return function () {
+          handlers.delete(name);
+        };
       },
       route: function (routePath, handler) {
-        routes.push({ kind: 'exact', path: routePath, handler: handler })
+        routes.push({ kind: 'exact', path: routePath, handler: handler });
       },
       // 外壳**直接**推给 webServer 的那些路由（现在只有 RPC 一条）不在宿主逻辑的
       // registeredRoutes 里，挂载自检（4 工具 / 3 路由 / 1 提示词上下文）要数得上它 ——
       // 宿主逻辑靠这个口拿到「真实注册了哪几条」，日志里的 routeCount 才不是恒为 2。
       describeRoutes: function () {
-        var out = []
-        for (var i = 0; i < routes.length; i++) out.push(routes[i].path)
-        return out
+        var out = [];
+        for (var i = 0; i < routes.length; i++) out.push(routes[i].path);
+        return out;
       },
       // 真插件的 ToolDefinition 与沙箱里是同一个形状，所以不做任何转换。
-      defineTool: function (def) { return def },
-      registerTool: function (c, def) {
-        c.effect(function () { return c.tools.register(def) })
-        toolNames.push(def && def.name)
+      defineTool: function (def) {
+        return def;
       },
-    }
+      registerTool: function (c, def) {
+        c.effect(function () {
+          return c.tools.register(def);
+        });
+        toolNames.push(def && def.name);
+      },
+    };
 
     routes.push({
       kind: 'exact',
       path: RPC_PATH,
       handler: async function (req, res) {
         function send(code, obj) {
-          res.statusCode = code
-          res.setHeader('content-type', 'application/json; charset=utf-8')
-          res.setHeader('cache-control', 'no-store')
-          res.end(JSON.stringify(obj))
+          res.statusCode = code;
+          res.setHeader('content-type', 'application/json; charset=utf-8');
+          res.setHeader('cache-control', 'no-store');
+          res.end(JSON.stringify(obj));
         }
         try {
           // **只挡「网页跨站」这一种，不假装能认证本机进程。**
@@ -184,55 +219,60 @@ module.exports = {
           //   同一条审计的第 3 条说明宿主也不校验 where 与会话归属）。
           // 本机进程（curl / 别的工具）不带这些头，照样能用 —— 它本来就能读写同一批文件，
           // 假装拦住它只是自欺。真正要挡的是「浏览器替用户发的跨站请求」。
-          var hdrs: any = (req && req.headers) || {}
-          var site = String(hdrs['sec-fetch-site'] || '')
+          var hdrs: any = (req && req.headers) || {};
+          var site = String(hdrs['sec-fetch-site'] || '');
           if (site && site !== 'same-origin' && site !== 'none') {
-            send(403, { ok: false, error: '跨站请求已拒绝（sec-fetch-site: ' + site + '）' })
-            return
+            send(403, { ok: false, error: '跨站请求已拒绝（sec-fetch-site: ' + site + '）' });
+            return;
           }
           // **有 origin 就必须有 host 且一致，否则 403（fail-closed）。** 从前 `host` 缺席时
           // 整段跳过：`{origin:'http://evil.example'}` 不带 Host 头就能拿到 200（实测）。
           // 浏览器一定会发 Host，所以这条只是把口径改成一致，不影响本机进程（不带任何头）。
-          var origin = String(hdrs.origin || '')
+          var origin = String(hdrs.origin || '');
           if (origin) {
-            var host = String(hdrs.host || '')
+            var host = String(hdrs.host || '');
             if (!host || origin.replace(/^https?:\/\//, '') !== host) {
-              send(403, { ok: false, error: '跨站请求已拒绝（origin 与 host 不一致）' })
-              return
+              send(403, { ok: false, error: '跨站请求已拒绝（origin 与 host 不一致）' });
+              return;
             }
           }
-          var text = await readBody(req)
-          var call = text ? JSON.parse(text) : {}
-          var fn = handlers.get(call.method)
+          var text = await readBody(req);
+          var call = text ? JSON.parse(text) : {};
+          var fn = handlers.get(call.method);
           if (typeof fn !== 'function') {
-            send(404, { ok: false, error: '未知方法 ' + String(call.method) })
-            return
+            send(404, { ok: false, error: '未知方法 ' + String(call.method) });
+            return;
           }
-          send(200, { ok: true, value: await fn(call.args || {}) })
+          send(200, { ok: true, value: await fn(call.args || {}) });
         } catch (e) {
-          send(500, { ok: false, error: (e && e.message) ? e.message : String(e) })
+          send(500, { ok: false, error: e && e.message ? e.message : String(e) });
         }
       },
-    })
+    });
 
     // 包内资源按包自身定位：写死项目目录只在本机成立，tarball 装到别处就全 404。
-    var pkgDir = path.resolve(__dirname, '..')
+    var pkgDir = path.resolve(__dirname, '..');
     /**
      * 数据目录：设置里的 `dataDir` 优先，否则 `$DSH_HOME` 下的默认值。
      *
      * `readField` 认 volatile 引用（设置页写进去的值就是一个 `{ get() }`），
      * 空串按「没设」处理 —— 表单里清空一个字段写回的正是 `unset`/空值。
      */
-    var configuredDir = readField(config, 'dataDir')
-    var dataDir = (typeof configuredDir === 'string' && configuredDir !== '') ? configuredDir : DEFAULT_DATA_DIR
+    var configuredDir = readField(config, 'dataDir');
+    var dataDir =
+      typeof configuredDir === 'string' && configuredDir !== '' ? configuredDir : DEFAULT_DATA_DIR;
     // hmr 只重新 import 本文件，CJS 缓存会把 host-logic 的改动挡住；加载前清掉。
-    var logicPath = require.resolve('./host-logic.js')
-    delete require.cache[logicPath]
+    var logicPath = require.resolve('./host-logic.js');
+    delete require.cache[logicPath];
     // 随包 skill 的正文：**读盘留在本层**（真 Node 有 fs），解析与注册收口在宿主逻辑里 ——
     // 两个形态只有一份注册实现。读不到就交空串，宿主逻辑静默跳过：少一个 skill 不该挂不上。
-    var skillFile = path.join(pkgDir, 'skills', 'arch-canvas', 'SKILL.md')
-    var skillText = ''
-    try { skillText = require('fs').readFileSync(skillFile, 'utf8') } catch (e) { skillText = '' }
+    var skillFile = path.join(pkgDir, 'skills', 'arch-canvas', 'SKILL.md');
+    var skillText = '';
+    try {
+      skillText = require('fs').readFileSync(skillFile, 'utf8');
+    } catch (e) {
+      skillText = '';
+    }
     var plugin = require(logicPath)(harness, {
       uiFile: path.join(__dirname, 'ui.js'),
       mermaidFile: path.join(pkgDir, 'assets', 'mermaid.min.js'),
@@ -243,11 +283,11 @@ module.exports = {
       // 日志门槛：真插件形态在真 Node 里，所以读得到环境变量。
       // 缺省 info（高频巡检走 debug，默认不落盘）；认不出的取值在 log.ts 里退回 info。
       logLevel: process.env.ARCH_CANVAS_LOG_LEVEL || 'info',
-    })
+    });
     if (!plugin || typeof plugin.apply !== 'function') {
-      throw new Error('lib/host-logic.js 没有导出 apply —— 跑 npm run build 重生成，别手改 lib/')
+      throw new Error('lib/host-logic.js 没有导出 apply —— 跑 npm run build 重生成，别手改 lib/');
     }
-    plugin.apply(ctx)
+    plugin.apply(ctx);
 
     /**
      * 设置改动生效：`dataDir` 是加载期就定下的（图库根、日志落点都建立在它上面），
@@ -256,29 +296,35 @@ module.exports = {
      * 这里只记一行日志并明确告诉用户要重启：静默地什么都不做会让人以为设置坏了。
      */
     ctx.on('loader/volatile-update', function () {
-      var next = readField(config, 'dataDir')
-      var resolved = (typeof next === 'string' && next !== '') ? next : DEFAULT_DATA_DIR
-      if (resolved === dataDir) return
+      var next = readField(config, 'dataDir');
+      var resolved = typeof next === 'string' && next !== '' ? next : DEFAULT_DATA_DIR;
+      if (resolved === dataDir) return;
       ctx.logger.warn(
-        'arch-canvas: dataDir 已改为 ' + resolved + '，但数据目录在加载期就定了 —— ' +
-        '重启 dsh 后生效（当前仍是 ' + dataDir + '）'
-      )
-    })
+        'arch-canvas: dataDir 已改为 ' +
+          resolved +
+          '，但数据目录在加载期就定了 —— ' +
+          '重启 dsh 后生效（当前仍是 ' +
+          dataDir +
+          '）',
+      );
+    });
 
     // 这个插件对 console **一字不吐**：挂载播报全是正常操作噪音（hmr 每次 build 都会重挂一遍），
     // 出问题一律抛错，让宿主用自己的格式去报 —— 既不静默，也不占输出。
-    var toolNote = toolNames.join(', ') || '（无）'
+    var toolNote = toolNames.join(', ') || '（无）';
     if (toolNames.length !== 4) {
-      throw new Error('工具注册数不对：期望 4 个，实际 ' + toolNames.length + ' 个 —— ' + toolNote)
+      throw new Error('工具注册数不对：期望 4 个，实际 ' + toolNames.length + ' 个 —— ' + toolNote);
     }
 
     // webServer 只在 web 形态里有，不进 inject：headless/acp 里工具与提示词照常可用，只是没界面。
     ctx.inject(['webServer'], function (webCtx) {
       for (var i = 0; i < routes.length; i++) {
         (function (r) {
-          webCtx.effect(function () { return webCtx.webServer.register(r) })
-        })(routes[i])
+          webCtx.effect(function () {
+            return webCtx.webServer.register(r);
+          });
+        })(routes[i]);
       }
-    })
+    });
   },
-}
+};

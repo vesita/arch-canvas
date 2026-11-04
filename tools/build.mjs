@@ -83,6 +83,9 @@ const HOST_PARTS = [
   'src/host/document-model.js',
   // document-ops 是**独立分片**（老拆分留下的），不是续片 —— 它有自己的序言，不要加进 CONT_PARTS。
   'src/host/document-ops.js',
+  // readability 是**独立分片**（不是续片）：一组纯函数，只被 plugin-tools 的写工具调用。
+  // 排在 document-ops 之后即可 —— 两边靠函数声明提升在同一段作用域里互相看见。
+  'src/host/readability.js',
   'src/host/notes.js',
   // drift 排在 notes 之后：它复用 notes 的旁路表写入口（writeSidecarJson），
   // 又调 document 的 splitFileRef / fileRefRoot（函数声明提升，跨分片共享同一段作用域）。
@@ -494,6 +497,10 @@ writeFileSync(join(ROOT, 'dist/mermaid.js'), joinParts(family(HOST_PARTS, 'merma
 // 而 lib/ui.js 里那些函数活在闭包里（它只把 install 挂出去），测试够不着。
 // 同上：runtime* 整族拼。
 writeFileSync(join(ROOT, 'dist/client-runtime.js'), joinParts(family(UI_PARTS, 'runtime'), clientOut))
+// 可读性闸门也单独出一份：dist/host.js 整体被包在 `return { apply: ... }` 里，函数全在闭包内，
+// test/readability.test.mjs 从外面够不着 —— 与 mermaid.js / client-runtime.js 同一个理由。
+// 判据：这里出的是**当前构建**的真身，不是手抄副本；闸门改了口径，测试立刻跟着变。
+writeFileSync(join(ROOT, 'dist/host-readability.js'), joinParts(family(HOST_PARTS, 'readability'), hostOut))
 writeFileSync(join(ROOT, 'dist/bootstrap-host.js'), bootstrapHost)
 writeFileSync(join(ROOT, 'dist/bootstrap-client.js'), bootstrapClient)
 

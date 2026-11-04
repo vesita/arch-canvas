@@ -172,19 +172,10 @@ function studioEditFns(S) {
       push(next, '用户删除了节点')
       setStatus('已删除节点')
     } else {
-      var found = false
-      var filtered = []
-      for (var i = 0; i < next.edges.length; i++) {
-        var ed = next.edges[i]
-        if (!found && ed.from === s.from && ed.to === s.to) {
-          found = true
-          continue
-        }
-        filtered.push(ed)
-      }
+      var target = edgeOf(s, next)
       setSel(null)
-      if (found) {
-        next.edges = filtered
+      if (target) {
+        next.edges = next.edges.filter(function (e) { return e !== target })
         push(next, '用户删除了一条连线')
         setStatus('已删除连线')
       }
@@ -422,13 +413,7 @@ function studioEditFns(S) {
     var cur = modelRef.current
     if (!s || s.kind !== 'edge' || !cur) return
     var next = cloneModel(cur)
-    var targetEdge = null
-    for (var i = 0; i < next.edges.length; i++) {
-      if (next.edges[i].from === s.from && next.edges[i].to === s.to) {
-        targetEdge = next.edges[i]
-        break
-      }
-    }
+    var targetEdge = edgeOf(s, next)
     if (!targetEdge) { setSel(null); return }
     if (targetEdge.label === edgeDraft) return
     targetEdge.label = edgeDraft
@@ -441,13 +426,7 @@ function studioEditFns(S) {
     var cur = modelRef.current
     if (!s || s.kind !== 'edge' || !cur) return
     var next = cloneModel(cur)
-    var targetEdge = null
-    for (var i = 0; i < next.edges.length; i++) {
-      if (next.edges[i].from === s.from && next.edges[i].to === s.to) {
-        targetEdge = next.edges[i]
-        break
-      }
-    }
+    var targetEdge = edgeOf(s, next)
     if (!targetEdge) { setSel(null); return }
     targetEdge.arrow = arrow
     push(next, '用户改了连线样式')

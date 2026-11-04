@@ -506,5 +506,28 @@ console.log('\n[11] 连接符视觉样式表：全覆盖宿主 ARROWS 28 项，�
   );
 }
 
+console.log('\n[8] 同向平行边：渲染不合并（每条边一个 routed，可各自选中/删除/改标签）');
+{
+  // 从前渲染期先 consolidateEdgesModel 把同向 a→b 两条并成一条显示（label 拼「甲 / 乙」），
+  // 而写路径仍按 (from,to) 找第一条 —— 删第二条 / 改第二条都会落到第一条上。
+  // 现在渲染直接消费原始边：两条各自 routed，选中带 edge.id 区分。
+  const gs = {
+    a: { x: 0, y: 0, w: 120, h: 40, shape: 'rect' },
+    b: { x: 300, y: 0, w: 120, h: 40, shape: 'rect' },
+  };
+  const model = {
+    nodes: [{ id: 'a' }, { id: 'b' }],
+    edges: [
+      { id: 'e1', from: 'a', to: 'b', label: '甲', arrow: '-->' },
+      { id: 'e2', from: 'a', to: 'b', label: '乙', arrow: '-->' },
+    ],
+  };
+  const lay = computeEdgeLayout(model, gs);
+  eq('两条同向平行边 → routed 两条（不被合并成一条）', lay.routed.length, 2);
+  ok('两条边 label 各自保留（不是被拼成「甲 / 乙」的同一条）',
+    lay.routed.length === 2 && lay.routed[0].ed.label === '甲' && lay.routed[1].ed.label === '乙',
+    lay.routed.map(r => r.ed.label));
+}
+
 console.log('\n结果: ' + pass + ' 通过 / ' + fail + ' 失败\n');
 process.exit(fail === 0 ? 0 : 1);

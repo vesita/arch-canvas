@@ -67,7 +67,7 @@ function serializeDoc(doc) {
 // 这里列的是**故意不落盘的运行期字段**（漏一个会吵，方向是安全的）。
 var RUNTIME_ONLY_FIELDS = [
   'file', 'name', 'tombstoned', 'absent', 'external', 'warnings', 'notes',
-  'fileStatus', 'revision', 'updatedBy', 'updatedAt', 'legacyNotes',
+  'fileStatus', 'revision', 'updatedBy', 'updatedAt',
   // 锚点保鲜报告（见 drift.ts）：同样是派生数据，一次落盘都不进文件。
   // 漏一个的后果不是「多写一行」——是**每次保存都误报** serialize.not-idempotent。
   'drift',

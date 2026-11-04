@@ -125,7 +125,7 @@ function adopt(parsed) {
   for (var i = 0; i < parsedWarnings.length; i++) {
     if (doc.warnings.length < 50) doc.warnings.push(parsedWarnings[i])
   }
-  applyNoteStore(doc.file, doc.nodes, parsed.legacyNotes)
+  applyNoteStore(doc.file, doc.nodes)
 }
 
 /**

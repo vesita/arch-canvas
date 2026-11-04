@@ -364,6 +364,32 @@ function visualLen(s) {
 var nodeSizeCache = Object.create(null)
 var nodeSizeCacheCount = 0
 
+// ==================== 节点尺寸：由结构决定，不由文字决定 ====================
+//
+// 2026-10 的根因修复。旧公式 `w = min(300, max(104, widest * 8.2 + 36))` 让**方块宽度
+// 随标题字数线性膨胀**，于是同一份拓扑（66 节点 / 79 边）换一种措辞就换一个图的尺寸：
+// 标题 4 汉字 → 包围盒 3264px；20 汉字 → 7144px。**图的大小成了「AI 写了多少字」的函数**，
+// 而不是「系统有多少模块」的函数 —— 这是病，不是取舍。
+//
+// 新口径：**宽度恒定，高度只在 1~2 行之间取两档**。
+//   - 宽度 `NODE_W`（180）：一行放得下约 24 visualLen 单位 ≈ 12 个汉字；
+//   - 高度：标题一行放得下 → 45px；放不下 → 64px（换行成两行）。
+//   两档高度让绝大多数标题**完整显示**（实测 5 张真实图：80%~100% 的标题不必截断），
+//   同时把高度锁死在 2 个取值上，布局的层间距因此只有两种可能，不会随文字漂。
+//
+// **只有 2 档**是刻意的：高度若也连续变化，节点尺寸仍是文字的函数，只是幅度小了。
+// 判据是「同一份拓扑，任何措辞都必须排出同一个包围盒」——守门测试钉这一条。
+//
+// 文字超出 2 行的部分**画布上截断**（画 `…`），全文在检查器里 —— 这与「节点永远只画标题」
+// 是同一条既有设计（描述行本来就不画在画布上）。
+var NODE_W = 180
+var NODE_H_ONE_LINE = 45
+var NODE_H_TWO_LINES = 64
+// 盒子内可用宽度 = NODE_W - 左右内边距（36，与旧公式同一口径）。
+// 13px 字号下每个 visualLen 单位约占 6.5px，所以一行装得下 (180-36)/6.5 ≈ 22 单位。
+// 取 24 是因为 `…` 与字距留了余量，且实测这一档的完整显示率最好。
+var NODE_TITLE_UNITS_PER_LINE = 24
+
 // extraRows：标签之外还要占几行（目前只有「引用」那一行）。
 // 它必须进缓存键 —— 同一个标签的节点，带 @file 与不带 @file 的高度不同，
 // 共用一条缓存会让先算出来的那个尺寸污染另一个。
@@ -373,12 +399,12 @@ function nodeSize(label, extraRows) {
   var key = text + '\u0000' + extra
   var cached = nodeSizeCache[key]
   if (cached) return cached
-  var lines = text.split('\n')
-  var widest = 4
-  for (var i = 0; i < lines.length; i++) widest = Math.max(widest, visualLen(lines[i]))
+  // 只量**标题**（第一行）：描述行不画在画布上，不该影响几何。
+  var title = splitLabel(text).title
+  var needLines = visualLen(title) > NODE_TITLE_UNITS_PER_LINE ? 2 : 1
   var res = {
-    w: Math.round(Math.min(300, Math.max(104, widest * 8.2 + 36))),
-    h: Math.round(Math.max(44, (lines.length + extra) * 19 + 26)),
+    w: NODE_W,
+    h: (needLines === 2 ? NODE_H_TWO_LINES : NODE_H_ONE_LINE) + extra * 19,
   }
   if (nodeSizeCacheCount > 2000) {
     nodeSizeCache = Object.create(null)
@@ -387,6 +413,41 @@ function nodeSize(label, extraRows) {
   nodeSizeCache[key] = res
   nodeSizeCacheCount++
   return res
+}
+
+/**
+ * 把一个标题切成画布上要画的 1~2 行（超出部分截断并加 `…`）。
+ *
+ * 为什么要单独一个函数：渲染侧（studio-render-canvas）要按这个切法画 `<tspan>`，
+ * 而几何侧（nodeSize）要按同一判据决定高度。两处必须用**同一个切法** ——
+ * 各写一份的话，「量出来两行、画出来一行」这种不一致会立刻表现为文字压出盒子。
+ */
+function splitTitleForBox(title) {
+  var s = String(title == null ? '' : title)
+  if (visualLen(s) <= NODE_TITLE_UNITS_PER_LINE) return [s]
+  // 找第一个放得下的切点（按 visualLen 而不是字符数，中文按 2 计）
+  var acc = 0
+  var cut = 0
+  for (var i = 0; i < s.length; i++) {
+    var w = s.charCodeAt(i) > 0x2e7f ? 2 : 1
+    if (acc + w > NODE_TITLE_UNITS_PER_LINE) break
+    acc += w
+    cut = i + 1
+  }
+  var first = s.slice(0, cut)
+  var rest = s.slice(cut)
+  if (visualLen(rest) <= NODE_TITLE_UNITS_PER_LINE) return [first, rest]
+  // 第二行也放不下：截断到放得下为止，末尾补 `…`（`…` 按 1 单位算）
+  var acc2 = 0
+  var cut2 = 0
+  var limit = NODE_TITLE_UNITS_PER_LINE - 1
+  for (var j = 0; j < rest.length; j++) {
+    var w2 = rest.charCodeAt(j) > 0x2e7f ? 2 : 1
+    if (acc2 + w2 > limit) break
+    acc2 += w2
+    cut2 = j + 1
+  }
+  return [first, rest.slice(0, cut2) + '…']
 }
 
 // rAF 合帧：拖动时一帧最多做一次状态更新。Chrome 的鼠标 pointermove 本来就与帧对齐，

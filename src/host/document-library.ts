@@ -789,6 +789,30 @@ function loadDiagramAt(target, name, create, policy?) {
   })
 }
 
+/**
+ * 「切到某一层并打开一张图」的六步仪式：doc:open 与 arch_switch 共用，靠这一份实现保证两入口等价。
+ * 顺序本身是接口：saveActiveSlot 必须在 resetToWorkspace 之前（否则上一层从内存消失、同步路径命不中）；
+ * rememberLayer 必须记这次请求要的 target（不是 await 之后可能被另一个会话抢走的全局 lib）。
+ * 调用方只负责解析入参、给 policy/sessionId/sessionDir，以及失败文案。
+ * 返回 { ok:false, stage:'load'|'stolen', error } 或 { ok:true, full }（full = afterSwitch() 的回执）。
+ */
+async function openDiagramOnLayer(target, create, opts) {
+  var o = opts || {}
+  if (target.dir !== lib.dir) {
+    saveActiveSlot()
+    resetToWorkspace(resolveLibCanonical(String((root && root.workspace) || '')), target, o.sessionDir)
+  }
+  var r = await loadDiagramAt(target, target.name, create, o.policy)
+  if (!r.ok) return { ok: false, stage: 'load', error: r.error }
+  // 回执不许说谎：这一趟的加载如果被别的请求抢走了，lib/doc 可能是别人的。
+  if (!(lib.dir === target.dir && docInLayer(target.dir))) {
+    logEvent('warn', 'doc.open.stolen', { want: target.dir, now: lib.dir })
+    return { ok: false, stage: 'stolen', error: '这一趟打开被另一个请求切走了（画布现在在 ' + lib.dir + '）—— 重试一次' }
+  }
+  rememberLayer(o.sessionId, target, root && root.workspace)
+  return { ok: true, full: await afterSwitch() }
+}
+
 async function loadDiagram(target, policy?) {
   // 读路径绝不创建任何东西：不 ensureDir、不播种默认图
   var result = await loadInto(doc.name || DEFAULT_DIAGRAM, false, target, policy)

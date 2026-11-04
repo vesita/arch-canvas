@@ -48,36 +48,19 @@ ctx.effect(function () {
     if (!raw.trim()) return { ok: false, error: '需要 key（图名，或 `子项目/图名`）' }
     var k = resolveKey(raw)
     if (!k) return { ok: false, error: '当前没有项目根，无法引用子项目的图' }
-    // 打开子项目的图 = 把「当前层」切过去：此后坐标、落盘、AI 上下文都落在那一层
-    if (k.dir !== lib.dir) {
-      // 换层要**两步**，少一步都是静默错位：
-      //  ① 先把当前这份存进它自己的槽 —— 否则上一层从内存里消失，同步路径（`syncWorkspaceFor`）
-      //     再也命中不了它，提示词只能对模型说「画布停在别的图上」，而它其实就在自己项目里；
-      //  ② 再换一份**全新的 doc**（`resetToWorkspace` 干的就是这个）—— 只把 `lib` 指过去是不够的：
-      //     `loadInto` 是**原地**改 `doc`，而旧那份已经挂在 ① 的槽里，原地改会让那个槽悄悄
-      //     变成这一层的文档（2026-10-01 复核实测：回执 `dir` 说 A、`file` 却在 B，还报 saved:true）。
-      saveActiveSlot()
-      // **会话目录要一起传**：`resetToWorkspace` 的第三参是检测锚点，漏了它这一步的扫描范围
-      // 就从会话目录放宽到图库根，紧接着 `afterSwitch()` 的 `refreshLibrary(true)` 会把
-      // 图库根整棵扫进来（别的子项目的图库跟着进「同图库」清单）。
-      resetToWorkspace(resolveLibCanonical(String((root && root.workspace) || '')), k, sessDirOf(args))
+    var res = await openDiagramOnLayer(k, !!(args && args.create), {
+      policy: policyOfSessionId(args && args.session),
+      sessionId: args && args.session,
+      sessionDir: sessDirOf(args),
+    })
+    if (!res.ok) {
+      if (res.stage === 'load') {
+        await refreshLibrary()
+        return { ok: false, error: res.error, items: libraryCache, dir: lib.dir }
+      }
+      return { ok: false, error: res.error }
     }
-    var r = await loadDiagramAt(k, k.name, !!(args && args.create), policyOfSessionId(args && args.session))
-    if (!r.ok) {
-      await refreshLibrary()
-      return { ok: false, error: r.error, items: libraryCache, dir: lib.dir }
-    }
-    // 记住**这个会话自己选了哪一层**：此后每一趟都按它认文件，别的会话切库不会把它顶走
-    // **回执不许说谎**：这一趟的加载如果被别的请求抢走了，`lib`/`doc` 可能是别人的，
-    // 直接 `afterSwitch()` 会返回一份「dir 说 A、file 在 B」的混合状态并报成功。
-    if (!(lib.dir === k.dir && docInLayer(k.dir))) {
-      logEvent('warn', 'doc.open.stolen', { want: k.dir, now: lib.dir })
-      return { ok: false, error: '这一趟打开被另一个请求切走了（画布现在在 ' + lib.dir + '）—— 重试一次' }
-    }
-    // 记**这次请求真正要的那一层**（`k`），不是 await 之后读到的全局 `lib`：
-    // 并发时 `lib` 可能已被另一个会话换走，那样会把别人的层永久记成本会话的层。
-    rememberLayer(args && args.session, k, root && root.workspace)
-    return afterSwitch()
+    return res.full
   })
 })
 

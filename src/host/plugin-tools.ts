@@ -195,37 +195,23 @@ var switchTool = harness.defineTool({
     }
     var k = resolveKey(raw)
     if (!k) return { ok: false, error: '当前没有项目根，无法引用子项目的图' }
-    if (k.dir !== lib.dir) {
-      // 换层要**两步**，少一步都是静默错位：
-      //  ① 先把当前这份存进它自己的槽 —— 否则上一层从内存里消失，同步路径（`syncWorkspaceFor`）
-      //     再也命中不了它，提示词只能对模型说「画布停在别的图上」，而它其实就在自己项目里；
-      //  ② 再换一份**全新的 doc**（`resetToWorkspace` 干的就是这个）—— 只把 `lib` 指过去是不够的：
-      //     `loadInto` 是**原地**改 `doc`，而旧那份已经挂在 ① 的槽里，原地改会让那个槽悄悄
-      //     变成这一层的文档（2026-10-01 复核实测：回执 `dir` 说 A、`file` 却在 B，还报 saved:true）。
-      saveActiveSlot()
-      // **会话目录要一起传**：`resetToWorkspace` 的第三参是检测锚点，漏了它这一步的扫描范围
-      // 就从会话目录放宽到图库根，紧接着 `afterSwitch()` 的 `refreshLibrary(true)` 会把
-      // 图库根整棵扫进来（别的子项目的图库跟着进「同图库」清单）。
-      resetToWorkspace(resolveLibCanonical(String((root && root.workspace) || '')), k, cleanSessionDir(swWhere))
-    }
-    var r = await loadDiagramAt(k, k.name, !!(args && args.create), policyOfAgent(exec && exec.agent))
-    if (!r.ok) {
-      var items = await refreshLibrary()
-      var names = items.filter(function (x) { return !x.deleted }).map(function (x) { return x.key })
-      return {
-        ok: false,
-        error: r.error + '。可用的图有：' + (names.length ? names.join('、') : '(还没有别的图)') + '；要新建请带 create: true',
+    var res = await openDiagramOnLayer(k, !!(args && args.create), {
+      policy: policyOfAgent(exec && exec.agent),
+      sessionId: sessionIdOfExec(exec),
+      sessionDir: cleanSessionDir(swWhere),
+    })
+    if (!res.ok) {
+      if (res.stage === 'load') {
+        var items = await refreshLibrary()
+        var names = items.filter(function (x) { return !x.deleted }).map(function (x) { return x.key })
+        return {
+          ok: false,
+          error: res.error + '。可用的图有：' + (names.length ? names.join('、') : '(还没有别的图)') + '；要新建请带 create: true',
+        }
       }
+      return { ok: false, error: res.error }
     }
-    // **回执不许说谎**：这一趟的加载如果被别的请求抢走了，`lib`/`doc` 可能是别人的，
-    // 直接 `afterSwitch()` 会返回一份「dir 说 A、file 在 B」的混合状态并报成功。
-    if (!(lib.dir === k.dir && docInLayer(k.dir))) {
-      logEvent('warn', 'doc.open.stolen', { want: k.dir, now: lib.dir })
-      return { ok: false, error: '这一趟打开被另一个请求切走了（画布现在在 ' + lib.dir + '）—— 重试一次' }
-    }
-    // 同上：记请求的这一层，不记可能被抢走的全局 lib
-    rememberLayer(sessionIdOfExec(exec), k, root && root.workspace)
-    return afterSwitch()
+    return res.full
   },
 })
 onTool(switchTool)
@@ -248,7 +234,10 @@ var writeTool = harness.defineTool({
         var v = value || {}
         if (!v.ok) return [{ type: 'text', text: 'arch_write 未生效: ' + String(v.error || v.problems || '') }]
         var kept = v.keptNotes ? '（保留了用户在该图元素上的 ' + v.keptNotes + ' 条留言）' : ''
-        return [{ type: 'text', text: '已更新「' + String(v.diagram || '') + '」（修订 ' + v.revision + '）：' + v.nodeCount + ' 个节点、' + v.edgeCount + ' 条连线。用户现在看到的图形已同步。' + kept }]
+        var lines = ['已更新「' + String(v.diagram || '') + '」（修订 ' + v.revision + '）：' + v.nodeCount + ' 个节点、' + v.edgeCount + ' 条连线。用户现在看到的图形已同步。' + kept]
+        // 可读性提示必须**渲染出来**才叫闸门：只放进返回值而没人读，等于没做。
+        if (v.readabilityHint) lines.push('⚠ ' + v.readabilityHint)
+        return [{ type: 'text', text: lines.join('\n') }]
       } catch (e) {
         return [{ type: 'text', text: 'arch_write 已完成' }]
       }
@@ -282,6 +271,13 @@ var writeTool = harness.defineTool({
     var saveError = await persistOrRollback(saved, 'arch_write', policy, expectFile)
     var out = fullOf()
     out.keptNotes = keptNotes
+    // 初稿是**可读性问题的源头**：`arch_write` 一次画出整张图，标题全由 AI 现编。
+    // 所以这道闸门在 write 上比 edit 更要紧 —— 它决定用户第一眼看到的是图还是小作文。
+    var readableW = checkReadability(doc.nodes)
+    if (readableW.length > 0) {
+      out.readability = readableW
+      out.readabilityHint = readabilityText(readableW)
+    }
     // 写盘失败时内存已经回滚了 —— 那就**不能说「已更新」**：回执必须让 AI 知道自己白改了。
     // （历史里也不会多一份检查点：那一版从来没落到盘上，见 history.ts。）
     out.saved = !saveError
@@ -290,6 +286,7 @@ var writeTool = harness.defineTool({
       diagram: doc.name, key: keyOf(doc.name), file: doc.file,
       nodes: doc.nodes.length, edges: doc.edges.length, revision: doc.revision,
       keptNotes: keptNotes,
+      readability: readableW.length,
       saved: !saveError, rollback: !!saveError, warnings: (parsed.warnings || []).slice(0, 5), ms: Date.now() - t0,
     })
     return out
@@ -353,6 +350,8 @@ var editTool = harness.defineTool({
         var lines = ['已应用 ' + v.appliedCount + ' 个操作，当前「' + String(v.diagram || '') + '」有 ' + v.nodeCount + ' 个节点、' + v.edgeCount + ' 条连线（修订 ' + v.revision + '）。']
         if (v.done && v.done.length) lines.push('完成：' + v.done.join('；'))
         if (v.problems && v.problems.length) lines.push('未生效：' + v.problems.join('；'))
+        // 与 arch_write 同一条闸门：标题超宽在画布上会画出方块，这个提示必须让 AI 看见。
+        if (v.readabilityHint) lines.push('⚠ ' + v.readabilityHint)
         if (v.appliedCount > 0) lines.push('（改动过的节点已在用户画布上高亮）')
         return [{ type: 'text', text: lines.join('\n') }]
       } catch (e) {
@@ -398,6 +397,14 @@ var editTool = harness.defineTool({
     out.appliedCount = result.done.length
     out.done = result.done
     out.problems = result.problems
+    // 可读性**不进 problems**：problems 的语义是「这个 op 没生效」，而超长标题的 op 是生效了的。
+    // 混进去会让「problems 为空 = 全部成功」失真，也会撞坏既有断言。它是独立字段，
+    // 只在**确实有问题时**才出现（空数组不出现），免得每步都多一段空话。
+    var readable = checkReadability(doc.nodes)
+    if (readable.length > 0) {
+      out.readability = readable
+      out.readabilityHint = readabilityText(readable)
+    }
     // 同上：落盘失败 ⇒ ok:false，并把原因塞进 problems（AI 先看 problems 再汇报）。
     out.saved = !saveError
     if (saveError) {
@@ -409,7 +416,7 @@ var editTool = harness.defineTool({
     logEvent(saveError || result.problems.length ? 'warn' : 'info', 'tool.arch_edit', {
       diagram: doc.name, key: keyOf(doc.name), file: doc.file,
       ops: ops.length, applied: result.done.length, problems: result.problems.slice(0, 5),
-      revision: doc.revision, saved: !saveError, rollback: !!saveError, ms: Date.now() - t0,
+      readability: readable.length, revision: doc.revision, saved: !saveError, rollback: !!saveError, ms: Date.now() - t0,
     })
     return out
   },

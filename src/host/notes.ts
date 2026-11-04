@@ -64,7 +64,7 @@ async function loadNoteStoreFor(file: string): Promise<any> {
   return noteStoreLoading[storePath]
 }
 
-function applyNoteStore(file: string, nodes: any[], legacyNotes?: Record<string, { text: string; done: boolean }>) {
+function applyNoteStore(file: string, nodes: any[]) {
   if (!file || !Array.isArray(nodes)) return
   var storePath = noteStorePathFor(file)
   var store = noteStoreCache[storePath] || {}
@@ -78,10 +78,6 @@ function applyNoteStore(file: string, nodes: any[], legacyNotes?: Record<string,
     if (entry && typeof entry.text === 'string') {
       node.note = entry.text
       node.noteDone = entry.done === true
-    } else if (legacyNotes && legacyNotes[node.id] && typeof legacyNotes[node.id].text === 'string') {
-      // 迁移期兜底：表优先，正文兜底
-      node.note = legacyNotes[node.id].text
-      node.noteDone = legacyNotes[node.id].done === true
     }
   }
 }

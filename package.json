@@ -37,12 +37,15 @@
     "check": "npm run typecheck && npm run test:all",
     "typecheck": "tsc -p tsconfig.host.json --noEmit && tsc -p tsconfig.client.json --noEmit",
     "prepack": "npm run build",
-    "pack": "npm pack --pack-destination \"${DSH_HOME:-$HOME/.dsh}/packages\""
+    "pack": "npm pack --pack-destination \"${DSH_HOME:-$HOME/.dsh}/packages\"",
+    "fmt": "biome format --write src/package src/bootstrap",
+    "check:all": "bash tools/check.sh"
   },
   "dependencies": {
     "@deepseek-ai/schemastery": "~3.18.4"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.6.4",
     "@deepseek-ai/cosmokit": "^1.8.5",
     "jsdom": "^30.0.1",
     "mermaid": "^11.16.0",

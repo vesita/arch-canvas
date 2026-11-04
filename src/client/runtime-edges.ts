@@ -849,8 +849,10 @@ function computeEdgeLayout(model, gstate) {
     pairCount[pk] = (pairCount[pk] || 0) + 1
   }
 
-  var consolidatedRenderModel = consolidateEdgesModel(model)
-  var renderEdges = consolidatedRenderModel.edges || []
+  // 渲染直接消费**原始边**：同向平行边不再合并 —— 否则画布显示一条、模型里两条，
+  // 写路径按 (from,to) 会改错/删错边。平行边靠下面 pairCount + edgeGeometry 的 offset 分开画；
+  // 「整理连线」的合并是显式 op（host 的 consolidateParallelEdges），不在这里做。
+  var renderEdges = model.edges || []
   var sideBuckets = {}
   var edgeSidesList = []
   for (var gi = 0; gi < renderEdges.length; gi++) {

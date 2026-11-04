@@ -44,7 +44,7 @@ function studioCanvasFns(S) {
         var red2 = rt.ed
         var juncForEdge = elayout.edgeToJunction && elayout.edgeToJunction[rt.ei]
         var style = arrowStyleOf(red2.arrow)
-        var isEdgeSel = sel && sel.kind === 'edge' && sel.from === red2.from && sel.to === red2.to
+        var isEdgeSel = sel && sel.kind === 'edge' && (sel.id ? red2.id === sel.id : (sel.from === red2.from && sel.to === red2.to))
         var cls = 'ac-edge'
           + (style.dashed ? ' dashed' : '')
           + (style.thick ? ' thick' : '')
@@ -63,7 +63,7 @@ function studioCanvasFns(S) {
         }
 
         inner.push(React.createElement('g', { key: 'e' + red2.from + '-' + red2.to + '-' + rt.ei },
-          React.createElement('path', { className: 'ac-edge-hit', d: rt.d, onPointerDown: (function (efrom, eto) { return function (ev) { onEdgeDown(ev, efrom, eto) } })(red2.from, red2.to) }),
+          React.createElement('path', { className: 'ac-edge-hit', d: rt.d, onPointerDown: (function (eid, efrom, eto) { return function (ev) { onEdgeDown(ev, eid, efrom, eto) } })(red2.id, red2.from, red2.to) }),
           React.createElement('path', { className: cls, d: rt.d, markerStart: mkStart || undefined, markerEnd: mkEnd || undefined }),
         ))
         if (red2.label) {
@@ -170,10 +170,20 @@ function studioCanvasFns(S) {
         shapeEl = React.createElement('rect', { className: 'ac-shape', x: x0, y: y0, width: gm.w, height: gm.h, rx: rx2 })
       }
       // 节点**永远只画标题**：描述与引用行都不在画布上画，一律去检查器里看。
-      var lines = String(node.label == null ? '' : node.label).split('\n')
+      // 标题按 `splitTitleForBox` 切成 1~2 行 —— **必须与 nodeSize 用同一个切法**，
+      // 否则会出现「量出来两行、画出来一行」或反过来的不一致（表现为文字压出盒子）。
+      // 超出 2 行的部分已经在那里截断并补了 `…`，全文仍在检查器里。
+      var titleLines = splitTitleForBox(splitLabel(String(node.label == null ? '' : node.label)).title)
       // 标题必须是 .ac-lbl 的**全部**文本：测试与用户都靠它认节点。
-      var titleEl = React.createElement('text', { className: 'ac-lbl' },
-        React.createElement('tspan', { key: 't0', x: gm.x, y: gm.y }, lines.length > 0 ? lines[0] : ''))
+      // 单行时 tspan 的 y 是盒子中心；两行时上下各偏半行，保持整体居中。
+      var titleSpans = []
+      for (var tl = 0; tl < titleLines.length; tl++) {
+        var ty = titleLines.length === 1
+          ? gm.y
+          : (gm.y - 9.5 + tl * 19)
+        titleSpans.push(React.createElement('tspan', { key: 't' + tl, x: gm.x, y: ty }, titleLines[tl]))
+      }
+      var titleEl = React.createElement('text', { className: 'ac-lbl' }, titleSpans)
       var isHl = !!(highlight && highlight.nodes && highlight.nodes.indexOf(node.id) >= 0)
       inner.push(React.createElement('g', {
         key: 'n' + node.id,

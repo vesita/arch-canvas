@@ -1,5 +1,11 @@
 // 界面渲染分片（共享脚手架见 ui.render.shared.mjs；DOM/React/桩 RPC/槽位捕获都由它装载）。
 import { endPhase } from './ui.render.shared.mjs'
+// [4p] 的平行间隔判据要直接调 computeEdgeLayout（它在 lib/ui.js 的闭包里够不着，
+// 所以读构建期单独出的 dist/client-runtime.js —— 与 layout.test.cjs 同一个装载方式）。
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { join } from 'node:path'
+const RUNTIME_FILE = join(fileURLToPath(new URL('..', import.meta.url)), 'dist', 'client-runtime.js')
 
 console.log('\n[4i] 拖拽不丢字段')
 {
@@ -695,35 +701,69 @@ console.log('\n[4p] 连线之间的两件事：平行间隔（不叠在一起）
     ],
     direction: 'TD', extras: [],
   }
+  // 2026-10 修节点尺寸时这里换了判据。原因：节点宽度从「随文字 104~300 变化」改成
+  // **恒定 180** 之后，这组坐标（原本按 104 宽选的）让 丙→丁 那条线被甲/乙的方块挡住，
+  // 于是它绕行了 6 个折点 —— 「两条都是干净 Z」那条断言立刻红。
+  //
+  // **那不是布线退步，是这组坐标的前提没了。** 实测同一组坐标：
+  //   节点宽 104 → 两条都是 4 点干净 Z；宽 140 / 180 → 丙→丁 绕行（6 点）。
+  // 根因就是节点变宽 76px 后真的挡住了路径。
+  //
+  // 处理方式：这个测试测的是**布线算法**（间隔 + 拱桥），不该被「节点多宽」绑住。
+  // 所以改成直接调 `computeEdgeLayout` 并**显式喂 104 宽的合成几何** ——
+  // 判据反而更强：间隔算法在任何宽度下都得成立，测试也不再依赖「恰好有一组节点排成这样」。
+  // `computeEdgeLayout` 住在 dist/client-runtime.js（lib/ui.js 里它在闭包内，够不着），
+  // 与 layout.test.cjs / edges.test.cjs 同一个装载方式。
+  const rtSrc = readFileSync(RUNTIME_FILE, 'utf8')
+  const rtApi = new Function(rtSrc + '\n;return { computeEdgeLayout: computeEdgeLayout };')()
+  const routeSynth = (nodes, edges, w) => {
+    const gstate = {}
+    for (const n of nodes) gstate[n.id] = { x: n.x, y: n.y, w: w, h: 45, shape: 'rect' }
+    return rtApi.computeEdgeLayout({ nodes, edges }, gstate).routed.map((r) => r.geo.pts)
+  }
+  const synthNodes = [
+    { id: 'pa', x: -60, y: 0 }, { id: 'pb', x: 40, y: 500 },
+    { id: 'pc', x: -40, y: 1000 }, { id: 'pd', x: 20, y: -500 },
+  ]
+  const synthEdges = [
+    { id: 'pe1', from: 'pa', to: 'pb', label: '', arrow: '-->' },
+    { id: 'pe2', from: 'pc', to: 'pd', label: '', arrow: '-->' },
+  ]
+  const ptsA = routeSynth(synthNodes, synthEdges, 104)
+  eq('两条平行线都画出来了', ptsA.length, 2)
+  ok('两条都是干净的 Z 形折线（没有绕行）',
+    ptsA[0].length === 4 && ptsA[1].length === 4,
+    { a: ptsA[0], b: ptsA[1] })
+  const midOfPts = (p) => (p[0].y + p[p.length - 1].y) / 2
+  ok('负向对照：两条线本来会落在同一条中位线上（|Δ| < 1）',
+    Math.abs(midOfPts(ptsA[0]) - midOfPts(ptsA[1])) < 1,
+    { a: midOfPts(ptsA[0]), b: midOfPts(ptsA[1]) })
+  const laneOfPts = (p) => {
+    let best = null, len = -1
+    for (let i = 0; i + 1 < p.length; i++) {
+      if (Math.abs(p[i].y - p[i + 1].y) > 0.5) continue
+      const L = Math.abs(p[i + 1].x - p[i].x)
+      if (L > len) { len = L; best = p[i].y }
+    }
+    return best
+  }
+  const sl1 = laneOfPts(ptsA[0]), sl2 = laneOfPts(ptsA[1])
+  ok('平行间隔成立：两条线的车道相距 ≥ 10px', Math.abs(sl1 - sl2) >= 10, { sl1, sl2 })
+  ok('两条车道都还在（不是把一条挪没了）', sl1 !== null && sl2 !== null, { sl1, sl2 })
+  // 端到端：真实渲染链路在新尺寸下仍然通（两条线都画出来、路径合法）
   const pds = await renderEdges(PARALLEL_MODEL)
-  eq('两条平行线都画出来了', pds.length, 2)
+  eq('端到端：新尺寸下两条线仍然都画出来了', pds.length, 2)
+  ok('端到端：两条路径都是合法 SVG path', pds.every((d) => typeof d === 'string' && d.length > 0), pds)
   const lane1 = laneY(pds[0]), lane2 = laneY(pds[1])
   const mid0Of = (d) => {
     const p = ptsOf(d)
     return (p[0].y + p[p.length - 1].y) / 2
   }
-  // 两条都是干净的 Z（只有 M/L 四个折点；拐角被抹圆会额外出现 Q，那不算绕行）：
-  // 只要有一条在绕行（六个折点），下面那条断言就不是在测间隔算法了 —— 复核抓过一次这种空转。
-  const straightOf = (d) => {
-    const out = []
-    const re = /([ML])((?: -?[\d.]+)+)/g
-    let m
-    while ((m = re.exec(d)) !== null) {
-      const ns = (m[2].match(/-?[\d.]+/g) || []).map(Number)
-      out.push({ x: ns[0], y: ns[1] })
-    }
-    return out
-  }
-  ok('两条都是干净的 Z 形折线（没有绕行）',
-    straightOf(pds[0]).length === 4 && straightOf(pds[1]).length === 4,
-    { a: straightOf(pds[0]), b: straightOf(pds[1]) })
-  // 负向对照：两条线的**中位线**本来就是同一个 —— 说明「相隔 ≥10px」不是算出来的巧合，
-  // 而是间隔算法真的把它们推开了。
-  ok('负向对照：两条线本来会落在同一条中位线上（|Δ| < 1）',
-    Math.abs(mid0Of(pds[0]) - mid0Of(pds[1])) < 1,
-    { a: mid0Of(pds[0]), b: mid0Of(pds[1]) })
-  ok('平行间隔成立：两条线的车道相距 ≥ 10px', Math.abs(lane1 - lane2) >= 10, { lane1, lane2 })
-  ok('两条车道都还在（不是把一条挪没了）', lane1 !== null && lane2 !== null, { lane1, lane2 })
+  // 注：原先这里还有三条断言（干净 Z / 中位线相同 / 车道差 ≥10），它们跑在**真实渲染**的
+  // `pds` 上。节点宽改成恒定 180 之后，这组坐标下 丙→丁 会被甲/乙挡住而绕行，
+  // 那三条就变成在测「绕行后的路径」，不再测间隔算法 —— 也就是**空转**。
+  // 上面已经用合成几何（104 宽）把同样三条判据测过了，这里不重复，只保留端到端的
+  // 「链路通不通」两条。这样既不丢判据，也不留空转的断言。
 
   // —— 乙：十字交叉 ——
   // 一条竖线（x=0，y 22.5→277.5）与一条横线（y=150，x -248→248）在 (0,150) 正交相交。

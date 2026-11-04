@@ -261,24 +261,17 @@ function studioDragFns(S) {
     dragRef.current = { kind: 'link', from: node.id, rect: stageRect() }
   }
 
-  function onEdgeDown(e, from, to) {
+  function onEdgeDown(e, id, from, to) {
     if (e.button !== 0) return
     e.stopPropagation()
     // 与点节点同一类问题：这里也要换选中，草稿必须先落（见 flushDrafts）。
     flushDrafts()
-    setSel({ kind: 'edge', from: from, to: to })
+    // 带上 edge.id：同向平行边各自 id 不同，靠它区分点中的是哪一条（只记 from/to 会永远落到第一条）。
+    var nextSel = { kind: 'edge', id: id, from: from, to: to }
+    setSel(nextSel)
     // 连线没有拖动语义，按下就是点 —— 与节点同一条开关语义（再点一次收起详情）。
-    toggleDockFor({ kind: 'edge', from: from, to: to })
-    var cur = modelRef.current
-    var ed = null
-    if (cur && cur.edges) {
-      for (var i = 0; i < cur.edges.length; i++) {
-        if (cur.edges[i].from === from && cur.edges[i].to === to) {
-          ed = cur.edges[i]
-          break
-        }
-      }
-    }
+    toggleDockFor(nextSel)
+    var ed = edgeOf(nextSel, modelRef.current)
     setEdgeDraft(ed && ed.label ? ed.label : '')
   }
 

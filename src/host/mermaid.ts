@@ -4,7 +4,7 @@
 // 整张图的一句话总结存 `%% @summary`（图级，不挂节点）
 // —— 全是注释行，对 Mermaid 渲染零影响，
 // 所以这份文本既是给 AI 看的图，也是能直接贴进任何 Markdown 的合法 Mermaid。
-// 元素留言存旁路表（notes.json）；正文里的老式 %% @note / %% @done 仅作为迁移兜底解析。
+// 元素留言存旁路表（notes.json）；源文本里没有留言行（旧格式不兼容）。
 // 头部那些**格式说明**行是 `%%!` 前缀：它们也是注释，但明确不是数据。
 // Mermaid flowchart <-> 图模型 双向转换（host 侧使用；此处独立测试）
 // 连接符表。**必须按长度降序**：`o---o` 排在 `o---` 前面，否则后者会先把字符抢走。
@@ -195,12 +195,6 @@ function claimNodeId(owners, raw, warn) {
 // 的顺序解实体，最后解 &amp;。任何一步提前都是静默漂移：
 //   - `#35;` 跑在 `#60;` 前面 → 字面量 `#60;` 被解成 `<`（'x#60;y' → 'x<y'）；
 //   - `&amp;` 跑在任何一步前面 → `&amp;quot;` 被二次解码成 `"`。
-// 文件头部那几行「格式说明」也是 `%% @xxx …` 的形状（例如 `%% @note <节点id> <文本> …`）。
-// 0.5.0 起说明行一律写成 `%%!`（见 serializeDoc），但 0.4.x 写出的文件里还是老形状 ——
-// 不认它的话，每解析一次就凭空多一条「注释 @note <节点id> 指向图里不存在的节点」的假警告，
-// 而这条假警告会出现在 arch_read 的返回值里。`<...>` 不可能是合法的节点 id，见到就当说明。
-var LEGACY_TEMPLATE_RE = /^%%\s*@(pos|link|note|done|file)\s+<[^>]*>(\s|$)/;
-
 // serializeDoc 每次都会重新写出的那行横幅。它自己也说「`%%!` 开头的是格式说明」——
 // 所以解析时按**说明行**跳过（它不是数据），写出时由 serializeDoc 原样补回，两边对称。
 // 不做这件事的后果：横幅会被当成一条普通 `%%` 注释推进 extras（见下面的注释保留），
@@ -257,12 +251,10 @@ function unquoteInner(text) {
  *
  * 只认 br 这一族（大小写、斜杠、反斜杠、空白变体都认），**不碰** `\n` 这种反斜杠转义：
  * 标签里合法地出现代码片段时，不能替用户猜。
- * 转义过的 `&lt;br&gt;` 也认 —— 老版本把 AI 写的 `<br>` 转义着写进了文件，读回来时顺手治好。
  */
 var BR_SPELLING_RE = /<\s*\\?\s*\/?\s*b\s*r\s*\/?\s*>/gi
-var BR_ESCAPED_RE = /&lt;\s*\\?\s*\/?\s*b\s*r\s*\/?\s*&gt;/gi
 function normalizeBreaks(raw) {
-  return String(raw == null ? '' : raw).replace(BR_ESCAPED_RE, '\n').replace(BR_SPELLING_RE, '\n');
+  return String(raw == null ? '' : raw).replace(BR_SPELLING_RE, '\n');
 }
 
 function unquote(text) {
@@ -311,8 +303,7 @@ function qRef(value) {
  * 套那套转义只坑人（AGENTS.md 明写这条值不套标签实体转义）。
  *
  * 所以这里只解 `qRef()` 真正会写出的那几种：`#quot;` / `&quot;` / `<br/>` 各变体
- * （`#quot;` 对应真引号、`<br/>` 对应换行），**加上老文件的 `#35;`** ——
- * 0.6.x 及以前写的是它，AGENTS.md 写明老文件要能读、落盘时规整。
+ * （`#quot;` 对应真引号、`<br/>` 对应换行）。
  * 守门人：test/mermaid.parser.test.cjs 第 [20] 节 + 第 [21] 节。
  */
 function unquoteRef(text) {
@@ -321,9 +312,6 @@ function unquoteRef(text) {
   s = (inner !== null) ? inner : s.trim();
   s = normalizeBreaks(s);
   s = s.replace(/#quot;/g, '"').replace(/&quot;/g, '"');
-  // 老文件的 `#35;` 必须解回 `#`。代价是一条固有歧义：新文件里**字面**写着的 `#35;`
-  // 与老文件的转义长得一模一样，只能按老文件解释（真路径里不会有这种字符）。
-  s = s.replace(/#35;/g, '#');
   return s;
 }
 
@@ -591,7 +579,7 @@ function scanStatements(line, doc, byId, warn, idOwners) {
 }
 
 function parseMermaid(text) {
-  var doc = { nodes: [], edges: [], extras: [], direction: 'TD', warnings: [], summary: '', legacyNotes: {} };
+  var doc = { nodes: [], edges: [], extras: [], direction: 'TD', warnings: [], summary: '' };
   var byId = {};
   // 坐标与下钻先存着，等图体读完再挂到真有的节点上。
   // 读到注释就 ensureNode 的后果是：节点删了、注释忘了删，节点会凭注释复活写回图里。
@@ -599,8 +587,6 @@ function parseMermaid(text) {
   // 查表命中 Object.prototype 会静默读错值，所以一律用**无原型对象**。
   var posMap = Object.create(null);
   var linkMap = Object.create(null);
-  // 老式注释（%% @note / %% @done）收进 legacyNotes 供迁移，不再挂到节点上。
-  var legacyNotes = {};
   // 代码锚点（%% @file）与注释不同：**一个节点可以有多条**，所以存成数组、按出现顺序保留。
   var filesMap = Object.create(null);
   // 概念标签（%% @tags）：每个节点可以打若干个业务或逻辑标签
@@ -620,8 +606,6 @@ function parseMermaid(text) {
     if (line === HEADER_BANNER) continue;
     if (line.slice(0, 3) === '%%!') continue;
     if (line.slice(0, 2) === '%%') {
-      // 格式说明行（本文件头部那几行模板）不是数据 —— 见 LEGACY_TEMPLATE_RE。
-      if (LEGACY_TEMPLATE_RE.test(line)) continue;
       // **墓碑行 `%% @deleted` 是文档级标记，不是内容，绝不能进 extras。**
       // 它由 document.ts 的 TOMBSTONE 写在文件最前面、由 hasTombstone 从行首读。
       // 落到下面那个「未知 %% 行原样留进 extras」的兜底，就会在**恢复**（把行首那一行摘掉）
@@ -665,13 +649,6 @@ function parseMermaid(text) {
       var lm = /^%%\s*@link\s+(\S+)\s+(.+)$/.exec(line);
       if (lm) {
         linkMap[lm[1]] = unquote(lm[2]);
-        continue;
-      }
-      // 老式 %% @note / %% @done 行收进 legacyNotes，供迁移期兜底
-      var nm = /^%%\s*@(note|done)\s+(\S+)\s+(.*)$/.exec(line);
-      if (nm) {
-        // legacyNotes 由旁路表按**节点 id** 关联，所以这里保持归一（迁移只看归一结果）。
-        legacyNotes[cleanId(nm[2])] = { text: unquote(nm[3]), done: nm[1] === 'done' };
         continue;
       }
       // %% @file <节点id> "<项目相对路径>[#符号]"：这个节点对应哪段源码。
@@ -794,7 +771,6 @@ function parseMermaid(text) {
   for (var lid in linkMap) if (!byId[cleanId(lid)] && !rawOwned[lid]) warn('下钻注释 @link ' + lid + ' 指向图里不存在的节点，已丢弃');
   for (var fid3 in filesMap) if (!byId[cleanId(fid3)] && !rawOwned[fid3]) warn('代码锚点 @file ' + fid3 + ' 指向图里不存在的节点，已丢弃');
   for (var tid in tagsMap) if (!byId[cleanId(tid)] && !rawOwned[tid]) warn('概念标签 @tags ' + tid + ' 指向图里不存在的节点，已丢弃');
-  doc.legacyNotes = legacyNotes;
   var cleanNodes = [];
   for (var i = 0; i < doc.nodes.length; i++) {
     var nd = doc.nodes[i];

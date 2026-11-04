@@ -309,6 +309,13 @@ function promptText(asctx?) {
     }
     for (var dl = 0; dl < dlines.length; dl++) head.push(dlines[dl])
   }
+  // 可读性状态：**这是「当前状态」，不是教材**，所以归 promptText 管（阈值与改法归 skill）。
+  // 为什么值得每一步都注入：节点标题超宽在画布上会画出方块、压住邻居 —— 那是用户第一眼看到的
+  // 东西。AI 不知道这件事就会继续往上堆字。只在**确实超限时**出现，干净的图不多付一行 token。
+  var readableNow = checkReadability(doc.nodes)
+  if (readableNow.length > 0) {
+    head.push('', '**画布可读性**：' + readabilityText(readableNow))
+  }
   if (doc.nodes.length === 0) {
     head.push('', '画布目前是空的。可以用 `arch_write` 画一版初稿，或用 `arch_edit` 逐块搭建。')
     return promptSafe(head.join('\n'))

@@ -376,12 +376,17 @@ console.log('\n[4z] 客户端交互缺陷修复：发送不顶草稿 / 文档身
     await flush()
     ok('前置：选中了节点（方向键才有对象）', dockState(t.host).dock)
     const rootEl = t.host.querySelector('.ac-root')
+    // 判「本地跟手」必须与**起点**比，不能与 0 比：节点宽度从「随文字变化」改成恒定 180 后，
+    // 模型 x=0 的节点渲染出来是 rect.x = -90（中心减半宽），微调 20px 后是 -70 ——
+    // 旧判据 `rectX() > 0` 因此永远不成立。改成「比起点更大」，与尺寸无关。
+    const xBeforeNudge = rectX(t.host, '甲')
     sets.length = 0
     // 20 次自动重复 ≈ 按住半秒；修前是 20 次 doc:set + 20 条撤销
     for (let i = 0; i < 20; i++) { await act(async () => { keyDown(rootEl, 'ArrowRight') }) }
     await flush()
     eq('按住方向键 20 次：一次盘都没写（修前 = 20 次）', sets.length, 0)
-    ok('本地仍然跟手（方块真的往右挪了）', rectX(t.host, '甲') > 0, rectX(t.host, '甲'))
+    ok('本地仍然跟手（方块真的往右挪了）', rectX(t.host, '甲') > xBeforeNudge,
+      { before: xBeforeNudge, after: rectX(t.host, '甲') })
     await act(async () => { keyUp(rootEl, 'ArrowRight') })
     await flush()
     eq('松手（keyup）只落一次 doc:set', sets.length, 1)

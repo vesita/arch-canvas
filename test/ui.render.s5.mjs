@@ -65,13 +65,19 @@ console.log('\n[4w] 拖动：rAF 合帧不丢位移 / 吸附按屏幕像素 + �
     await endDrag()
   }
 
+  // 节点的 `rect.x` 是**中心减半宽**。半宽从前被写死成 52（= 旧公式下 104 宽的一半），
+  // 2026-10 节点宽度改成恒定 180 之后它变成 90 —— 写死的 52 让下面三条断言一起红。
+  // 改成**从渲染出来的 rect 反推**：必须在拖动**之前**取（拖动后 rectX 已是新位置），
+  // 未拖动时模型坐标是 0，所以半宽 = -rectX()。
+  const RECT_HALF_W = -rectX()
+
   // ---- 1) rAF 合帧：只发一个 pointermove（不抬手），下一帧位置也要生效 ----
   await act(async () => { down(0, 0) })
   await flush()
   await act(async () => { move(100, 0) })
   await frame()
   ok('只发 pointermove、不抬手：下一帧节点就跟着走了（rAF 那条路真的在跑）',
-    Math.abs(rectX() - (-52 + 100)) < 1, rectX())
+    Math.abs(rectX() - (-RECT_HALF_W + 100)) < 1, rectX())
   await act(async () => { up(100, 0) })
   await flush()
   eq('抬手时提交的是最后那段位移（flush 没丢）', curX(), 100)
@@ -89,10 +95,10 @@ console.log('\n[4w] 拖动：rAF 合帧不丢位移 / 吸附按屏幕像素 + �
   await flush()
   await act(async () => { move((204 - 230) * k, 0) })   // 中心 204：距 200 是 4px → 吸上
   await frame()
-  ok('先吸上（中心 204 距 200 只有 4px）', Math.abs(rectX() - (-52 + 200)) < 1, rectX())
+  ok('先吸上（中心 204 距 200 只有 4px）', Math.abs(rectX() - (-RECT_HALF_W + 200)) < 1, rectX())
   await act(async () => { move((210 - 230) * k, 0) })   // 中心 210：距 200 是 10px，> 进入阈值 8、< 脱开阈值 14
   await frame()
-  ok('吸上之后 10px 之内仍然吸着（迟滞）', Math.abs(rectX() - (-52 + 200)) < 1, rectX())
+  ok('吸上之后 10px 之内仍然吸着（迟滞）', Math.abs(rectX() - (-RECT_HALF_W + 200)) < 1, rectX())
   await act(async () => { move((216 - 230) * k, 0) })   // 中心 216：16px > 14 → 脱开
   await frame()
   await act(async () => { up(0, 0) })

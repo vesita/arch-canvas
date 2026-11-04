@@ -190,6 +190,23 @@ function shapeChoiceText(k) {
  * 这里只记**视图状态**，不记图内容 —— 内容永远以宿主那份（doc:get）为准，
  * 多存一份内容就又多了一份会各自漂移的真相。只在内存里，按 `<会话>|<图>` 分开。
  */
+/**
+ * 边的身份解析：优先按 edge.id 找（同向平行边各自有 id），找不到时退回 (from,to) 第一条
+ * （兼容没有 id 的旧选中 / 测试桩模型）。onEdgeDown、删除、改标签、改箭头、选中态判断都走它 ——
+ * 「哪一条边被选中」全项目只有一个解析点。
+ */
+function edgeOf(sel, model) {
+  if (!sel || sel.kind !== 'edge' || !model || !Array.isArray(model.edges)) return null
+  var i
+  if (sel.id) {
+    for (i = 0; i < model.edges.length; i++) if (model.edges[i].id === sel.id) return model.edges[i]
+  }
+  for (i = 0; i < model.edges.length; i++) {
+    if (model.edges[i].from === sel.from && model.edges[i].to === sel.to) return model.edges[i]
+  }
+  return null
+}
+
 var studioMemo = {}
 var STUDIO_MEMO_MAX = 6
 

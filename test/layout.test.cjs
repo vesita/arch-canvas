@@ -424,20 +424,40 @@ console.log('\n[9] 方块包围盒不许重叠：长短标签混排 + 四种方�
   eq('随机尺寸图上发生重叠的图数', bad, 0);
   if (bad) console.log('     最差的一张：', JSON.stringify(firstBad));
 
-  // 负向对照：手工按老公式（只按当前层 deep 递增）复算同一条链的位置，必须重叠 ——
+  // 负向对照：手工按老公式（层距只按**当前层** deep 递增）复算同一条链，必须重叠 ——
   // 否则上面「零重叠」那几条可能是空转（根本没有能判出修复的输入）。
-  const chainLabels = ['短', '这一层特别特别特别特别特别特别特别特别长的名字'];
+  //
+  // 2026-10 修节点尺寸时这里改过一次判据：原来靠 `nodeSize` 造出「窄层 → 宽层」的尺寸差
+  // （短标题 104px、长标题 300px）。节点宽度改成恒定 180 之后，`nodeSize` 再也造不出那个差，
+  // 这个对照就失效了（实测 naiveOverlap 从正数变成 -108）。
+  //
+  // **不能因此删掉这条断言** —— 那等于把守门人一起删了。正确做法是**绕开 nodeSize，
+  // 直接对 `layoutPositions` 喂合成尺寸**：被测的是「层距怎么算」，不是「节点多宽」。
+  // 这样判据反而更强：它不再依赖「恰好有一对长短标题」，任何尺寸组合都能验。
+  const synth = { a: { w: 104, h: 45 }, b: { w: 300, h: 45 } };
+  const synthLayers = { 0: ['a'], 1: ['b'] };
+  // 老公式：along += deep + gap（只让当前层的身位）
+  const oldGap = Math.max(48, Math.round(synth.a.w * 0.6));
+  const oldDistance = synth.a.w + oldGap;
+  const oldOverlap = (synth.a.w + synth.b.w) / 2 - oldDistance;
+  ok('负向对照：老公式（层距只按当前层递增）在「窄层→宽层」上确实重叠',
+    oldOverlap > 0.5, { oldOverlap, oldDistance });
+  // 修后的实现必须让开两层各自的身位
+  const fixedPos = api.layoutPositions(synth, synthLayers, true, false, 56);
+  const fixedDistance = Math.abs(fixedPos.b.x - fixedPos.a.x);
+  const fixedOverlapSynth = (synth.a.w + synth.b.w) / 2 - fixedDistance;
+  ok('修后的 layoutPositions 在同一条链上不再重叠',
+    fixedOverlapSynth <= 0.5, { fixedOverlapSynth, fixedDistance });
+
+  // 再用真实 model 走一遍端到端（节点尺寸由当前 nodeSize 决定，验证链路仍然通）
   const chainModel = mk(['a', 'b'], [['a', 'b']], 'LR');
-  chainModel.nodes[0].label = chainLabels[0];
-  chainModel.nodes[1].label = chainLabels[1];
-  const sA = api.nodeSize(api.splitLabel(chainLabels[0]).title, 0);
-  const sB = api.nodeSize(api.splitLabel(chainLabels[1]).title, 0);
-  const naiveGap = Math.max(48, Math.round(sA.w * 0.6)); // 老公式：gap 只看当前层
-  const naiveOverlap = (sA.w + sB.w) / 2 - Math.abs(sA.w + naiveGap);
-  ok('负向对照：老公式在这条链上确实重叠（说明这条断言的判据没瞎）', naiveOverlap > 0.5, naiveOverlap);
+  chainModel.nodes[0].label = '短';
+  chainModel.nodes[1].label = '这一层特别特别特别特别特别特别特别特别长的名字';
+  const sA = api.nodeSize(api.splitLabel(chainModel.nodes[0].label).title, 0);
+  const sB = api.nodeSize(api.splitLabel(chainModel.nodes[1].label).title, 0);
   const chainOut = byId(autoLayout(chainModel));
-  const fixedOverlap = (sA.w + sB.w) / 2 - Math.abs(chainOut.b.x - chainOut.a.x);
-  ok('同一条链在修后不再重叠', fixedOverlap <= 0.5, { fixedOverlap, a: chainOut.a.x, b: chainOut.b.x });
+  const chainOverlap = (sA.w + sB.w) / 2 - Math.abs(chainOut.b.x - chainOut.a.x);
+  ok('端到端：真实 model 上不重叠', chainOverlap <= 0.5, { chainOverlap });
 }
 
 console.log('\n结果: ' + pass + ' 通过 / ' + fail + ' 失败\n');

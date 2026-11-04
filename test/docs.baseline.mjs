@@ -39,6 +39,7 @@ const SUITES = [
   { label: '界面渲染·D', file: 'test/ui.render.s4.mjs' },
   { label: '界面渲染·E', file: 'test/ui.render.s5.mjs' },
   { label: '界面渲染·F', file: 'test/ui.render.s6.mjs' },
+  { label: '可读性闸门', file: 'test/readability.test.mjs' },
 ]
 
 /**
