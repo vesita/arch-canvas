@@ -19,9 +19,9 @@ const src = fs.readFileSync(FILE, 'utf8');
 const api = new Function(src + '\n;return {'
   + ' edgeGeometry: edgeGeometry, edgeSidesOf: edgeSidesOf, perimeterPoint: perimeterPoint,'
   + ' kindOf: kindOf, nodeSize: nodeSize, edgePortOffset: edgePortOffset, edgePathHits: edgePathHits,'
-  + ' edgeGaps: edgeGaps, EDGE_PAD: EDGE_PAD, computeEdgeLayout: computeEdgeLayout,'
+  + ' edgeGaps: edgeGaps, EDGE_PAD: EDGE_PAD, computeEdgeLayout: computeEdgeLayout, routeOrthogonalGrid: routeOrthogonalGrid,'
   + ' ARROW_STYLE: ARROW_STYLE, arrowStyleOf: arrowStyleOf };')();
-const { edgeGeometry, edgeSidesOf, perimeterPoint, kindOf, nodeSize, edgePathHits, EDGE_PAD, computeEdgeLayout, ARROW_STYLE, arrowStyleOf } = api;
+const { edgeGeometry, edgeSidesOf, perimeterPoint, kindOf, nodeSize, edgePathHits, EDGE_PAD, computeEdgeLayout, ARROW_STYLE, arrowStyleOf, routeOrthogonalGrid } = api;
 
 let pass = 0;
 let fail = 0;
@@ -527,6 +527,30 @@ console.log('\n[8] 同向平行边：渲染不合并（每条边一个 routed，
   ok('两条边 label 各自保留（不是被拼成「甲 / 乙」的同一条）',
     lay.routed.length === 2 && lay.routed[0].ed.label === '甲' && lay.routed[1].ed.label === '乙',
     lay.routed.map(r => r.ed.label));
+}
+
+console.log('\n[9] 网格 A* 正交路由 routeOrthogonalGrid：正交、避障、优于固定 Z');
+{
+  // 复刻 p2->p4 型几何：源在左上、目标在右下、横向近对齐（固定 Z 会绕 174px 大横段）
+  const a = { x: -590, y: 522, w: 180, h: 45, shape: 'rect' }
+  const b = { x: -416, y: 661, w: 180, h: 45, shape: 'round' }
+  const r = routeOrthogonalGrid(a, b, [], {})
+  ok('返回非空', !!r)
+  if (r) {
+    let orth = true
+    for (let i = 0; i + 1 < r.pts.length; i++) {
+      const dx = Math.abs(r.pts[i + 1].x - r.pts[i].x), dy = Math.abs(r.pts[i + 1].y - r.pts[i].y)
+      if (dx > 0.5 && dy > 0.5) orth = false
+    }
+    ok('每段水平或垂直（正交）', orth)
+    ok('长度优于固定 Z 的 268（应 < 220）', r.length < 220, r.length)
+    ok('折点不多于固定 Z 的 2', r.bends <= 2, r.bends)
+  }
+  // 避障：两点之间放一块障碍
+  const obs = [{ x1: -520, y1: 560, x2: -460, y2: 640 }]
+  const r2 = routeOrthogonalGrid(a, b, obs, {})
+  ok('有障碍时仍返回路径', !!r2)
+  if (r2) ok('路径不穿过障碍', !edgePathHits(r2.pts, obs), r2.pts)
 }
 
 console.log('\n结果: ' + pass + ' 通过 / ' + fail + ' 失败\n');
