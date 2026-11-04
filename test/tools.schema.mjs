@@ -151,5 +151,25 @@ try {
   fail('execute → render 抛了：' + String(e.message).slice(0, 400))
 }
 
+// ---------- 契约四：arch_edit 的 op enum 必须与 applyOps 实际处理的 kind 集合逐一相等 ----------
+// AGENTS 明写「新增 op 要同时改插件工具 schema 和 applyOps」—— 手写两处，漏一个就出现
+// 「工具 schema 说支持、引擎 applyOps 报『未知操作类型』」的静默错。这里用集合相等钉死。
+console.log('【arch_edit op enum == applyOps 处理的 kind 集合】')
+{
+  const edit = registered.find((d) => d.name === 'arch_edit')
+  const opsEnum = edit?.parameters?.properties?.ops?.items?.properties?.op?.enum
+  const srcOps = require('fs').readFileSync(new URL('../src/host/document-ops.ts', import.meta.url).pathname, 'utf8')
+  const handled = new Set()
+  const re = /kind === '([a-z_]+)'/g
+  let mm
+  while ((mm = re.exec(srcOps)) !== null) handled.add(mm[1])
+  const enumSet = new Set(Array.isArray(opsEnum) ? opsEnum : [])
+  const onlyEnum = [...enumSet].filter((x) => !handled.has(x))
+  const onlyApply = [...handled].filter((x) => !enumSet.has(x))
+  if (!Array.isArray(opsEnum) || opsEnum.length === 0) fail('arch_edit 的 op enum 取不到（parameters.ops.items.properties.op.enum）')
+  else if (onlyEnum.length || onlyApply.length) fail(`op 契约漂移：工具 enum 多出 [${onlyEnum}]，applyOps 多出 [${onlyApply}]`)
+  else console.log(`  ✓ op 集合一致（${enumSet.size} 个：${[...enumSet].sort().join(',')}）`)
+}
+
 console.log(bad === 0 ? '\n全部通过\n' : '\n' + bad + ' 项失败\n')
 process.exit(bad === 0 ? 0 : 1)
